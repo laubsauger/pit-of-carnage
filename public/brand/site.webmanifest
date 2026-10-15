@@ -1,0 +1,13 @@
+{
+  "name": "Pit of Carnage",
+  "short_name": "Carnage",
+  "description": "An autoplaying gladiator arena: write strategies, breed them in the gym, send them into the pit.",
+  "start_url": "../",
+  "display": "standalone",
+  "background_color": "#0e0d0c",
+  "theme_color": "#0e0d0c",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
