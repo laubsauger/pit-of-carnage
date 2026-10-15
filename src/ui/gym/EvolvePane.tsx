@@ -1,13 +1,16 @@
 // Owned by: ui
-import { MAX_FIGHTERS, MIN_FIGHTERS, strategyKey } from '../../core';
+import { MAX_FIGHTERS, MIN_FIGHTERS, hashString, strategyKey } from '../../core';
 import type { EvolveGeneration, EvolveRequest, SavedStrategy, Strategy } from '../../core';
+import type { ArchiveCell } from '../../gym';
+import type { WatchRequest } from '../App';
 import { evolveProblem, sanitizeForm } from '../batch';
 import type { EvolveForm } from '../batch';
-import { formatPercent, keyLabel, strategyLabel } from '../format';
+import { formatPercent, keyLabel, strategyLabel, weaponName } from '../format';
 import { useStoredState } from '../hooks';
-import { DiceIcon } from '../icons';
+import { DiceIcon, WeaponIcon } from '../icons';
 import { formatSigned, versusChampion } from '../reports';
-import { randomSeed } from '../setup';
+import { exhibitionConfig, randomSeed } from '../setup';
+import { toast } from '../toast';
 import { NumberField } from '../widgets';
 import type { EvolveOutcome, GymJob } from './GymScreen';
 import { Picklist } from './Picklist';
@@ -23,14 +26,25 @@ type Props = {
   onRun: (req: EvolveRequest) => void;
   onCancel: () => void;
   onLoad: (s: Strategy) => void;
-  onSave: (s: Strategy) => void;
+  /** Save an evolved strategy; `generation` is where it came from (its origin in the library). */
+  onSave: (s: Strategy, generation: number) => void;
+  onWatch: (req: WatchRequest) => void;
 };
+
+/**
+ * The gym worker reports each generation's archive too (`GenerationReport`), though the shared
+ * `EvolveGeneration` type does not promise it; read it when it is there.
+ */
+type GenerationWithArchive = EvolveGeneration & { archive?: ArchiveCell[] };
+
+/** The sim names fighters f0, f1, ... in entrant order, and an exhibition seats the entry first. */
+const SEAT_0_FIGHTER = 'f0';
 
 /**
  * Evolution: mutate the editor strategy, play mutants and the current champion on the same seeds,
  * promote only clear winners. The page shows what changed and by how much, generation by generation.
  */
-export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, onCancel, onLoad, onSave }: Props) {
+export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, onCancel, onLoad, onSave, onWatch }: Props) {
   const [form, setForm] = useStoredState<EvolveForm>('poc.gym.evolve.v1', () => defaultEvolveForm(houseStacks), sanitizeForm);
   const opts = strategyOptions(houseStacks, saved, null);
   const patch = (p: Partial<EvolveForm>) => setForm((prev) => ({ ...prev, ...p }));
@@ -65,6 +79,25 @@ export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, on
   };
 
   const gens = outcome ? [...outcome.generations].reverse() : [];
+  const latest = gens[0] as GenerationWithArchive | undefined;
+  const archive = latest?.archive ?? [];
+  const lastPromotion = outcome ? [...outcome.generations].reverse().find((g) => g.promoted)?.generation ?? outcome.generations.length : 0;
+
+  /**
+   * Watch an entry fight. Generation matches are not recorded, so this is a fresh match against the
+   * run's own field on its maps, seeded from the run and the entry: the same button shows the same fight.
+   */
+  const watchEntry = (s: Strategy, generation: number) => {
+    const req = outcome?.request;
+    if (!req) return;
+    const mapId = req.mapIds[(Math.max(1, generation) - 1) % req.mapIds.length] ?? req.mapIds[0]!;
+    const config = exhibitionConfig(s, req.field, mapId, req.fighters, hashString(`${req.seed}:${strategyKey(s)}`));
+    if (!config) {
+      toast('This run had no field to fight.');
+      return;
+    }
+    onWatch({ config, focusId: SEAT_0_FIGHTER, origin: { label: `Evolution, ${strategyLabel(s.name, s.version)}`, tab: 'evolve', matchIndex: null } });
+  };
 
   return (
     <div className="pane">
@@ -121,7 +154,7 @@ export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, on
               Evolve
             </button>
             {busy ? (
-              <span className="dim">A batch is running. One gym job at a time.</span>
+              <span className="dim">Another gym job is running. One at a time.</span>
             ) : problem ? (
               <span className="error-line">{problem}</span>
             ) : (
@@ -136,23 +169,30 @@ export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, on
       {outcome?.result ? (
         <div className="evo-result">
           <p>{outcome.result.summary}</p>
-          {outcome.result.improved ? (
-            <div className="inline">
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => onSave(outcome.result!.champion)}>
-                Save {strategyLabel(outcome.result.champion.name, outcome.result.champion.version)}
-              </button>
-              <button type="button" className="btn btn-sm" onClick={() => onLoad(outcome.result!.champion)}>
-                Open in editor
-              </button>
-            </div>
-          ) : null}
+          <div className="inline">
+            {outcome.result.improved ? (
+              <>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => onSave(outcome.result!.champion, lastPromotion)}>
+                  Save {strategyLabel(outcome.result.champion.name, outcome.result.champion.version)}
+                </button>
+                <button type="button" className="btn btn-sm" onClick={() => onLoad(outcome.result!.champion)}>
+                  Open in editor
+                </button>
+              </>
+            ) : null}
+            <button type="button" className="btn btn-sm" onClick={() => watchEntry(outcome.result!.champion, lastPromotion)}>
+              Watch the champion
+            </button>
+          </div>
         </div>
       ) : null}
+
+      {archive.length ? <ArchiveView archive={archive} generation={latest!.generation} onWatch={watchEntry} onLoad={onLoad} /> : null}
 
       {gens.length ? (
         <div className="report">
           {gens.map((g) => (
-            <GenerationCard key={g.generation} gen={g} />
+            <GenerationCard key={g.generation} gen={g} onWatch={(s) => watchEntry(s, g.generation)} />
           ))}
         </div>
       ) : null}
@@ -160,7 +200,54 @@ export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, on
   );
 }
 
-function GenerationCard({ gen }: { gen: EvolveGeneration }) {
+/** The elites, one per niche, after the latest generation; each can be watched or opened. */
+function ArchiveView({ archive, generation, onWatch, onLoad }: { archive: ArchiveCell[]; generation: number; onWatch: (s: Strategy, generation: number) => void; onLoad: (s: Strategy) => void }) {
+  const cells = [...archive].sort((a, b) => Number(b.champion) - Number(a.champion) || a.avgPlace - b.avgPlace);
+  return (
+    <section className="archive" aria-label="Evolution archive">
+      <div className="report-head">
+        <h2>Archive after generation {generation}</h2>
+        <span className="dim">One elite per niche: weapon family, preferred range, aggression.</span>
+      </div>
+      <div className="archive-grid">
+        {cells.map((c) => (
+          <article key={`${c.nicheKey}:${c.key}`} className={`archive-cell${c.champion ? ' champion' : ''}`}>
+            <div className="arc-head">
+              <span className="sb-weapon" title={weaponName(c.strategy.build.weapon)}>
+                <WeaponIcon weapon={c.strategy.build.weapon} />
+              </span>
+              <b title={c.name}>{c.name}</b>
+              {c.champion ? <span className="chip chip-hot">Champion</span> : null}
+            </div>
+            <div className="arc-niche faint">
+              {c.niche.family}, {c.niche.range} range, {c.niche.aggression}
+            </div>
+            <div className="arc-nums">
+              <span>
+                <b className="num">{c.avgPlace.toFixed(1)}</b> avg place
+              </span>
+              <span>
+                <b className="num">{c.matches}</b> matches
+              </span>
+              <span className="faint">{c.bornGeneration === 0 ? 'the starting strategy' : `bred in gen ${c.bornGeneration}`}</span>
+            </div>
+            {c.mutations.length ? <div className="arc-muts mutations">{c.mutations.join('; ')}</div> : null}
+            <div className="inline">
+              <button type="button" className="btn btn-sm" onClick={() => onWatch(c.strategy, c.bornGeneration)}>
+                Watch
+              </button>
+              <button type="button" className="btn btn-sm btn-quiet" onClick={() => onLoad(c.strategy)}>
+                Open in editor
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GenerationCard({ gen, onWatch }: { gen: EvolveGeneration; onWatch: (s: Strategy) => void }) {
   const promotedKey = gen.promoted ? strategyKey(gen.promoted.strategy) : null;
   return (
     <article className="gen">
@@ -179,6 +266,7 @@ function GenerationCard({ gen }: { gen: EvolveGeneration }) {
             <th className="r" title="Places gained against the champion on the same seeds">
               vs champion
             </th>
+            <th />
           </tr>
         </thead>
         <tbody>
@@ -188,6 +276,7 @@ function GenerationCard({ gen }: { gen: EvolveGeneration }) {
             <td className="num">{gen.champion.avgPlace.toFixed(1)}</td>
             <td className="num">{formatPercent(gen.champion.winRate)}</td>
             <td className="num faint">-</td>
+            <td />
           </tr>
           {gen.candidates.map((c, i) => {
             const vs = versusChampion(c.aggregate, gen.champion);
@@ -199,6 +288,11 @@ function GenerationCard({ gen }: { gen: EvolveGeneration }) {
                 <td className="num">{c.aggregate.avgPlace.toFixed(1)}</td>
                 <td className="num">{formatPercent(c.aggregate.winRate)}</td>
                 <td className={`num${vs.placeGain > 0 ? '' : ' faint'}`}>{formatSigned(vs.placeGain)}</td>
+                <td className="r">
+                  <button type="button" className="btn btn-sm btn-quiet" onClick={() => onWatch(c.strategy)} title="Watch it fight the run's field (a fresh match; generation matches are not recorded)">
+                    Watch
+                  </button>
+                </td>
               </tr>
             );
           })}

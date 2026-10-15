@@ -57,6 +57,8 @@ type Props = {
   snap: UiSnapshot;
   /** A mark to point out (the kill feed line under the pointer). */
   highlight: TimelineMark | null;
+  /** The panel's height in CSS px whenever it changes (lanes make it taller), for the arena framing. */
+  onHeight?: (px: number) => void;
 };
 
 /**
@@ -65,7 +67,7 @@ type Props = {
  * gives every fighter a row. Drag to scrub (the seek happens on release, since seeking
  * re-simulates); click a mark to replay from just before it; Back to live (End) returns.
  */
-export function Timeline({ controller, snap, highlight }: Props) {
+export function Timeline({ controller, snap, highlight, onHeight }: Props) {
   const panel = useRef<HTMLDivElement>(null);
   const track = useRef<HTMLDivElement>(null);
   const scrub = useRef<Scrub | null>(null);
@@ -108,12 +110,19 @@ export function Timeline({ controller, snap, highlight }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // The inspector and scoreboard keep clear of the timeline, however tall the lanes make it.
+  // The inspector and scoreboard keep clear of the timeline, however tall the lanes make it, and the
+  // camera frames the action above it.
+  const heightCb = useRef(onHeight);
+  heightCb.current = onHeight;
   useLayoutEffect(() => {
     const el = panel.current;
     const hud = el?.parentElement;
     if (!el || !hud) return;
-    const ro = new ResizeObserver(() => hud.style.setProperty('--tl-h', `${el.offsetHeight}px`));
+    const ro = new ResizeObserver(() => {
+      hud.style.setProperty('--tl-h', `${el.offsetHeight}px`);
+      // A frame later: React state set inside the observer would re-enter this layout pass.
+      requestAnimationFrame(() => heightCb.current?.(el.offsetHeight));
+    });
     ro.observe(el);
     return () => {
       ro.disconnect();
@@ -225,7 +234,7 @@ export function Timeline({ controller, snap, highlight }: Props) {
           </div>
         ) : null}
         {clusters.map((c) => (
-          <ClusterView key={`${c.tick}:${c.marks.length}`} c={c} byId={byId} lane={null} />
+          <ClusterView key={`${c.tick}:${c.marks.length}`} c={c} byId={byId} />
         ))}
         {highlightAt ? <div className="tl-pulse" style={{ left: highlightAt.x }} /> : null}
         <div className={`tl-head ${ghost ? 'ghost' : live ? 'live' : 'replay'}`} style={{ left: pct(head) }} />
@@ -301,7 +310,7 @@ function LaneRow(props: {
       <div className="tl-lane" style={{ gridRow: row }} {...events}>
         <div className="tl-lane-rail" style={{ width: pct(end) }} />
         {clusters.map((c) => (
-          <ClusterView key={`${c.tick}:${c.marks.length}`} c={c} byId={byId} lane={f.id} />
+          <ClusterView key={`${c.tick}:${c.marks.length}`} c={c} byId={byId} />
         ))}
       </div>
       <span className="tl-lane-sum num" style={{ gridRow: row }}>
@@ -318,44 +327,43 @@ function markColor(m: TimelineMark, byId: Map<string, UiFighter>): string {
 }
 
 /**
- * One stack of marks. In a fighter's lane, moments they caused are filled and moments done to them
- * are hollow (in the colour of whoever did it).
+ * One stack of marks, every one solid in the colour of whoever caused it (in a fighter's lane too:
+ * the tooltip says who did what to whom; hollow marks vanished against the track).
  */
-function ClusterView({ c, byId, lane }: { c: MarkCluster; byId: Map<string, UiFighter>; lane: string | null }) {
+function ClusterView({ c, byId }: { c: MarkCluster; byId: Map<string, UiFighter> }) {
   const stack = c.marks.length > STACK_MAX ? c.marks.slice(0, STACK_MAX - 1) : c.marks;
   const more = c.marks.length - stack.length;
   return (
     <div className="tl-cluster" style={{ left: c.x }}>
       {stack.map((m, i) => (
-        <MarkShape key={i} kind={m.kind} color={markColor(m, byId)} hollow={lane !== null && m.actorId !== lane} />
+        <MarkShape key={i} kind={m.kind} color={markColor(m, byId)} />
       ))}
       {more > 0 ? <span className="tl-more num">+{more}</span> : null}
     </div>
   );
 }
 
-/** Event shape: diamond kill, downward wedge lost limb, dot big hit, ringed dot power-up, bar sudden death. */
-export function MarkShape({ kind, color, hollow = false }: { kind: TimelineMarkKind; color: string; hollow?: boolean }) {
-  const fill = hollow ? 'none' : color;
-  const stroke = hollow ? color : 'var(--stone-0)';
-  const sw = hollow ? 1.6 : 1.1;
+/**
+ * Event shape, always solid with a dark outline that separates it from the track: diamond kill (a
+ * size up), downward wedge lost limb, dot big hit, four-point star power-up, bar sudden death.
+ */
+export function MarkShape({ kind, color }: { kind: TimelineMarkKind; color: string }) {
+  const stroke = 'var(--stone-0)';
+  const sw = 1.1;
   // Deaths are what people scrub for: the kill diamond is drawn a size up.
-  const size = kind === 'kill' ? 13 : 10;
+  const size = kind === 'kill' ? 13 : kind === 'pickup' ? 11 : 10;
   return (
     <svg className="tl-shape" width={size} height={size} viewBox="0 0 10 10" aria-hidden>
       {kind === 'kill' ? (
-        <path d="M5 .7 9.3 5 5 9.3.7 5z" fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M5 .7 9.3 5 5 9.3.7 5z" fill={color} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />
       ) : kind === 'dismember' ? (
-        <path d="M1 1.4h8L5 9z" fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M1 1.4h8L5 9z" fill={color} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />
       ) : kind === 'big_hit' ? (
-        <circle cx={5} cy={5} r={2.9} fill={fill} stroke={stroke} strokeWidth={sw} />
+        <circle cx={5} cy={5} r={3.1} fill={color} stroke={stroke} strokeWidth={sw} />
       ) : kind === 'pickup' ? (
-        <>
-          <circle cx={5} cy={5} r={3.7} fill="none" stroke={color} strokeWidth={1.4} />
-          {hollow ? null : <circle cx={5} cy={5} r={1.4} fill={color} />}
-        </>
+        <path d="M5 .6 6.3 3.7 9.4 5 6.3 6.3 5 9.4 3.7 6.3.6 5 3.7 3.7z" fill={color} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />
       ) : (
-        <rect x={2.6} y={0.9} width={4.8} height={8.2} rx={0.6} fill={fill} stroke={stroke} strokeWidth={sw} />
+        <rect x={2.6} y={0.9} width={4.8} height={8.2} rx={0.6} fill={color} stroke={stroke} strokeWidth={sw} />
       )}
     </svg>
   );

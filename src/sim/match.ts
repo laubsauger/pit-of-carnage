@@ -7,12 +7,13 @@
  *  3. light at each fighter, then perception (vision, hearing, memory)
  *  4. brains think, every THINK_EVERY_TICKS, staggered by fighter index
  *  5. steering (legs, torso, head, target velocity) from the latest decisions
- *  6. movement and collisions
- *  7. attacks (windup -> strike -> recovery), parry rolls, melee damage, shots fired
+ *  6. movement and collisions (every body stays inside the playable rectangle: the map, or the
+ *     closing wall)
+ *  7. attacks (windup -> strike -> recovery), parry rolls, melee damage, shots fired from the muzzle
  *  8. projectiles (swept, first hit), splash, shields
  *  9. skills
  * 10. kegs and amphoras broken this tick go off (chains included)
- * 11. hazards, then sudden-death damage
+ * 11. hazards, then the closing wall (contact push, spikes, crushing) and sudden-death damage
  * 12. shrines, pickups, spent ammo
  * 13. placements for this tick's deaths, then the end check (`match_end`): one squad left
  *     (elimination), the bell at the time limit (sudden death off), or the hard cap (sudden death
@@ -390,6 +391,17 @@ function place(ctx: SimCtx): void {
   if (ending === 'judges') {
     const judged = survivors.map((f) => ({ id: f.id, hpFraction: f.hp / f.maxHp, damageDealt: f.damageDealt, kills: f.kills }));
     ctx.events.push({ type: 'judges_decision', tick: state.tick, survivors: judged });
+  }
+  if (ending === 'elimination') {
+    // The last kill of this tick decided the match (GameEvent `kill.final`).
+    for (let i = ctx.events.length - 1; i >= 0; i--) {
+      const e = ctx.events[i]!;
+      if (e.tick !== state.tick) break;
+      if (e.type === 'kill') {
+        e.final = true;
+        break;
+      }
+    }
   }
   state.placements = [...state.fighters].sort((a, b) => a.place! - b.place!).map((f) => f.id);
   state.finished = true;

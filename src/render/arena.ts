@@ -7,6 +7,14 @@
  * Power-ups are worth a detour and must read from across the arena: a pedestal that is always
  * there, runes and a ring in the power-up's colour that fill up toward the respawn (pulsing through
  * the last second), and once it is back a floating charm that pops in, glows and lights the floor.
+ *
+ * The shrine says "heal here" at a glance: when ready its basin and heal cross throb with a
+ * heartbeat, a green wave rolls out on every beat and the floor around it glows green. A use drains
+ * it with a green burst; while it recharges the basin is dark and refills, the runes come back one
+ * by one and a ring fills (blinking through the last second); when it is ready again it pops.
+ *
+ * Hazards announce themselves: spike plates carry a ring of warning paint that flares red with the
+ * telegraph, and acid pools breathe thin toxic fumes.
  */
 
 import * as THREE from 'three/webgpu';
@@ -22,7 +30,7 @@ import { C, floorItemGeometry } from './parts';
 import { arcBand, circle, rect, roundRect, star, taperedCurve, transformPoly } from './poly';
 import type { Poly } from './poly';
 import { spikeCycle, spikeWarning } from './hazards';
-import type { QuadBatch } from './sprites';
+import { QuadBatch, smokeMaterial } from './sprites';
 
 const MAX_PROPS = 48;
 const MAX_HAZARDS = 48;
@@ -41,6 +49,15 @@ const PICKUP_HEX: Readonly<Record<PickupKind, number>> = { haste: 0x6fe3ff, bers
 const PICKUP_RING = 32;
 /** Seconds of the "about to respawn" pulse. */
 const PICKUP_URGENT = 1;
+const MAX_SHRINES = 8;
+/** Shrine recharge ring radius (px), just outside the stone. */
+const SHRINE_RING = 40;
+/** Seconds between a ready shrine's heartbeats. */
+const SHRINE_BEAT = 1.5;
+/** Shrine green (linear rgb): heal cross, waves, ring, floor light. */
+const SHRINE_RGB: readonly [number, number, number] = [0.25, 1.0, 0.55];
+/** Thin fume wisps over each acid pool at once. */
+const FUME_WISPS = 5;
 
 const H = {
   track: LAYER_HEIGHT.floor + 0.3,
@@ -49,6 +66,7 @@ const H = {
   hazard: LAYER_HEIGHT.props,
   spikes: LAYER_HEIGHT.props + 1,
   shrine: LAYER_HEIGHT.props,
+  fumes: LAYER_HEIGHT.props + 0.8,
   pedestal: LAYER_HEIGHT.props + 0.5,
   pickup: LAYER_HEIGHT.props + 1.5,
   prop: LAYER_HEIGHT.props + 3,
@@ -149,18 +167,28 @@ function firePitGeometry(): THREE.BufferGeometry {
   return buildCutout([{ poly: circle(0, 0, 34, 28), color: 0x241310 }, { poly: circle(0, 0, 24, 22), color: 0x6a1a08, slot: SLOT.glow, outline: 0 }, ...stones]);
 }
 
+/** Shrine stone: a domed plinth, a rune band and the dark basin (the glowing water is `shrineCoreGeometry`). */
 function shrineGeometry(): THREE.BufferGeometry {
-  const runes: { poly: Poly; color: number; slot: number; outline: number }[] = [];
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    runes.push({ poly: transformPoly(rect(-1.2, -3.2, 1.2, 3.2), Math.cos(a) * 28, Math.sin(a) * 28, a), color: 0x7dffb0, slot: SLOT.glow, outline: 0 });
-  }
   return buildCutout([
     { poly: circle(0, 0, 34, 32), color: 0x5a544c, dome: true },
     { poly: arcBand(0, 0, 24, 31, 0, Math.PI * 2, 32), color: 0x48433c, outline: 0 },
-    ...runes,
     { poly: circle(0, 0, 21, 28), color: 0x1f2a24, outline: 1.2 },
-    { poly: circle(0, 0, 14, 22), color: 0x7dffb0, slot: SLOT.glow, outline: 0 },
+  ]);
+}
+
+/** One shrine rune at the rune band's top (drawn eight times, rotated: they light up one by one). */
+function shrineRuneGeometry(): THREE.BufferGeometry {
+  return buildCutout([{ poly: rect(-3.2, -29.2, 3.2, -26.8), color: 0x7dffb0, slot: SLOT.glow, outline: 0 }]);
+}
+
+/** The basin's healing water with a heal cross: the part that throbs when ready and refills while recharging. */
+function shrineCoreGeometry(): THREE.BufferGeometry {
+  const bar = 3.2;
+  const arm = 10;
+  return buildCutout([
+    { poly: circle(0, 0, 17, 28), color: 0x46d987, slot: SLOT.glow, outline: 0 },
+    { poly: rect(-arm, -bar, arm, bar), color: 0xeafff2, slot: SLOT.glow, outline: 1 },
+    { poly: rect(-bar, -arm, bar, arm), color: 0xeafff2, slot: SLOT.glow, outline: 1 },
   ]);
 }
 
@@ -223,6 +251,8 @@ export class ArenaLayer {
   private readonly saw: PartBatch;
   private readonly firePit: PartBatch;
   private readonly shrine: PartBatch;
+  private readonly shrineRune: PartBatch;
+  private readonly shrineCore: PartBatch;
   private readonly haste: PartBatch;
   private readonly berserk: PartBatch;
   private readonly pedestals: Record<PickupKind, PartBatch>;
@@ -232,6 +262,7 @@ export class ArenaLayer {
   private readonly tracks: DynamicMesh;
   private readonly marks: DynamicMesh;
   private readonly acid: QuadBatch;
+  private readonly fumes: QuadBatch;
   private readonly style = newStyle();
   private readonly T = affine();
   private readonly T2 = affine();
@@ -244,6 +275,12 @@ export class ArenaLayer {
   private readonly spawnAge = new Float32Array(MAX_PICKUPS).fill(99);
   private readonly takenAge = new Float32Array(MAX_PICKUPS).fill(99);
   private pickupIds: string[] = [];
+  private shrineIds: string[] = [];
+  /** Game seconds since each shrine healed someone / became ready again (large = long ago). */
+  private readonly shrineUsed = new Float32Array(MAX_SHRINES).fill(99);
+  private readonly shrineBack = new Float32Array(MAX_SHRINES).fill(99);
+  /** Whether each shrine was ready last frame (-1 = unknown: after a reset nothing pops). */
+  private readonly shrineWasReady = new Int8Array(MAX_SHRINES).fill(-1);
 
   constructor(material: THREE.Material, acid: QuadBatch) {
     this.group.name = 'arena';
@@ -256,7 +293,9 @@ export class ArenaLayer {
     this.spikeGlow = mk('spike-glow', spikeGlowGeometry(), MAX_HAZARDS);
     this.saw = mk('saw', sawGeometry(), MAX_HAZARDS);
     this.firePit = mk('fire-pit', firePitGeometry(), MAX_HAZARDS);
-    this.shrine = mk('shrine', shrineGeometry(), 8);
+    this.shrine = mk('shrine', shrineGeometry(), MAX_SHRINES);
+    this.shrineRune = mk('shrine-rune', shrineRuneGeometry(), MAX_SHRINES * 8);
+    this.shrineCore = mk('shrine-core', shrineCoreGeometry(), MAX_SHRINES);
     this.haste = mk('pickup-haste', hasteGeometry(), 16);
     this.berserk = mk('pickup-berserk', berserkGeometry(), 16);
     this.pedestals = {
@@ -272,12 +311,14 @@ export class ArenaLayer {
     };
     this.batches = [
       this.keg, this.amphora, this.crate, this.spikePlate, this.spikes, this.spikeGlow, this.saw, this.firePit, this.shrine,
-      this.haste, this.berserk, this.pedestals.haste, this.pedestals.berserk, this.sconce, ...Object.values(this.items),
+      this.shrineRune, this.shrineCore, this.haste, this.berserk, this.pedestals.haste, this.pedestals.berserk, this.sconce, ...Object.values(this.items),
     ];
     this.tracks = new DynamicMesh('saw-tracks', 6 * 256);
     this.marks = new DynamicMesh('arena-marks', 6 * 2048, { emissive: 0.6 });
     this.acid = acid;
-    this.group.add(this.tracks.mesh, this.marks.mesh, ...this.batches.map((b) => b.mesh));
+    this.fumes = new QuadBatch('acid-fumes', smokeMaterial(), MAX_HAZARDS * FUME_WISPS);
+    this.fumes.mesh.renderOrder = 4;
+    this.group.add(this.tracks.mesh, this.marks.mesh, this.fumes.mesh, ...this.batches.map((b) => b.mesh));
     this.style.team.setRGB(1, 1, 1);
     this.style.skin.setRGB(1, 1, 1);
   }
@@ -316,6 +357,7 @@ export class ArenaLayer {
     this.propHp = map.props.map((p) => PROP_RULES[p.kind].hp);
     this.propJiggle = map.props.map(() => 0);
     this.pickupIds = map.pickups.map((p) => p.id);
+    this.shrineIds = map.shrines.map((s) => s.id);
     this.resetPickups();
   }
 
@@ -323,6 +365,9 @@ export class ArenaLayer {
   resetPickups(): void {
     this.spawnAge.fill(99);
     this.takenAge.fill(99);
+    this.shrineUsed.fill(99);
+    this.shrineBack.fill(99);
+    this.shrineWasReady.fill(-1);
   }
 
   /** Live events: a power-up popping onto its pedestal, or being taken off it. */
@@ -338,6 +383,10 @@ export class ArenaLayer {
         if (p.kind === e.kind && Math.hypot(p.pos.x - e.pos.x, p.pos.y - e.pos.y) < 1) this.takenAge[i] = 0;
       }
       light.flash(e.pos.x, e.pos.y, 140, 2.4, PICKUP_HEX[e.kind], 0.35);
+    } else if (e.type === 'heal' && e.shrineId !== null) {
+      const i = this.shrineIds.indexOf(e.shrineId);
+      if (i >= 0 && i < MAX_SHRINES) this.shrineUsed[i] = 0;
+      light.flash(e.pos.x, e.pos.y, 170, 3, 0x5dff9a, 0.45);
     }
   }
 
@@ -346,6 +395,7 @@ export class ArenaLayer {
     if (!map) return;
     for (const b of this.batches) b.begin();
     this.marks.begin();
+    this.fumes.begin();
     const st = this.style;
     const T = this.T;
     st.flash = 0;
@@ -393,14 +443,7 @@ export class ArenaLayer {
       this.drawHazard(h, i, time, fire, glow);
     }
 
-    // Shrines: runes glow when ready; a ring fills while recharging.
-    for (const s of state.shrines) {
-      const ready = s.cooldown <= 0;
-      const pulse = 0.75 + 0.25 * Math.sin(time * 3);
-      this.shrine.push(setFrame(T, s.pos.x, s.pos.y, 0, 1), H.shrine, st, ready ? 0.9 * pulse : 0.05);
-      if (ready) this.pushGlow(glow, s.pos.x, s.pos.y, 120, 0.15 * pulse, 0.5 * pulse, 0.3 * pulse, H.shrine + 0.6);
-      else this.progressRing(s.pos.x, s.pos.y, 37, 1 - s.cooldown / PICKUP_RULES.shrine.cooldownTicks, 0.4, 0.95, 0.65);
-    }
+    for (let i = 0; i < state.shrines.length && i < MAX_SHRINES; i++) this.drawShrine(state.shrines[i]!, i, time, gameDt, glow, light);
 
     // Power-up pedestals.
     for (let i = 0; i < state.pickups.length; i++) this.drawPickup(state.pickups[i]!, i, time, gameDt, glow, light);
@@ -418,6 +461,70 @@ export class ArenaLayer {
 
     for (const b of this.batches) b.end();
     this.marks.end();
+    this.fumes.end();
+  }
+
+  private drawShrine(s: WorldState['shrines'][number], i: number, time: number, gameDt: number, glow: QuadBatch, light: LightField): void {
+    const st = this.style;
+    const T = this.T;
+    const x = s.pos.x;
+    const y = s.pos.y;
+    const [r, g, b] = SHRINE_RGB;
+    const ready = s.cooldown <= 0;
+    const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - s.cooldown / PICKUP_RULES.shrine.cooldownTicks));
+    this.shrineUsed[i] = this.shrineUsed[i]! + gameDt;
+    this.shrineBack[i] = this.shrineBack[i]! + gameDt;
+    if (ready && this.shrineWasReady[i] === 0) this.shrineBack[i] = 0;
+    this.shrineWasReady[i] = ready ? 1 : 0;
+
+    this.shrine.push(setFrame(T, x, y, 0, 1), H.shrine, st);
+    // Runes come back one by one as it recharges; all lit when ready.
+    const lit = ready ? 8 : Math.floor(progress * 8);
+    for (let k = 0; k < 8; k++) {
+      const on = k < lit;
+      const glowK = ready ? 0.8 + 0.2 * Math.sin(time * 3 + k) : on ? 0.55 : 0.03;
+      this.shrineRune.push(setFrame(T, x, y, (k / 8) * Math.PI * 2, 1), H.shrine + 0.05, st, glowK);
+    }
+
+    if (ready) {
+      // Heartbeat: a quick double throb (lub-dub) every SHRINE_BEAT seconds.
+      const ph = (time % SHRINE_BEAT) / SHRINE_BEAT;
+      const lub = Math.exp(-((ph - 0.04) ** 2) / 0.0018);
+      const dub = 0.7 * Math.exp(-((ph - 0.17) ** 2) / 0.0018);
+      const beat = Math.max(lub, dub);
+      // Ready again after a recharge: an elastic pop.
+      const back = this.shrineBack[i]!;
+      const pop = back < 0.6 ? 1 + Math.exp(-back * 6) * Math.sin(back * 18) * 0.35 : 1;
+      this.shrineCore.push(setFrame(T, x, y, 0, (1 + 0.1 * beat) * pop), H.shrine + 0.1, st, 0.75 + 0.6 * beat);
+      this.pushGlow(glow, x, y, 130 + 30 * beat, r * (0.18 + 0.2 * beat), g * (0.18 + 0.2 * beat), b * (0.18 + 0.2 * beat), H.shrine + 0.6);
+      light.frameLight(x, y, 150, r * (0.5 + 0.4 * beat), g * (0.5 + 0.4 * beat), b * (0.5 + 0.4 * beat));
+      // A wave rolls out on every beat: "come and get it".
+      const w = ph / 0.7;
+      if (w < 1) this.arc(x, y, 36 + 48 * Math.sqrt(w), 0, Math.PI * 2, 3 * (1 - w) + 1, r, g, b, 0.45 * (1 - w) * (1 - w));
+      this.arc(x, y, SHRINE_RING, 0, Math.PI * 2, 2.5, r, g, b, 0.3 + 0.25 * beat);
+      if (back < 0.5) {
+        const t = back / 0.5;
+        this.arc(x, y, 34 + 70 * Math.sqrt(t), 0, Math.PI * 2, 5 * (1 - t) + 1, r, g, b, 0.9 * (1 - t));
+      }
+    } else {
+      // Recharging: the basin is dark and refills; the ring fills clockwise from the top.
+      this.shrineCore.push(setFrame(T, x, y, 0, 0.3 + 0.55 * progress), H.shrine + 0.1, st, 0.04 + 0.2 * progress * progress);
+      const secondsLeft = s.cooldown / TICK_HZ;
+      const blink = secondsLeft <= PICKUP_URGENT ? 0.5 + 0.5 * Math.sin(time * 26) : 0;
+      const top = -Math.PI / 2;
+      this.arc(x, y, SHRINE_RING, top, top + Math.PI * 2, 4, r * 0.3, g * 0.3, b * 0.3, 0.35);
+      this.arc(x, y, SHRINE_RING, top, top + Math.PI * 2 * progress, 4, r, g, b, 0.75 + 0.25 * blink);
+      const ha = top + Math.PI * 2 * progress;
+      this.pushGlow(glow, x + Math.cos(ha) * SHRINE_RING, y + Math.sin(ha) * SHRINE_RING, 18 + 10 * blink, r * 0.5, g * 0.5, b * 0.5, H.shrine + 1.3);
+    }
+
+    // A use drains it: a green burst rolls outward.
+    const used = this.shrineUsed[i]!;
+    if (used < 0.55) {
+      const t = used / 0.55;
+      this.arc(x, y, 30 + 90 * Math.sqrt(t), 0, Math.PI * 2, 7 * (1 - t) + 1, r, g, b, 0.95 * (1 - t));
+      this.pushGlow(glow, x, y, 160 * (1 - t * 0.5), r * 0.6 * (1 - t), g * 0.6 * (1 - t), b * 0.6 * (1 - t), H.shrine + 0.7);
+    }
   }
 
   private drawHazard(h: HazardState, i: number, time: number, fire: QuadBatch, glow: QuadBatch): void {
@@ -433,6 +540,7 @@ export class ArenaLayer {
         this.spikePlate.push(setFrame(T, h.pos.x, h.pos.y, 0, s), H.hazard, st);
         if (warn > 0) this.spikeGlow.push(setFrame(T, h.pos.x, h.pos.y, 0, s), H.hazard + 0.5, st, warn * warn * 1.5);
         if (h.active) this.spikes.push(setFrame(T, h.pos.x, h.pos.y, 0, s), H.spikes, st);
+        this.warningPaint(h.pos.x, h.pos.y, radius + 5, warn);
         break;
       }
       case 'saw': {
@@ -442,11 +550,13 @@ export class ArenaLayer {
       }
       case 'acid': {
         const life = h.ttl === null ? 1 : Math.min(1, h.ttl / 60);
+        const seed = (hashString(h.id) % 100) / 10;
         const k = this.acid.push(setFrame(T, h.pos.x, h.pos.y, 0, radius * 2.2), H.acid);
         if (k >= 0) {
-          this.acid.data[k] = (hashString(h.id) % 100) / 10;
+          this.acid.data[k] = seed;
           this.acid.data[k + 1] = life;
         }
+        this.acidFumes(h.pos.x, h.pos.y, radius * life, seed, time);
         break;
       }
       case 'fire': {
@@ -514,6 +624,43 @@ export class ArenaLayer {
     light.frameLight(x, y, 115, r * 0.9, g * 0.9, b * 0.9);
   }
 
+  /**
+   * Warning paint round a spike plate: amber and soot stripes that flare red as the trap is about to
+   * thrust (`warn` 0..1), so the danger reads before anyone steps on it.
+   */
+  private warningPaint(x: number, y: number, radius: number, warn: number): void {
+    const segs = 24;
+    const heat = warn * warn;
+    for (let k = 0; k < segs; k += 2) {
+      const a0 = (k / segs) * Math.PI * 2;
+      const a1 = ((k + 1) / segs) * Math.PI * 2;
+      this.marks.line(
+        x + Math.cos(a0) * radius, y + Math.sin(a0) * radius, x + Math.cos(a1) * radius, y + Math.sin(a1) * radius, 3.5, H.hazard - 0.2,
+        0.55 + 0.45 * heat, 0.32 * (1 - heat) + 0.06, 0.04, 0.45 + 0.45 * heat,
+      );
+    }
+  }
+
+  /** Thin toxic fumes over an acid pool: pale green wisps rising and drifting, each on its own clock. */
+  private acidFumes(x: number, y: number, radius: number, seed: number, time: number): void {
+    const T = this.T2;
+    for (let j = 0; j < FUME_WISPS; j++) {
+      const age = (time * 0.2 + j / FUME_WISPS + seed * 0.13) % 1;
+      const a = seed * 1.9 + j * 2.51;
+      const px = x + Math.cos(a) * radius * 0.45 + age * 18;
+      const py = y + Math.sin(a) * radius * 0.45 - age * 30;
+      const k = this.fumes.push(setFrame(T, px, py, a + age, radius * (0.3 + 0.4 * age)), H.fumes);
+      if (k < 0) return;
+      const d = this.fumes.data;
+      d[k] = 0.28;
+      d[k + 1] = 0.4;
+      d[k + 2] = 0.17;
+      d[k + 3] = 0.13 * Math.sin(Math.PI * age);
+      d[k + 4] = seed + j * 3.3;
+      d[k + 5] = age;
+    }
+  }
+
   /** Smooth ring arc from angle a0 to a1 (radians) on the marks layer. */
   private arc(x: number, y: number, radius: number, a0: number, a1: number, width: number, r: number, g: number, b: number, a: number): void {
     const segs = Math.max(2, Math.ceil((Math.abs(a1 - a0) / (Math.PI * 2)) * 48));
@@ -532,19 +679,6 @@ export class ArenaLayer {
     glow.data[k + 2] = b;
   }
 
-  /** Thin ring filling clockwise from the top (recharge progress). */
-  private progressRing(x: number, y: number, r: number, t: number, cr: number, cg: number, cb: number): void {
-    const segs = 32;
-    const fill = Math.max(0, Math.min(1, t));
-    for (let k = 0; k < segs; k++) {
-      const a0 = -Math.PI / 2 + (k / segs) * Math.PI * 2;
-      const a1 = -Math.PI / 2 + ((k + 1) / segs) * Math.PI * 2;
-      const on = (k + 1) / segs <= fill + 1e-6;
-      const a = on ? 0.55 : 0.12;
-      this.marks.line(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r, 2.4, H.shrine + 1.2, cr, cg, cb, a);
-    }
-  }
-
   private ownerColor(state: WorldState, ownerId: string | null): void {
     this.fighterColor.setRGB(0.55, 0.52, 0.48);
     if (ownerId === null) return;
@@ -560,5 +694,6 @@ export class ArenaLayer {
     for (const b of this.batches) b.dispose();
     this.tracks.dispose();
     this.marks.dispose();
+    this.fumes.dispose();
   }
 }

@@ -5,11 +5,11 @@
  * is deterministic, so tick N is always the same tick N).
  */
 
-import { PICKUP_RULES } from '../core';
+import { PICKUP_RULES, strategyKey } from '../core';
 import type { BrainFactory, FeedItem, GameEvent, Limb, Match, MatchConfig, MatchReport, TimelineMark, WorldState } from '../core';
 import { MatchRecorder } from '../gym';
 import { MAPS, announcements, createMatch, killLine } from '../sim';
-import { loadStrategy } from '../strategy';
+import { HOUSE_STACKS, loadStrategy } from '../strategy';
 
 /**
  * A hit at least this big gets a timeline mark. Measured with the house stacks: about 10 per
@@ -23,8 +23,11 @@ export const BIG_HIT_DAMAGE = 45;
  * the first invalid strategy, naming the fighter.
  */
 export function validatedConfig(config: MatchConfig): MatchConfig {
+  const house = new Set(HOUSE_STACKS.map(strategyKey));
   const entrants = config.entrants.map((e) => {
-    const r = loadStrategy(e.strategy, 'config');
+    // Malformed input still reaches the gate, which explains what is wrong with it.
+    const isHouse = typeof e.strategy === 'object' && e.strategy !== null && house.has(strategyKey(e.strategy));
+    const r = loadStrategy(e.strategy, isHouse ? 'house' : 'config');
     if (!r.strategy) {
       const first = r.errors[0];
       throw new Error(`${e.name} cannot fight: ${first ? `${first.path || '(top level)'}: ${first.message}` : 'invalid strategy'}.`);
@@ -99,7 +102,8 @@ export class MatchSession {
     const events = this._match.step();
     const state = this._match.state;
     if (!this._report) {
-      this.recorder.observe(events, state);
+      // Decisions tell a fighter that wants to move but cannot (stuck) from one standing still (idle).
+      this.recorder.observe(events, state, (id) => this._match.lastDecision(id));
       if (this._match.isOver) this._report = this.recorder.finish(this._match.result());
     }
     if (state.tick > this.maxTick) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import type { FighterState, WeaponId, WorldState } from '../core';
-import { FighterLayer } from './fighters';
+import { FighterLayer, inAcid } from './fighters';
 import { HIT_STOP_MAX, IMPACT_PROGRESS, hitSeverity } from './rig';
 import type { ShadowLayer } from './shadows';
 
@@ -18,7 +18,7 @@ function fighter(id: string, x: number, weapon: WeaponId): FighterState {
 }
 
 function world(...fighters: FighterState[]): WorldState {
-  return { fighters } as unknown as WorldState;
+  return { fighters, hazards: [] } as unknown as WorldState;
 }
 
 function layer(): FighterLayer {
@@ -90,5 +90,22 @@ describe('local hit-stop', () => {
     fl.resetHits();
     fl.update(s, s, 1, 0, 0, null, null);
     expect(fl.xs[0]).toBe(140);
+  });
+});
+
+// Acid must read as acid: a fighter goes green and sizzles exactly while the sim's acid can hurt it
+// (pool radius + 30% of the body radius), so the look never lies about who is taking acid damage.
+describe('acid soak', () => {
+  const pool = { id: 'acid-1', kind: 'acid', pos: { x: 400, y: 300 }, radius: 62, phase: 0, active: true, ttl: 300 } as const;
+  const fire = { id: 'fire-1', kind: 'fire', pos: { x: 100, y: 100 }, radius: 40, phase: 0, active: true, ttl: null } as const;
+
+  it('counts a body whose centre is within the pool plus the sim\'s body share', () => {
+    expect(inAcid(400, 300, 18, [pool])).toBe(true);
+    expect(inAcid(400 + 62 + 18 * 0.3 - 0.5, 300, 18, [pool])).toBe(true);
+    expect(inAcid(400 + 62 + 18 * 0.3 + 0.5, 300, 18, [pool])).toBe(false);
+  });
+
+  it('ignores every other hazard (fire pits do not turn anyone green)', () => {
+    expect(inAcid(100, 100, 18, [fire])).toBe(false);
   });
 });

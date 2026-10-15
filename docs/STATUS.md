@@ -1,88 +1,79 @@
 # Status
 
-Rewritten after every pass. Last update: 2026-10-15, after pass 1 (first playable version).
-Typecheck, 770 tests and the build pass; determinism holds on all four maps.
+Rewritten after every pass. Last update: 2026-10-15, after pass 2 (round framing, solid wall, blood
+as data, editor, rooms).
+Typecheck (`src` and `scripts`), 1136 tests and the build (also with `BASE_PATH=/pit-of-carnage/`)
+pass; determinism holds on all four maps (two seeds each, replayed and seeked; no `Math.random`).
 
 ## Built
 
 | Area | State |
 | --- | --- |
-| Sim | Deterministic 60 Hz sim, four maps, full combat (backpedal, plant-to-shoot, spread, point blank, lunge, interrupt, shields), fuzzy hearing, search, power-ups, hazards, props, stalemate trigger, escalation, judges' decision. |
-| Brain | Registry (82 sensors, 16 places, 7 zones, 6 move terms), expression compiler without eval, context steering, guard trips. |
-| Strategy gate | `loadStrategy` on configs, store, import, codes, gym and CLI; static analysis; JSON Schema published (and tested); `npm run lint:strategy`; fuzz tests; 15 starter behaviours; 13 house stacks. |
-| Gym | Worker batches, battle reports and findings, `reportToText`, openskill ratings and leaderboard, MAP-Elites evolution, balance harness writing `docs/BALANCE.md`. |
-| Render | WebGPU only; light field with 2D wall shadows; projected body, weapon and projectile shadows; cut-out fighters with local hit weight; exact visibility-polygon cones; fog-of-war knowledge visuals (ghosts, ripples, aim line); closing-wall visuals with warning band; kill-only shake; wheel zoom, drag pan, double-click follow, Reset camera. |
-| FX | Persistent carnage blood, GPU particles, exploding deaths, gibs (oozing where they land, in code but not yet reviewed), stump spurts and drips, colour-coded impacts (orbs in the caster's colour), damage numbers, kill stamps, rare small barks. |
-| Audio | Procedural cues, crowd and wall drone; starts on the first gesture; slow-motion pitch. Nobody has listened yet. |
-| UI | Watch HUD (scoreboard, clock, feed, timeline with colours, shapes, hover sentences, lanes and Back to live; inspector with "What it knows" and guard trips; hover card); View popover with persisted settings, shortcuts and toasts; match setup; end card; gym editor, import dialog with line and column, batch and evolve panes, Watch per match row; Room leaderboard; WebGPU-required message. |
-| Deploy | GitHub Pages workflow (test, build with `BASE_PATH`, deploy) on every push to `main`. |
+| Match flow | Splash with real loading stages, then "Enter the pit" (starts sound). Nothing simulates or sounds behind the splash. Every match opens with "3, 2, 1, FIGHT!" (2.4 s, sim held at tick 0, rings and sound per beat). The final kill gets ultra slow motion, the camera easing in and a WINNER stamp; the end card slides in after 3 s. Space or a click skips either beat. A gym match opened at a kill or death starts there with no countdown. |
+| Sim | Deterministic 60 Hz sim, four maps, full combat, fuzzy hearing, search, power-ups, hazards, props, stalemate trigger, escalation, judges. Solid closing wall: contact damage every tick, a push back in, crushing against walls, pillars and props (CRUSHED), and a test that nobody is ever outside it for more than a tick. Projectiles leave from the muzzle (staff tip, bow string, throwing hand). Acid slows. Shrine heals get a feed line. |
+| Brain, strategy gate | Registry, expression compiler, context steering, guard trips; `loadStrategy` everywhere; rulebook and LLM prompt describe the solid wall and the acid slow from `src/core/rules.ts`. |
+| Gym | Worker batches, battle reports and findings, `reportToText`, ratings, MAP-Elites evolution, balance harness. New: per-fighter stats (distance, accuracy, engaged rates, first contact, idle vs stuck, near walls, outside the zone, assists), heatmaps in words, habit findings, worst loss / best win / typical picks, paired "Compare two", the running job for the top-bar chip. |
+| Render | WebGPU only; light field; cut-out fighters; fog-of-war visuals; closing-wall visuals. New: camera framing inside the uncovered part of the canvas (view insets), map-object picking with corpses never picked, shrine heartbeat and recharge, spike warning ring, opaque churning acid with fighters sizzling green in it, staff tip in the caster's colour, projectiles drawn from the muzzle, a kill punch that stays calm at 4x, countdown rings, the long final-kill camera. Loads as its own chunk with three.js. |
+| FX | Blood stored as data with one gradient (no grey overlaps, dries toward maroon, red on every floor), impacts sized by damage, flying limbs that bleed and stumps that spurt for 4.6 s, kill stamps 40-60 px gone at 1.2 s, damage numbers and bark bubbles that never overlap or jump, heal bursts with "+N", sparks and blood on the wall, acid sizzle. |
+| Audio | Procedural cues; a crowd that breathes with the action, re-seeded every round, with sparse gasps, whistles, boos and chants; rebuilt impacts, reverb and a glue compressor; countdown beats, FIGHT, the final sting, a grind loop on the wall, CRUSHED. Levels measured offline. |
+| UI | Watch HUD with resizable, collapsible panes floating over the arena; colour-coded attributes and a taller chart; solid timeline marks; map-object hover cards; countdown and WINNER overlays; full-screen fighter overview (I) with a picture-in-picture arena; end card with strategy sheets for every fighter; top-bar jobs chip; gym Watch shortcuts, Watch at any kill or death, back to the same report row, stats grids, heatmaps, Compare two; Codex from the top bar, `?` and `#codex/<kind>/<word>` links. |
+| Strategy editor | CodeMirror 6 with highlighting and word badges, lint icons, underlines and tooltips with one-click fixes, hover cards for every word, slot-aware completion; a two-way visual builder (Visual / Split / Code); the Codex. |
+| Rooms | Peer-to-peer prototype over Trystero: 5-letter codes and invite links, a gated strategy pool, host-run back-to-back matches streamed to everyone, a room leaderboard, message checks and rate limits, host reopen and guest rejoin. Rooms play in the full arena ("Watch in the arena") with the same countdown, final moment and end card. |
+| Deploy | GitHub Pages workflow on every push to `main`. Main JS chunk 0.4 MB; renderer, CodeMirror, Codex and rooms load on demand. |
 
 ## Known issues
 
-- The closing wall is not solid: fighters can stand outside it, taking only periodic damage and a
-  4 px shove. No clamp, push, contact damage, crushing or test.
-- Projectiles spawn from the fighter's centre, not the weapon's muzzle.
-- Balance targets unmet (1 of 3 in `docs/BALANCE.md`): duels 3 of 15 in band; on the pit the melee
-  family wins 1.42x its fair share and ranged 0.51x (integrator's latest run: 1.38x and 0.55x);
-  melee/ranged DPS 1.07x against a 1.5-1.8x guideline. Across maps the warhammer wins 2.37x its share
-  and throwing axes 0.15x; guard-stance warhammer stacks won 18 of 30 pit matches. The user saw the
-  arcane staff dominate earlier.
-- Acid is a translucent green light, does too little damage and does not slow.
-- Blood: overlapping splats turn grey-black (user screenshot); drying changes only the wet sheen,
-  never the colour; blood barely shows on the dark Catacombs floor.
-- Kill stamps are big (13% of the view height) and stay 2.15 s.
-- Impacts are sized by weapon type, not by event; staff hits are too boomy.
-- Stump spurts last about 1 s; a flying limb does not spray in flight.
-- At 4x the kill punch tints the screen red (its red edge bleed).
-- The staff's tip glow is a fixed purple instead of the caster's spell colour.
-- The inspector covers the right side of the arena; camera framing ignores it.
-- Damage numbers of victims standing close together can overlap.
-- Bark bubbles jump when they dodge.
-- Timeline: the power-up mark is a ring, and lanes draw hollow marks, against the "solid marks" rule.
-- Audio never listened to. The user finds the crowd murmur too loud, constant and identical every
-  round (the babble is generated once per audio context, not per round).
-- GPU frame time and 60 fps with 16 fighters never measured.
-- The main JS chunk is 1.66 MB with no code splitting.
-- Gate source labels are off: the editor passes `paste` (there is no `editor` source), gym batches
-  label candidates and field `evolution`, and house stacks never use `house`.
-- `headlessBrainFactory` exists twice (`src/strategy/load.ts`, `src/gym/runner.ts`).
-- `src/gym/balance.ts` writes "Targets come from the build spec" into `docs/BALANCE.md`; it should
-  point to `docs/SPEC.md` ("Balance: ranged vs melee").
+- Balance: 1 of 3 targets hold (`docs/BALANCE.md`, regenerated after the sim landed). Duels in band:
+  5 of 15 (twin daggers win 98% against throwing axes and 95% against the staff). On the pit melee
+  wins 1.44x its fair share, ranged 0.49x; melee/ranged DPS 1.07x against a 1.5-1.8x guideline.
+  Across maps the warhammer wins 2.55x its share, the staff 1.76x, throwing axes 0.16x. The core
+  balance pass did not run in pass 2. Staff orbs now start at the tip (about 80 px ahead) and hit
+  anyone inside that reach, so the staff got a little stronger up close. Acid damage is unchanged.
+- Nobody has listened to the audio; every judgement so far comes from offline measurements.
+- GPU frame time and 60 fps with 16 fighters are still unmeasured.
+- Victory moment: no winner pose, spotlight or dimming yet, and the crowd keeps murmuring on the end
+  card.
+- "Next match" restarts from the saved setup, so a fighter brought in from the gym drops out.
+- Ratings still show a bare "?" for provisional ones.
+- Watch on an evolution archive entry plays a fresh match against the run's field, not the
+  generation's own match (generation reports do not record their matches).
+- Fighter overview: the target-score column needs per-enemy scores no `Decision` carries; damage by
+  source appears only once the battle report exists.
+- Rooms: the inspector has no decisions or knowledge for a streamed match; a guest who joins
+  mid-match sees no earlier gore; no TURN relay; tested only with two tabs on one machine; a streamed
+  match has no battle report, so its end card cannot copy one; no reveal setting.
+- Editor: numbers scrub only in the visual builder; behaviours and move terms cannot be reordered;
+  no "New fighter with an LLM" / "Improve this with an LLM" buttons; saves record their origin but
+  not their parent; the editor's side panel has no resize handle.
+- The Codex is not linked from map-object cards, inspector rows or attribute charts.
+- Watch panels float over the canvas and report insets instead of resizing it (see DECISIONS); the
+  user has not confirmed this reading of the spec.
+- Contracts outside `src/core`: `GymApi` has no `compare` (the UI feature-detects the gym's
+  `GymService`), the compare types live in `src/gym`, and `MatchStream` plus `watchStream` live in
+  `src/net/watch.ts` (feature-detected by `canWatchStreams`). The muzzle offsets (`src/sim/combat.ts`)
+  and the acid reach share (`src/render/fighters.ts`) mirror other modules by hand.
+- Wall deaths credit nobody (the `CREDIT_WINDOW_TICKS` comment says hazards or the wall; the code
+  credits hazards only). The wall does not break the props it passes over.
+- The keg blast's dust ring reads as grey haze on stone floors.
+- The renderer chunk (three.js included) is 0.98 MB.
 
 ## Next
 
-Pass 2, in priority order:
+Pass 3, in priority order:
 
-1. Solid closing wall: clamp, push, contact damage, crushing with a CRUSHED stamp, and the
-   "never outside for more than one tick" test.
-2. Core balance and expressiveness pass with the harness: arcane staff first, then every weapon,
-   skill, formula and hazard (acid damage and slow); projectiles from the muzzle; more skills and
-   per-build traits; decide on bleed; keep the meta open. Write the analysis into `docs/BALANCE.md`.
-3. Blood and impacts: blood stored as density and age with one gradient (no grey overlaps, drying
-   toward maroon, readable on dark floors); impacts sized by event; kill stamps smaller and gone in
-   about 1.2 s; dismemberment spray from both pieces and longer stump bleeding; acid look; staff tip
-   colour; no red kill punch at 4x; damage-number and bark-bubble overlap fixes.
-4. Audio: listen to it; make the crowd quieter, driven by intensity, seeded per round, with sparse
-   reactions.
-5. Match framing: round-start countdown, final-kill ultra slow motion with a WINNER stamp, end card
-   after about 3 s that slides in from the side.
-6. Inspection: camera framing that respects the inspector; full-screen fighter overview (key I);
-   click any fighter on the end card for its strategy sheet.
-7. Gym: Watch from evolution entries, "worst loss / best win / typical", jump to a kill or death,
-   pre-filtered timeline, back to the gym; richer per-fighter stats, heatmaps, side-by-side compare.
-8. Strategy editor: CodeMirror 6 with lint tooltips and registry autocompletion and hover docs; then
-   the two-way visual builder, highlighting with word chips, hover cards and the Codex.
-9. Layout: resizable, collapsible panes; colour-coded attributes and a taller attribute chart; solid
-   timeline marks.
-10. Performance: measure GPU frame time and 60 fps with 16 fighters; split the main chunk.
-11. Cleanups: an `editor` gate source and correct labels, one `headlessBrainFactory`, the BALANCE.md
-    spec reference.
-12. Shipped roster: `npm run roster` selecting the 16 house strategies and writing `docs/ROSTER.md`
-    (after the balance pass).
-13. Peer-to-peer rooms prototype (Trystero, host-authoritative).
-14. First impression: splash and loading screen with real progress, "Enter the pit" (starts audio),
-    favicons and share tags; shrine and map-object readability with hover cards; no hover cards on
-    dead fighters; a top-bar chip for running evolutions and batches.
+1. Core balance and expressiveness pass with the harness: staff, daggers and axes first, the bow's
+   ammo economy (stuck arrows), acid damage, more skills or per-build perks, a decision on bleed;
+   keep the meta open. Then `npm run tune` and the shipped roster (`npm run roster`, `docs/ROSTER.md`).
+2. Listen to the audio with the user and tune it; the victory moment (pose, spotlight, quiet end card).
+3. Performance: measure GPU frame time with 16 fighters and fix what it shows.
+4. Lineup and library: "Next match" keeps the lineup, Quick matchup, versions with parents and
+   history, the two LLM buttons.
+5. Viewing: the cinematic view, Codex links from every card, the rating display, the editor panel
+   handle, scrubbing in the code view.
+6. Rooms: decisions and knowledge in the stream, gore history for late joiners, a TURN option, the
+   reveal setting, a test across two machines.
+7. Contract cleanups: `GymApi.compare` and the compare types in `src/core`; `MatchStream` and
+   `watchStream` in the controller contract; one muzzle table and one acid reach in `src/core`.
 
 ## Later
 

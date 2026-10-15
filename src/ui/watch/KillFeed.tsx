@@ -34,7 +34,17 @@ export function KillFeed({ controller, snap, shifted, onLink }: Props) {
             <span>
               {segmentFeedText(item.text, snap.fighters, item.ids).map((seg, i) =>
                 seg.id ? (
-                  <b key={i} style={{ color: seg.color }}>
+                  // Names inspect: the dead stay reachable from here even though the arena no longer picks them.
+                  <b
+                    key={i}
+                    className="feed-name"
+                    style={{ color: seg.color }}
+                    title={`Inspect ${seg.text}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      controller.select(seg.id ?? null);
+                    }}
+                  >
                     {seg.text}
                   </b>
                 ) : (

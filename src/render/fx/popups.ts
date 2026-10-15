@@ -1,9 +1,12 @@
 // Owned by: render-fx
 /**
- * Kill stamps (Bangers, blood-red with an ink outline, slammed in with an elastic overshoot) and
- * bark speech bubbles that follow their speaker. Each popup is a pooled canvas texture on a floor-
- * facing quad, redrawn only when reused. Popups keep a constant size on screen whatever the camera
- * zoom, and never cover each other: newer ones step aside.
+ * Kill stamps (Bangers, blood-red with an ink outline) and bark speech bubbles that follow their
+ * speaker. Each popup is a pooled canvas texture on a floor-facing quad, redrawn only when reused.
+ * Popups keep a constant size on screen whatever the camera zoom, and never cover each other: newer
+ * ones glide aside (eased, never a jump).
+ *
+ * Kill stamps (stampLayout.ts, easing.ts): small, a little above the kill spot, an elastic pop, then
+ * they shrink and float up while fading, gone by about 1.2 s; several stack upward.
  *
  * Barks are small and rare (see barks.ts): at most `BARK_RULES.maxVisible` bubbles, about five
  * words, gone in `BARK_RULES.visibleSeconds`, sitting above the speaker's name tag and stepping up
@@ -15,20 +18,23 @@ import { BARK_RULES, LAYER_HEIGHT } from '../../core';
 import type { FighterState, WorldState } from '../../core';
 import { liftClear, pickBarkSlot, tagBox, tagStackPx, truncateBark } from './barks';
 import type { Box } from './barks';
-import { barkDuration, barkEnvelope, stampDuration, stampEnvelope } from './easing';
+import { barkDuration, barkEnvelope, glideUp, stampDuration, stampEnvelope } from './easing';
 import { FixedPool } from './pool';
 import type { Pooled } from './pool';
 import { floorQuad } from './quads';
+import { STAMP, stackStamps, stampHeightPx } from './stampLayout';
 
 const FONT = 'Bangers, Impact, "Arial Black", sans-serif';
 const INK = '#130908';
 
-/** Kill stamp height as a fraction of the visible world height (big: readable at 1x on any screen). */
-const STAMP_SCREEN = 0.13;
 /** Bark quad height in CSS px (the bubble itself is a bit smaller, the tail sits below it). */
 const BARK_PX = 46;
 /** Gap (CSS px) between a bubble and what it dodges. */
 const BARK_GAP = 3;
+/** How fast a placed bubble glides to a new spot (1/s, exponential). */
+const DODGE_RATE = 14;
+/** How fast a stamp glides up out of the way of an older one floating up under it. */
+const STACK_RATE = 30;
 
 type Popup = Pooled & {
   mesh: THREE.Mesh;
@@ -53,6 +59,10 @@ type Popup = Pooled & {
   cy: number;
   hw: number;
   hh: number;
+  /** How far it has been lifted above its own spot to dodge (world units), eased; < 0 = not placed yet. */
+  lift: number;
+  /** Kill stamp placed under its kill spot (no room above it near the top of the map). */
+  below: boolean;
 };
 
 function makePopup(w: number, h: number, order: number): Popup {
@@ -74,7 +84,7 @@ function makePopup(w: number, h: number, order: number): Popup {
   mesh.name = 'fx-popup';
   return {
     active: false, serial: 0, mesh, mat, tex, ctx, aspect: w / h, contentW: 1, contentH: 1, t: 0, dur: 1,
-    x: 0, y: 0, tilt: 0, fighterId: '', placed: false, cx: 0, cy: 0, hw: 0, hh: 0,
+    x: 0, y: 0, tilt: 0, fighterId: '', placed: false, cx: 0, cy: 0, hw: 0, hh: 0, lift: -1, below: false,
   };
 }
 
@@ -210,6 +220,10 @@ function obstacle(i: number): Box {
   while (obstacles.length <= i) obstacles.push({ cx: 0, cy: 0, hw: 0, hh: 0 });
   return obstacles[i];
 }
+/** Reused stamp boxes (active stamps, oldest first) and their popups. */
+const stampBoxes: Box[] = [];
+const stampOrder: Popup[] = [];
+const stampBelow: boolean[] = [];
 
 export class Popups {
   readonly group = new THREE.Group();
@@ -235,7 +249,7 @@ export class Popups {
     this.mapH = h;
   }
 
-  /** Slam a kill stamp at world (x, y). `text` is the sim's 1-3 word title. */
+  /** Pop a kill stamp above world (x, y), the kill spot. `text` is the sim's 1-3 word title. */
   stamp(text: string, x: number, y: number): void {
     const p = this.stamps.acquire();
     drawStamp(p, text.toUpperCase());
@@ -243,8 +257,10 @@ export class Popups {
     p.dur = stampDuration();
     p.x = x;
     p.y = y;
-    p.tilt = (Math.random() - 0.5) * 0.22;
+    p.tilt = (Math.random() - 0.5) * 0.16;
     p.fighterId = '';
+    p.lift = -1;
+    p.below = false;
   }
 
   /**
@@ -264,17 +280,18 @@ export class Popups {
     p.y = y;
     p.tilt = 0;
     p.fighterId = fighterId;
+    p.lift = -1;
     return true;
   }
 
   /**
-   * Advance and place popups. `px` is world units per CSS px (constant on-screen sizes);
-   * `nameTags` says whether tags are drawn, so bubbles know how high the tag stack is.
+   * Advance and place popups. `px` is world units per CSS px (constant on-screen sizes), `viewPx`
+   * the view height in CSS px; `nameTags` says whether tags are drawn, so bubbles know how high the
+   * tag stack is.
    */
-  update(dt: number, state: WorldState, camera: THREE.Camera, px: number, nameTags: boolean): void {
-    const visH = camera instanceof THREE.OrthographicCamera ? (camera.top - camera.bottom) / camera.zoom : this.mapH;
+  update(dt: number, state: WorldState, px: number, viewPx: number, nameTags: boolean): void {
     this.placeBarks(dt, state, px, nameTags);
-    this.placeStamps(dt, visH * STAMP_SCREEN);
+    this.placeStamps(dt, state, px, viewPx, nameTags);
   }
 
   private placeBarks(dt: number, state: WorldState, px: number, nameTags: boolean): void {
@@ -311,9 +328,12 @@ export class Popups {
       box.hw = (w * p.contentW) / 2;
       box.hh = (h * p.contentH) / 2;
       box.cx = clampTo(p.x, box.hw + 4, this.mapW - box.hw - 4);
-      box.cy = p.y - radius - tagStackPx(nameTags) * px - gap - box.hh;
+      const rest = p.y - radius - tagStackPx(nameTags) * px - gap - box.hh;
+      box.cy = rest;
       liftClear(box, obstacles, n, gap);
-      box.cy = Math.max(box.cy, box.hh + 4);
+      // Placed bubbles stay put; when something moves into them they glide up, never jump.
+      p.lift = glideUp(p.lift, rest - box.cy, dt, DODGE_RATE);
+      box.cy = Math.max(rest - p.lift, box.hh + 4);
       n++;
       // The quad's bottom is the content's bottom: the tail points down at the speaker.
       const s = Math.max(0.001, env.scale);
@@ -326,9 +346,11 @@ export class Popups {
     for (const p of this.barks) if (!p.active) p.mesh.visible = false;
   }
 
-  private placeStamps(dt: number, worldH: number): void {
-    const items = this.stamps.items;
-    for (const p of items) {
+  private placeStamps(dt: number, state: WorldState, px: number, viewPx: number, nameTags: boolean): void {
+    const h = stampHeightPx(viewPx) * px;
+    const gap = STAMP.gapPx * px;
+    let n = 0;
+    for (const p of this.stamps.items) {
       if (!p.active) {
         p.mesh.visible = false;
         continue;
@@ -339,33 +361,68 @@ export class Popups {
         p.mesh.visible = false;
         continue;
       }
+      // Oldest first (insertion sort by serial; at most a handful of stamps).
+      let i = n++;
+      while (i > 0 && stampOrder[i - 1].serial > p.serial) {
+        stampOrder[i] = stampOrder[i - 1];
+        i--;
+      }
+      stampOrder[i] = p;
+    }
+    if (n === 0) return;
+    // Living fighters' tags first (stamps must not cover them), then the stamps, oldest first.
+    let tags = 0;
+    for (const f of state.fighters) {
+      if (!f.alive) continue;
+      while (stampBoxes.length <= tags) stampBoxes.push({ cx: 0, cy: 0, hw: 0, hh: 0 });
+      tagBox(stampBoxes[tags++], f.pos.x, f.pos.y, f.radius, f.name, nameTags, px);
+    }
+    while (stampBoxes.length < tags + n) stampBoxes.push({ cx: 0, cy: 0, hw: 0, hh: 0 });
+    const top = h / 2 + 4;
+    const place = (): void => {
+      for (let i = 0; i < n; i++) {
+        const p = stampOrder[i];
+        stampEnvelope(env, p.t);
+        const box = stampBoxes[tags + i];
+        box.hw = (h * p.aspect * p.contentW) / 2;
+        box.hh = h / 2;
+        box.cx = clampTo(p.x, box.hw + 4, this.mapW - box.hw - 4);
+        // Above the kill spot, never on the body; floats up as it fades (down when it sits below).
+        // Stacking uses the full-size box, so the elastic pop does not shove its neighbours around.
+        const drift = env.rise * STAMP.risePx * px;
+        box.cy = p.below ? p.y + STAMP.offsetPx * px + h / 2 + drift : p.y - STAMP.offsetPx * px - h / 2 - drift;
+        p.cy = box.cy;
+        stampBelow[i] = p.below;
+      }
+      stackStamps(stampBoxes, tags, tags + n, gap, stampBelow);
+    };
+    place();
+    // A new stamp with no room above it (near the top of the map) goes under its kill spot for good.
+    let flipped = false;
+    for (let i = 0; i < n; i++) {
+      const p = stampOrder[i];
+      if (p.lift < 0 && !p.below && stampBoxes[tags + i].cy < top) {
+        p.below = true;
+        flipped = true;
+      }
+    }
+    if (flipped) place();
+    for (let i = 0; i < n; i++) {
+      const p = stampOrder[i];
+      const box = stampBoxes[tags + i];
       stampEnvelope(env, p.t);
-      const h = worldH;
-      const w = h * p.aspect;
-      const hw = (w * p.contentW) / 2;
-      const cx = clampTo(p.x, hw + 4, this.mapW - hw - 4);
-      const cy = clampTo(p.y - h * 0.75 - env.rise * h * 0.35, h / 2 + 4, this.mapH - h / 2 - 4);
-      p.cx = cx;
-      p.cy = cy;
-      p.hw = hw;
-      p.hh = h / 2;
+      // Moved out of the way by stacking: glide there, then stay put.
+      p.lift = glideUp(p.lift, Math.abs(p.cy - box.cy), dt, STACK_RATE);
+      const cy = clampTo(p.below ? p.cy + p.lift : p.cy - p.lift, top, this.mapH - h / 2 - 4);
       const s = Math.max(0.001, env.scale);
+      p.cx = box.cx;
+      p.hw = box.hw;
+      p.hh = box.hh;
       p.mesh.visible = env.alpha > 0.001;
-      p.mesh.position.set(cx, LAYER_HEIGHT.popups + 1, cy);
-      p.mesh.scale.set(w * s, 1, h * s);
+      p.mesh.position.set(box.cx, LAYER_HEIGHT.popups + 1, cy);
+      p.mesh.scale.set(h * p.aspect * s, 1, h * s);
       p.mesh.rotation.y = p.tilt;
       p.mat.opacity = env.alpha;
-    }
-    // Newer stamps step up out of the way of older ones (a double kill shows both).
-    for (const a of items) {
-      if (!a.active) continue;
-      for (const b of items) {
-        if (b === a || !b.active || b.serial <= a.serial) continue;
-        if (Math.abs(a.cx - b.cx) < a.hw + b.hw && Math.abs(a.cy - b.cy) < a.hh + b.hh) {
-          b.cy = a.cy - (a.hh + b.hh) * 0.95;
-          b.mesh.position.z = b.cy;
-        }
-      }
     }
   }
 

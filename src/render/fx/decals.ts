@@ -1,10 +1,16 @@
 // Owned by: render-fx
 /**
- * Paints persistent gore into the floor decal target. The target holds a multiply colour for the
- * floor (white = clean) and gore coverage in alpha (the floor reads it as wetness). Stamps queued
- * during a frame are drawn as instanced quads with the procedural masks in one pass. Each stamp is
- * a transmittance multiplied into the target (see `decalShade`), so blood builds up like a real
- * absorbing film: a single spray stays bright red, pools and trampled areas darken to maroon.
+ * Paints persistent gore into the floor decal target as data, never as colour. A texel holds:
+ *
+ * - r = exp(-D): D is the blood density there (0 none, ~1 a spray, 4+ a trampled pool),
+ * - g = exp(-W): W the wet part of it (drying moves g back toward 1),
+ * - b = exp(-T): T the tone-weighted density (tone = T / D: 1 arterial spray, 0.4 pooled),
+ * - a = soot from scorch marks (0..1).
+ *
+ * Cleared, the target is (1, 1, 1, 0): no blood, no soot. Blood stamps multiply their
+ * transmittance in (`DstColor x src`), so densities add up exactly wherever stamps overlap, with no
+ * colour decision made here. The floor maps the data through one blood gradient (goreFloor.ts):
+ * overlapping blood only ever gets deeper red, never grey or black.
  *
  * Decal space: an orthographic camera spans [0, floorSize.x] x [0, floorSize.y] with world y = 0 at
  * the top of the target, so the floor shader reads world (x, y) at
@@ -12,9 +18,8 @@
  * y = 0 at the bottom the gore came out mirrored). The flip reverses triangle winding, so every
  * decal material is double-sided.
  *
- * Curing: after every batch of stamps (and every `DRYING.interval` otherwise) one full-target quad
- * clamps the colour up to `GORE_FLOOR` (max blending), so overlapping blood ends as deep maroon
- * instead of black, and dries the wetness in alpha (`DRYING.wetHalfLife`). Blood never fades.
+ * Drying: every `DRYING.interval` of game time one full-target quad moves the wet channel toward
+ * dry (`DRYING.wetHalfLife`). Blood never fades.
  */
 
 import * as THREE from 'three/webgpu';
@@ -22,24 +27,37 @@ import { cos, float, instanceIndex, positionLocal, select, sin, uniform, uv, var
 import type { Vec2 } from '../../core';
 import { InstanceBuffers } from './instances';
 import { DECAL, decalShade } from './masks';
-import { DRYING, GORE_FLOOR, dryFraction } from './palette';
+import { DRYING, dryFraction } from './palette';
 
-
-/**
- * Decal blending: colour = target x stamp transmittance; alpha = coverage union (blood) or the
- * target's coverage reduced by the stamp's (scorch dries blood out).
- */
-export function useDecalBlend(m: THREE.Material, dries = false): void {
+function decalMaterialBase(m: THREE.Material): void {
   m.transparent = true;
   m.depthTest = false;
   m.depthWrite = false;
   m.blending = THREE.CustomBlending;
   m.blendEquation = THREE.AddEquation;
+  m.blendEquationAlpha = THREE.AddEquation;
+}
+
+/** Blood: rgb = target x stamp transmittance (densities add up); soot in alpha untouched. */
+export function useBloodBlend(m: THREE.Material): void {
+  decalMaterialBase(m);
   m.blendSrc = THREE.DstColorFactor;
   m.blendDst = THREE.ZeroFactor;
-  m.blendEquationAlpha = THREE.AddEquation;
-  m.blendSrcAlpha = dries ? THREE.ZeroFactor : THREE.OneFactor;
-  m.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+  m.blendSrcAlpha = THREE.ZeroFactor;
+  m.blendDstAlpha = THREE.OneFactor;
+}
+
+/**
+ * Drying (scorch marks and the drying pass): rgb = target + src x (1 - target), so a shader output
+ * of (0, k, 0) moves the wet channel a fraction k toward 1 and leaves density and tone alone. Alpha
+ * is a union of soot when `soot` is set, else untouched.
+ */
+export function useDryBlend(m: THREE.Material, soot: boolean): void {
+  decalMaterialBase(m);
+  m.blendSrc = THREE.OneMinusDstColorFactor;
+  m.blendDst = THREE.OneFactor;
+  m.blendSrcAlpha = soot ? THREE.OneFactor : THREE.ZeroFactor;
+  m.blendDstAlpha = soot ? THREE.OneMinusSrcAlphaFactor : THREE.OneFactor;
 }
 
 export class DecalPainter {
@@ -48,13 +66,13 @@ export class DecalPainter {
   readonly capacity: number;
   private readonly data: InstanceBuffers;
   private readonly meshes: THREE.Mesh[];
-  /** Full-target quad that resets the target to white with zero coverage. */
+  /** Full-target quad that resets the target to (1, 1, 1, 0): no blood, no soot. */
   private readonly clearScene = new THREE.Scene();
   private readonly clearMesh: THREE.Mesh;
-  /** Full-target quad drawn last in every pass: clamps colour to GORE_FLOOR, dries wetness. */
+  /** Full-target quad drawn last when a drying step is due. */
   private readonly cureMesh: THREE.Mesh;
   private readonly dryU = uniform(0);
-  /** Game seconds since the last cure pass. */
+  /** Game seconds since the last drying step. */
   private sinceCure = 0;
   private target: THREE.RenderTarget;
   private n = 0;
@@ -69,7 +87,7 @@ export class DecalPainter {
     this.camera.updateMatrixWorld();
     this.camera.updateProjectionMatrix();
 
-    // A: x, y, angle, kind | B: half length, half width, seed, wet | C: linear rgb, alpha
+    // A: x, y, angle, kind | B: half length, half width, seed, wet | C: density, tone, -, -
     this.data = new InstanceBuffers(capacity, 3);
     const [A, B, C] = this.data.nodes;
     const a = A.element(instanceIndex);
@@ -84,14 +102,13 @@ export class DecalPainter {
       kind: varying(a.w),
       seed: varying(b.z),
       wet: varying(b.w),
-      angle: varying(a.z),
-      color: varying(vec3(c.x, c.y, c.z)),
-      alpha: varying(float(c.w)),
+      tone: varying(c.y),
+      density: varying(c.x),
     });
 
-    // Two passes over the same stamps, both multiplying their transmittance into the colour. Blood
-    // adds coverage to the target's alpha (wetness); scorch dries out what it burns (alpha shrinks).
-    // Each pass collapses the other pass's stamps to zero size, so nothing is shaded twice.
+    // Two passes over the same stamps with different blending: blood multiplies its data in, scorch
+    // adds soot and dries what it burns. Each pass collapses the other pass's stamps to zero size,
+    // so nothing is shaded twice.
     const layer = (scorch: boolean): THREE.Mesh => {
       const keep = scorch ? select(isScorch, float(1), float(0)) : select(isScorch, float(0), float(1));
       const local = vec2(corner.x.mul(b.x), corner.y.mul(b.y)).mul(keep);
@@ -99,7 +116,8 @@ export class DecalPainter {
       const mat = new THREE.MeshBasicNodeMaterial();
       mat.lights = false;
       mat.side = THREE.DoubleSide;
-      useDecalBlend(mat, scorch);
+      if (scorch) useDryBlend(mat, true);
+      else useBloodBlend(mat);
       mat.positionNode = vec3(a.x.add(world.x), a.y.add(world.y), 0);
       mat.fragmentNode = shade;
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
@@ -114,7 +132,7 @@ export class DecalPainter {
     this.meshes = [layer(false), layer(true)];
 
     // renderer.clear() premultiplies the clear colour by alpha when the canvas has alpha, which
-    // would turn "white, no coverage" into black, so the target is reset by drawing instead.
+    // would turn "(1, 1, 1, 0)" into black, so the target is reset by drawing instead.
     const cmat = new THREE.MeshBasicNodeMaterial();
     cmat.lights = false;
     cmat.side = THREE.DoubleSide;
@@ -126,26 +144,17 @@ export class DecalPainter {
     this.clearMesh.frustumCulled = false;
     this.clearScene.add(this.clearMesh);
 
-    // Cure: colour = max(target, GORE_FLOOR) (min/max blending requires factors of one); alpha =
-    // target alpha x (1 - dry).
+    // Drying step: the wet channel moves `dry` of the way toward 1 (see useDryBlend).
     const umat = new THREE.MeshBasicNodeMaterial();
     umat.lights = false;
     umat.side = THREE.DoubleSide;
-    umat.transparent = true;
-    umat.depthTest = false;
-    umat.depthWrite = false;
-    umat.blending = THREE.CustomBlending;
-    umat.blendEquation = THREE.MaxEquation;
-    umat.blendSrc = THREE.OneFactor;
-    umat.blendDst = THREE.OneFactor;
-    umat.blendEquationAlpha = THREE.AddEquation;
-    umat.blendSrcAlpha = THREE.ZeroFactor;
-    umat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-    umat.fragmentNode = vec4(GORE_FLOOR.r, GORE_FLOOR.g, GORE_FLOOR.b, this.dryU);
+    useDryBlend(umat, false);
+    umat.fragmentNode = vec4(0, this.dryU, 0, 0);
     this.cureMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), umat);
     this.cureMesh.frustumCulled = false;
     this.cureMesh.renderOrder = 10;
-    this.cureMesh.name = 'fx-decal-cure';
+    this.cureMesh.visible = false;
+    this.cureMesh.name = 'fx-decal-dry';
     this.scene.add(this.cureMesh);
     this.setFloorSize(floorSize);
   }
@@ -169,12 +178,13 @@ export class DecalPainter {
   }
 
   /**
-   * Queue a stamp. `halfLen` runs along `angle`, `halfWid` across it (px). Colour is the linear
-   * multiply colour; `wet` 0..1 drives the gloss highlight.
+   * Queue a stamp. `halfLen` runs along `angle`, `halfWid` across it (px). `density` is the blood
+   * laid down at mid thickness (1 = a normal spray; for scorch, its strength 0..1), `wet` the wet
+   * share 0..1 and `tone` 0..1 (1 = bright arterial spray, 0.4 = dark pooled blood).
    */
   stamp(
     kind: number, x: number, y: number, angle: number, halfLen: number, halfWid: number,
-    r: number, g: number, b: number, alpha: number, wet: number, seed = Math.random() * 97,
+    density: number, wet: number, tone: number, seed = Math.random() * 97,
   ): void {
     if (this.n >= this.capacity - 1) {
       this.dropped++;
@@ -192,24 +202,27 @@ export class DecalPainter {
     B[i + 1] = halfWid;
     B[i + 2] = seed;
     B[i + 3] = wet;
-    C[i] = r;
-    C[i + 1] = g;
-    C[i + 2] = b;
-    C[i + 3] = alpha;
+    C[i] = density;
+    C[i + 1] = tone;
+    C[i + 2] = 0;
+    C[i + 3] = 0;
     this.n++;
   }
 
   /**
    * Draw queued stamps (and, when given, the GPU landed-drop mesh living in this scene) into the
-   * target, then cure it. With nothing to draw, only cures every `DRYING.interval` game seconds.
-   * `dt` is game seconds since the last call. Restores the renderer's target, MRT and autoClear.
+   * target, plus a drying step every `DRYING.interval` game seconds. `dt` is game seconds since the
+   * last call. Restores the renderer's target, MRT and autoClear.
    */
   render(renderer: THREE.WebGPURenderer, extraVisible: boolean, dt: number): void {
     this.sinceCure += dt > 0 ? dt : 0;
-    const painting = this.n > 0 || extraVisible;
-    if (!painting && this.sinceCure < DRYING.interval) return;
-    this.dryU.value = dryFraction(this.sinceCure);
-    this.sinceCure = 0;
+    const dry = this.sinceCure >= DRYING.interval;
+    if (this.n === 0 && !extraVisible && !dry) return;
+    this.cureMesh.visible = dry;
+    if (dry) {
+      this.dryU.value = dryFraction(this.sinceCure);
+      this.sinceCure = 0;
+    }
     if (this.n === 1) {
       // Keep the instance count >= 2 so the render object never flips between instanced/non-instanced.
       this.data.arrays[1][4] = 0;
@@ -225,7 +238,7 @@ export class DecalPainter {
     this.n = 0;
   }
 
-  /** Wipe the floor clean (white multiply, zero coverage) and drop queued stamps. */
+  /** Wipe the floor clean (no blood, no soot) and drop queued stamps. */
   clear(renderer: THREE.WebGPURenderer): void {
     this.n = 0;
     this.sinceCure = 0;

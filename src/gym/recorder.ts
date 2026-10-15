@@ -8,6 +8,21 @@
  * power-ups taken and the kills landed while one ran, when and why sudden death started, and the
  * judges' scorecards. Guard trips come from the sim's result (each brain's last `Decision`).
  *
+ * Per-fighter stats (`FighterStats`, thresholds in `REPORT_STATS`):
+ * - Distance is the sum of per-tick movement; a Shadowstep's jump is not walking and counts as none.
+ * - Engaged: a fighter that starts an attack, or deals damage to or takes damage from an enemy, is
+ *   engaged on that tick and the `engagedWindowTicks - 1` ticks after it. Damage per engaged second
+ *   counts only enemy damage (hazards, the wall and own goals engage nobody).
+ * - Standing still (moved under `stillPxPerTick`) while not attacking, stunned or teleporting is
+ *   stuck when its decision's throttle asked to move (`stuckThrottle`), otherwise idle. Without
+ *   decisions (see `observe`) every still tick is idle.
+ * - Near walls: centre within `nearWallPx` of a map wall or pillar. Outside the zone: during sudden
+ *   death, centre outside `SuddenDeathState.warning`.
+ * - A skill hit is a skill use that damaged at least one enemy (Whirlwind and Shockwave resolve on
+ *   the tick they are used). An assist is damage to an enemy within `assistWindowTicks` before its
+ *   death by someone other than the killer; kill participation is (kills + assists) over every
+ *   enemy death in the match.
+ *
  * Attack accounting:
  * - `swing` starts an attack (the sim emits it for melee swings and ranged shots alike).
  * - A melee swing (or a punch) has landed once it damages at least one enemy; a cleave that hits
@@ -16,23 +31,30 @@
  *   (direct hit or splash). Matching by projectile keeps overlapping arrows apart.
  */
 
-import { PICKUP_RULES, WEAPONS, strategyKey } from '../core';
+import { PICKUP_RULES, REPORT_STATS, TICK_HZ, WEAPONS, addToHeatmap, createHeatmap, pointInRect, strategyKey } from '../core';
 import type {
   DamageSource,
+  Decision,
+  DeathRecord,
   FighterReport,
   FighterState,
+  FighterStats,
   GameEvent,
+  Heatmap,
   JudgedFighter,
   KillRecord,
   MatchConfig,
   MatchReport,
   MatchResult,
   PickupKind,
+  Rect,
   ReportRosterEntry,
   Strategy,
   SuddenDeathReason,
+  Vec2,
   WorldState,
 } from '../core';
+import { MAPS } from '../sim';
 import { POWER_UPS, matchFindings, type FindingContext } from './findings';
 import { round } from './format';
 
@@ -57,7 +79,37 @@ type Tally = {
   /** First tick a pedestal power-up of each kind no longer runs (the sim counts buffs down at the start of each tick). */
   buffUntil: Partial<Record<PickupKind, number>>;
   killsWhileBuffed: Partial<Record<PickupKind, number>>;
+  heatmap: Heatmap;
+  death: DeathRecord | null;
+  /** Where it stood after the previous observed tick. */
+  last: Vec2;
+  distance: number;
+  /** Last tick something engaged it (attack started, enemy damage dealt or taken); -Infinity before. */
+  engagedAt: number;
+  ticksEngaged: number;
+  firstContact: number | null;
+  dealtToEnemies: number;
+  takenFromEnemies: number;
+  skillHits: number;
+  ticksIdle: number;
+  ticksStuck: number;
+  ticksNearWalls: number;
+  ticksOutsideZone: number;
+  /** Last tick each enemy damaged it, by fighter id (assists). */
+  damagedAt: Map<string, number>;
+  assists: number;
 };
+
+/** Is the point within `REPORT_STATS.nearWallPx` of one of these rects? */
+function nearAny(rects: readonly Rect[], x: number, y: number): boolean {
+  const reach = REPORT_STATS.nearWallPx;
+  for (const r of rects) {
+    const dx = x < r.x ? r.x - x : x > r.x + r.w ? x - r.x - r.w : 0;
+    const dy = y < r.y ? r.y - y : y > r.y + r.h ? y - r.y - r.h : 0;
+    if (dx * dx + dy * dy <= reach * reach) return true;
+  }
+  return false;
+}
 
 function definedBehaviours(s: Strategy): string[] {
   return [...new Set([...Object.keys(s.behaviours), ...(s.imports ?? [])])];
@@ -90,11 +142,19 @@ export class MatchRecorder {
   private readonly tallies = new Map<string, Tally>();
   private readonly kills: KillRecord[] = [];
   private readonly projectileOwner = new Map<string, string>();
+  /** The map's walls and pillars, for `ticksNearWalls`. */
+  private readonly blockers: readonly Rect[];
   private suddenDeathStart: { tick: number; reason: SuddenDeathReason } | null = null;
   private judges: JudgedFighter[] | null = null;
 
   constructor(config: MatchConfig, state: WorldState, ctx: FindingContext = {}) {
     this.config = config;
+    // Before sudden death the playable rectangle is the whole map: the heatmaps' extent.
+    const map = state.suddenDeath.active ? null : state.suddenDeath.bounds;
+    if (!map) throw new Error('MatchRecorder: start recording before sudden death begins (the heatmap needs the whole map).');
+    const def = MAPS[config.mapId];
+    if (!def) throw new Error(`MatchRecorder: unknown map "${config.mapId}".`);
+    this.blockers = [...def.walls, ...def.pillars];
     // The pedestals of this match's map, unless the caller knows better: lets findings say nobody went for them.
     const pedestals = [...new Set(state.pickups.map((p) => p.kind))];
     this.ctx = { mapPickups: () => pedestals, ...ctx };
@@ -132,14 +192,37 @@ export class MatchRecorder {
         pickupsTaken: {},
         buffUntil: {},
         killsWhileBuffed: {},
+        heatmap: createHeatmap(map.x + map.w, map.y + map.h),
+        death: null,
+        last: { x: f.pos.x, y: f.pos.y },
+        distance: 0,
+        engagedAt: -Infinity,
+        ticksEngaged: 0,
+        firstContact: null,
+        dealtToEnemies: 0,
+        takenFromEnemies: 0,
+        skillHits: 0,
+        ticksIdle: 0,
+        ticksStuck: 0,
+        ticksNearWalls: 0,
+        ticksOutsideZone: 0,
+        damagedAt: new Map(),
+        assists: 0,
       });
     }
   }
 
-  /** Call once per `match.step()` with the events it returned and the state after the step. */
-  observe(events: readonly GameEvent[], state: WorldState): void {
+  /**
+   * Call once per `match.step()` with the events it returned and the state after the step.
+   * `decisionOf` is the match's `lastDecision`: it tells a fighter stuck against something (its
+   * decision asks to move) from one standing still on purpose. Without it every still tick is idle.
+   */
+  observe(events: readonly GameEvent[], state: WorldState, decisionOf?: (fighterId: string) => Decision | null): void {
     const shotEnds = new Map<string, { ends: number; direct: number }>();
     const rangedHitters = new Set<string>();
+    const skillHitters = new Set<string>();
+    const teleported = new Set<string>();
+    const tick = state.tick;
 
     for (const ev of events) {
       switch (ev.type) {
@@ -148,6 +231,7 @@ export class MatchRecorder {
           if (t) {
             t.attacks++;
             t.swingOpen = true;
+            this.engage(t, ev.tick);
           }
           break;
         }
@@ -158,7 +242,15 @@ export class MatchRecorder {
           if (!attacker || ev.attackerId === ev.victimId) break;
           add(attacker.dealt, ev.source, ev.amount);
           const enemy = !victim || victim.squad !== attacker.squad;
+          if (enemy && ev.source === 'skill') skillHitters.add(ev.attackerId!);
           if (!enemy || ev.amount <= 0) break;
+          attacker.dealtToEnemies += ev.amount;
+          this.engage(attacker, ev.tick);
+          if (victim) {
+            victim.takenFromEnemies += ev.amount;
+            victim.damagedAt.set(ev.attackerId!, ev.tick);
+            this.engage(victim, ev.tick);
+          }
           if (ev.source === 'punch' || (ev.source === 'weapon' && attacker.melee)) {
             if (attacker.swingOpen) {
               attacker.hitsLanded++;
@@ -186,6 +278,7 @@ export class MatchRecorder {
         case 'skill': {
           const t = this.tallies.get(ev.fighterId);
           if (t) t.skillUses++;
+          if (ev.skill === 'SHADOWSTEP') teleported.add(ev.fighterId);
           break;
         }
         case 'parry': {
@@ -213,6 +306,22 @@ export class MatchRecorder {
               if (ev.tick < (killer.buffUntil[kind] ?? -1)) killer.killsWhileBuffed[kind] = (killer.killsWhileBuffed[kind] ?? 0) + 1;
             }
           }
+          const victim = this.tallies.get(ev.victimId);
+          if (victim) {
+            for (const [id, at] of victim.damagedAt) {
+              const helper = this.tallies.get(id);
+              if (id !== ev.killerId && helper && helper.squad !== victim.squad && ev.tick - at <= REPORT_STATS.assistWindowTicks) helper.assists++;
+            }
+            victim.death = {
+              tick: ev.tick,
+              cause: ev.cause,
+              killerId: ev.killerId,
+              weapon: ev.weapon,
+              hazard: ev.hazard,
+              flags: [...ev.flags],
+              title: ev.title,
+            };
+          }
           this.kills.push({
             tick: ev.tick,
             killerId: ev.killerId,
@@ -237,16 +346,66 @@ export class MatchRecorder {
       t.hitsLanded += Math.min(e.ends, Math.max(1, e.direct));
     }
 
+    for (const id of skillHitters) {
+      const t = this.tallies.get(id);
+      if (t) t.skillHits++;
+    }
+
+    const zone = state.suddenDeath;
     for (const f of state.fighters) {
       if (!f.alive) continue;
       const t = this.tallies.get(f.id);
       if (!t) continue;
       t.ticksAlive++;
+      addToHeatmap(t.heatmap, f.pos.x, f.pos.y);
       if (f.seen) t.ticksSeen++;
       if (f.inShadow) t.ticksInShadow++;
       // Before its first think a fighter has no behaviour yet (empty name); that time is not a choice.
       if (f.behaviour) t.behaviourTicks[f.behaviour] = (t.behaviourTicks[f.behaviour] ?? 0) + 1;
+
+      if (tick - t.engagedAt < REPORT_STATS.engagedWindowTicks) t.ticksEngaged++;
+      const moved = Math.hypot(f.pos.x - t.last.x, f.pos.y - t.last.y);
+      t.last.x = f.pos.x;
+      t.last.y = f.pos.y;
+      if (!teleported.has(f.id)) {
+        t.distance += moved;
+        if (moved < REPORT_STATS.stillPxPerTick && f.anim.phase === 'idle' && f.stunTicks <= 0) {
+          const d = decisionOf?.(f.id);
+          if (d && d.speed >= REPORT_STATS.stuckThrottle) t.ticksStuck++;
+          else t.ticksIdle++;
+        }
+      }
+      if (nearAny(this.blockers, f.pos.x, f.pos.y)) t.ticksNearWalls++;
+      if (zone.active && !pointInRect(f.pos, zone.warning)) t.ticksOutsideZone++;
     }
+  }
+
+  /** Mark a fighter engaged from this tick on (first contact included). */
+  private engage(t: Tally, tick: number): void {
+    t.engagedAt = tick;
+    if (t.firstContact === null) t.firstContact = tick;
+  }
+
+  /** The finished `FighterStats` of one fighter. */
+  private stats(fighterId: string, t: Tally): FighterStats {
+    const enemyDeaths = this.kills.filter((k) => this.tallies.get(k.victimId)?.squad !== t.squad);
+    const kills = enemyDeaths.filter((k) => k.killerId === fighterId).length;
+    const engagedSeconds = t.ticksEngaged / TICK_HZ;
+    return {
+      distanceTravelled: Math.round(t.distance),
+      accuracy: t.attacks > 0 ? round(t.hitsLanded / t.attacks, 3) : 0,
+      skillHits: t.skillHits,
+      ticksEngaged: t.ticksEngaged,
+      damageDealtPerSecondEngaged: engagedSeconds > 0 ? round(t.dealtToEnemies / engagedSeconds, 1) : 0,
+      damageTakenPerSecondEngaged: engagedSeconds > 0 ? round(t.takenFromEnemies / engagedSeconds, 1) : 0,
+      ticksToFirstContact: t.firstContact,
+      ticksIdle: t.ticksIdle,
+      ticksStuck: t.ticksStuck,
+      ticksNearWalls: t.ticksNearWalls,
+      ticksOutsideZone: t.ticksOutsideZone,
+      assists: t.assists,
+      killParticipation: enemyDeaths.length > 0 ? round((kills + t.assists) / enemyDeaths.length, 3) : 0,
+    };
   }
 
   /**
@@ -279,6 +438,9 @@ export class MatchRecorder {
         pickupsTaken: { ...t.pickupsTaken },
         killsWhileBuffed: { ...t.killsWhileBuffed },
         guardTrips: (res?.guardTrips ?? []).map((g) => ({ ...g })).sort((a, b) => b.count - a.count),
+        stats: this.stats(r.fighterId, t),
+        death: t.death ? { ...t.death, flags: [...t.death.flags] } : null,
+        heatmap: { ...t.heatmap, counts: [...t.heatmap.counts] },
       };
     });
 
@@ -292,6 +454,7 @@ export class MatchRecorder {
       ticks: result.ticks,
       ending: opts.capped ? 'capped' : result.ending,
       suddenDeathStart: this.suddenDeathStart ? { ...this.suddenDeathStart } : null,
+      judges: this.judges ? this.judges.map((j) => ({ ...j })) : null,
       roster: this.roster.map((r) => ({ ...r })),
       placements,
       kills: [...this.kills],

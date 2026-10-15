@@ -1,6 +1,7 @@
 /**
  * Instanced flat quads with procedural TSL fragment shaders: fighter ground decals (contact
- * shadow, team ring, selection), additive glows (orbs, shrine, pickups, torch halos) and fire.
+ * shadow, team ring, selection), additive glows (orbs, shrine, pickups, torch halos), fire, acid
+ * pools and smoke (acid fumes, sizzling fighters).
  *
  * Geometry is a unit quad on the floor plane (u along three X, v along three Z), placed by the
  * same 2D affine + height as the cut-out parts. Each instance carries 12 floats as q0, q1, q2 (or
@@ -9,10 +10,12 @@
 
 import * as THREE from 'three/webgpu';
 import {
-  Fn, atan, attribute, float, fract, length, max, mix, mx_noise_float, smoothstep, sin, step, time, uv, vec2, vec3,
+  Fn, atan, attribute, cos, float, floor, fract, hash, length, max, mix, mx_noise_float, positionWorld, smoothstep, sin, step, time, uv,
+  vec2, vec3,
 } from 'three/tsl';
 import { basicMaterial, setEmissive } from './cutout';
 import type { Affine } from './affine';
+import type { LightField } from './lightfield';
 
 export const QUAD_FLOATS = 12;
 
@@ -177,22 +180,95 @@ export function fireMaterial(): THREE.MeshBasicNodeMaterial {
 }
 
 /**
- * Acid pool: bubbling green with a bright rim, fading as it dries. q0.x = seed, q0.y = life 0..1.
+ * Acid pool seen from above: an opaque, sunken, churning liquid, never a see-through green light.
+ * Out to in: a scorched, corroded halo eaten into the floor; a crusty, pitted rim; a dark inner
+ * lip (the surface sits below the floor); then the liquid, toxic green at the shallow edge and
+ * near-black toward the deep centre, slowly churning, with bubbles that swell and pop and a few
+ * bright glints. Lit by the light field like the floor; only a faint glow of its own, so it reads
+ * in the dark without becoming a lamp. Blood and floor never show through the liquid.
+ *
+ * The quad spans 2.2 x the pool radius, so the pool's edge sits at 0.91 of the half-size.
+ * q0.x = seed, q0.y = life 0..1 (a drying spill shrinks toward its centre and leaves the scorch).
  */
-export function acidMaterial(): THREE.MeshBasicNodeMaterial {
+export function acidMaterial(light: LightField): THREE.MeshBasicNodeMaterial {
   const m = basicMaterial('acid');
   m.transparent = true;
   m.depthWrite = false;
+  const seed = q0.x;
+  const life = q0.y.clamp(0, 1);
+  const p = centred;
+  const t = time.add(seed.mul(7.3));
+  const d = length(p);
+  const ang = atan(p.y, p.x);
+  // Ragged outline, stable over time (a spill does not wobble like jelly).
+  const ragged = mx_noise_float(vec3(cos(ang).mul(1.8), sin(ang).mul(1.8), seed)).mul(0.07);
+  const e = d.add(ragged).div(mix(float(0.35), float(1), life));
+  const liquid = smoothstep(0.735, 0.72, e);
+  const rim = smoothstep(0.83, 0.8, e).mul(float(1).sub(liquid));
+  const halo = smoothstep(1.0, 0.78, d.add(ragged)).mul(float(1).sub(liquid).sub(rim).max(0));
+
+  // Churning surface: two slow noise fields drifting against each other.
+  const w1 = mx_noise_float(vec3(p.mul(2.6).add(vec2(t.mul(0.07), t.mul(-0.05))), t.mul(0.11)));
+  const w2 = mx_noise_float(vec3(p.mul(5.3).sub(vec2(t.mul(0.09), t.mul(0.04))).add(w1.mul(0.6)), t.mul(0.17).add(4.0)));
+  const churn = w1.mul(0.6).add(w2.mul(0.4));
+  const depth = smoothstep(0.1, 0.72, e);
+  const surface = mix(vec3(0.002, 0.009, 0.003), vec3(0.045, 0.085, 0.01), depth.pow(2.2)).mul(churn.mul(0.3).add(1.0));
+  // Foam streaks where the churn folds, mostly in the shallows.
+  const foam = smoothstep(0.35, 0.55, churn).mul(depth.mul(0.8).add(0.2));
+  // Sunken: a dark lip just inside the rim, as if the rim shades the surface below it.
+  const lip = smoothstep(0.6, 0.725, e);
+  const liquidCol = surface.add(vec3(0.016, 0.03, 0.004).mul(foam)).mul(float(1).sub(lip.mul(0.85)));
+
+  // Bubbles: one per cell of a jittered grid, swelling and popping on its own clock.
+  const g = p.mul(5.5).add(vec2(seed.mul(3.1), seed.mul(1.7)));
+  const cell = floor(g);
+  const f = fract(g);
+  const h1 = hash(cell.x.add(cell.y.mul(57)).add(seed.mul(13)));
+  const h2 = hash(cell.x.mul(31).add(cell.y).add(seed.mul(7)));
+  const centre = vec2(h1, h2).mul(0.4).add(0.3);
+  const cycle = fract(t.mul(h1.mul(0.35).add(0.22)).add(h2));
+  const r = cycle.mul(0.24).add(0.04);
+  const bd = length(f.sub(centre));
+  const some = step(0.25, h2);
+  const live = step(cycle, 0.86).mul(some);
+  const bubble = smoothstep(r, r.sub(0.05), bd).mul(live);
+  const bubbleRim = smoothstep(0.035, 0.0, bd.sub(r).abs()).mul(live);
+  const popT = cycle.sub(0.86).div(0.14).clamp(0, 1);
+  const pop = smoothstep(0.04, 0.0, bd.sub(popT.mul(0.42).add(0.24)).abs()).mul(step(0.86, cycle)).mul(float(1).sub(popT)).mul(some);
+  const inPool = smoothstep(0.7, 0.4, e);
+  const bubbled = mix(liquidCol, liquidCol.mul(0.55).add(vec3(0.02, 0.1, 0.01)), bubble.mul(inPool))
+    .add(vec3(0.045, 0.13, 0.018).mul(bubbleRim.mul(0.5).add(pop.mul(0.7))).mul(inPool));
+  // A few bright glints catching the light on the churning surface.
+  const glint = smoothstep(0.62, 0.7, mx_noise_float(vec3(p.mul(9.0), t.mul(0.5)))).mul(smoothstep(0.1, 0.3, churn)).mul(liquid);
+
+  // Rim: corroded crust, yellow-brown with dark pits. Halo: floor scorched dark by the fumes.
+  const pits = smoothstep(0.1, 0.35, mx_noise_float(vec3(p.mul(18.0), seed)));
+  const crust = mix(vec3(0.012, 0.01, 0.005), vec3(0.09, 0.085, 0.025), pits);
+  const scorch = vec3(0.012, 0.014, 0.006);
+
+  const lit = light.sample(positionWorld.xz).xyz.clamp(0.1, 1.0);
+  // Faint glow of its own (the material adds the emissive to the colour and the bloom input).
+  const glow = vec3(0.006, 0.03, 0.004).mul(liquid).mul(depth.add(0.3)).add(vec3(0.35, 0.8, 0.25).mul(glint.mul(0.7)));
+  m.colorNode = bubbled.mul(liquid).add(crust.mul(rim)).mul(lit).add(scorch.mul(halo));
+  m.opacityNode = liquid.add(rim).add(halo.mul(0.55)).clamp(0, 1).mul(smoothstep(0.0, 0.15, life));
+  setEmissive(m, glow);
+  return m;
+}
+
+/**
+ * Smoke puff seen from above: a soft, noise-eroded blob that grows and thins as it ages. Normal
+ * alpha blending (smoke is not a light). q0 = rgb + alpha, q1.x = seed, q1.y = age 0..1.
+ */
+export function smokeMaterial(): THREE.MeshBasicNodeMaterial {
+  const m = basicMaterial('smoke');
+  m.transparent = true;
+  m.depthWrite = false;
   const d = length(centred);
-  const t = time.mul(0.8).add(q0.x);
-  const wobble = mx_noise_float(vec3(centred.mul(2.2), t.mul(0.5))).mul(0.12);
-  const edge = d.add(wobble);
-  const body = smoothstep(0.7, 0.92, edge).oneMinus();
-  const rim = smoothstep(0.0, 0.1, edge.sub(0.8).abs()).oneMinus();
-  const bubbles = smoothstep(0.55, 0.85, mx_noise_float(vec3(centred.mul(7), t.mul(1.7))));
-  const col = mix(vec3(0.08, 0.42, 0.05), vec3(0.45, 1.0, 0.25), bubbles.mul(0.6).add(rim.mul(0.8)));
-  m.colorNode = col;
-  m.opacityNode = body.mul(0.72).add(rim.mul(0.25)).mul(q0.y).clamp(0, 1);
-  setEmissive(m, vec3(0.1, 0.5, 0.05).mul(bubbles.add(rim).mul(q0.y)).mul(0.6));
+  const age = q1.y.clamp(0, 1);
+  // Two octaves of noise erode the disc into a wisp; older puffs fray more.
+  const n = mx_noise_float(vec3(centred.mul(2.4), q1.x.add(age.mul(1.5)))).add(mx_noise_float(vec3(centred.mul(5.1), q1.x.add(3.7))).mul(0.5));
+  const puff = smoothstep(1.0, 0.2, d.add(n.mul(0.45).add(age.mul(0.25))));
+  m.colorNode = q0.xyz;
+  m.opacityNode = puff.mul(q0.w);
   return m;
 }

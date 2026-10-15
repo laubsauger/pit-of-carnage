@@ -3,9 +3,9 @@
  * floor and the sudden-death wall.
  */
 
-import { HAZARD_RULES, MATCH_RULES, PICKUP_RULES, PROP_RULES, SPEED_SCALE, clamp01, resolveDamage, zoneBoundsAfter } from '../core';
-import type { HazardKind, HazardState, Vec2 } from '../core';
-import type { HazardRt, SimCtx } from './context';
+import { HAZARD_RULES, MATCH_RULES, PICKUP_RULES, PROP_RULES, SPEED_SCALE, clamp, clamp01, resolveDamage, zoneBoundsAfter } from '../core';
+import type { FighterState, HazardKind, HazardState, Vec2 } from '../core';
+import type { FighterRt, HazardRt, SimCtx } from './context';
 import { applyDamage, blow, damageProp } from './damage';
 import { arenaBounds, maxInset, staticLosBlocked } from './geometry';
 import { OUTER_WALL } from './maps';
@@ -23,8 +23,15 @@ const BLAST_EDGE = 0.6;
 const MAX_BREAKS_PER_TICK = 64;
 /** Fighters touch floor items within body radius + this. */
 const ITEM_PICK_SLACK = 14;
-/** Sudden-death wall knocks fighters caught outside back in with this impulse. */
+/** Sudden-death wall knocks fighters caught outside back in with this impulse (a backstop: movement keeps everyone inside). */
 const WALL_SHOVE = 4;
+
+/** A body within this distance (px) of the wall's face touches it. */
+const CONTACT_SLACK = 0.5;
+/** A body the wall holds deeper than this (px) inside a wall, pillar or prop is pinned there. */
+const PIN_DEPTH = 2;
+/** The wall sweeps floor items along this far (px) inside its face, so they stay within reach. */
+const ITEM_INSET = 8;
 
 // ---------------------------------------------------------------------------------------------
 // Hazards
@@ -127,6 +134,7 @@ function hazardHit(ctx: SimCtx, h: HazardState, vi: number, dir: number): void {
   const info = blow(-1, 'hazard', 'hazard', dir);
   info.hazardKind = h.kind;
   info.knockback = rule.knockback;
+  info.slowTicks = rule.slowTicks;
   applyDamage(ctx, vi, resolveDamage(rule.damage, 1, v.attributes), info);
 }
 
@@ -225,7 +233,7 @@ export function updatePickups(ctx: SimCtx): void {
     const amount = Math.min(f.maxHp - f.hp, Math.round(f.maxHp * shrine.amount));
     f.hp += amount;
     s.cooldown = shrine.cooldownTicks;
-    ctx.events.push({ type: 'heal', tick, fighterId: f.id, amount, pos: { x: s.pos.x, y: s.pos.y } });
+    ctx.events.push({ type: 'heal', tick, fighterId: f.id, amount, pos: { x: s.pos.x, y: s.pos.y }, shrineId: s.id });
   }
 
   // Power-ups: `cooldown` counts down to the next appearance (PickupState). Each appearance is
@@ -297,6 +305,12 @@ export function updateSuddenDeathWall(ctx: SimCtx): void {
     if (sd.inset >= max) sd.closedAtTick = tick;
   }
   arenaBounds(ctx.map, sd.inset, ctx.bounds);
+  // The wall sweeps spent ammo and dropped gear along in front of it: nothing lies out of reach.
+  const b = ctx.bounds;
+  for (const it of ctx.state.floor) {
+    it.pos.x = clamp(it.pos.x, b.x + ITEM_INSET, b.x + b.w - ITEM_INSET);
+    it.pos.y = clamp(it.pos.y, b.y + ITEM_INSET, b.y + b.h - ITEM_INSET);
+  }
   if (sd.closedAtTick >= 0) {
     const level = 1 + Math.floor((tick - sd.closedAtTick) / MATCH_RULES.escalationStepTicks);
     if (level > sd.escalation) {
@@ -311,14 +325,17 @@ export function updateSuddenDeathWall(ctx: SimCtx): void {
 }
 
 /**
- * Wall damage every suddenDeathIntervalTicks, counted from the start of sudden death: fighters
- * caught outside the zone take `suddenDeathDamage + escalationDamage x level` and get shoved back
- * in; once `everywhere` is on, fighters inside take `escalationDamage x level`. The level climbs
- * every second after the wall stops, so the match always ends (no strategy can hide or out-heal it).
+ * The closing wall bites. Every tick, whoever touches it is pushed back in, ground on its spikes
+ * and crushed while it pins them (`grindWall`). Every suddenDeathIntervalTicks, counted from the
+ * start of sudden death: anyone caught outside the zone (a backstop; movement keeps every body
+ * inside) takes `suddenDeathDamage + escalationDamage x level` and is shoved back in; once
+ * `everywhere` is on, fighters inside take `escalationDamage x level`. The level climbs every
+ * second after the wall stops, so the match always ends (no strategy can hide or out-heal it).
  */
 export function suddenDeathDamage(ctx: SimCtx): void {
   const sd = ctx.state.suddenDeath;
   if (!sd.active) return;
+  for (const rt of ctx.rts) if (rt.f.alive) grindWall(ctx, rt);
   const tick = ctx.state.tick;
   if ((tick - sd.startedAtTick) % MATCH_RULES.suddenDeathIntervalTicks !== 0) return;
   const b = ctx.bounds;
@@ -335,4 +352,52 @@ export function suddenDeathDamage(ctx: SimCtx): void {
     if (outside) info.knockback = WALL_SHOVE;
     applyDamage(ctx, rt.idx, amount, info);
   }
+}
+
+/**
+ * A living fighter touching the closing wall (moving or stopped): pushed straight back in with
+ * MATCH_RULES.wallPushKnockback every tick of contact, whether it walks into the wall or stands
+ * still, ground on the spikes for MATCH_RULES.wallContactDamage, and crushed (wallCrushDamage more,
+ * kill flag `crushed`) while the wall holds it inside a wall, pillar or prop. `wall_contact`
+ * (the cue for sparks and blood, at the contact point on the wall's face) precedes the `hit`.
+ */
+function grindWall(ctx: SimCtx, rt: FighterRt): void {
+  const f = rt.f;
+  const b = ctx.bounds;
+  const reach = f.radius + CONTACT_SLACK;
+  const left = f.pos.x - b.x <= reach;
+  const right = b.x + b.w - f.pos.x <= reach;
+  const top = f.pos.y - b.y <= reach;
+  const bottom = b.y + b.h - f.pos.y <= reach;
+  if (!left && !right && !top && !bottom) return;
+  const crushed = pinDepth(ctx, f) > PIN_DEPTH;
+  const amount = MATCH_RULES.wallContactDamage + (crushed ? MATCH_RULES.wallCrushDamage : 0);
+  ctx.events.push({
+    type: 'wall_contact',
+    tick: ctx.state.tick,
+    fighterId: f.id,
+    damage: Math.min(amount, f.hp),
+    pos: { x: left ? b.x : right ? b.x + b.w : f.pos.x, y: top ? b.y : bottom ? b.y + b.h : f.pos.y },
+  });
+  // Inward: away from every face it touches (diagonal in a corner).
+  const nx = (left ? 1 : 0) - (right ? 1 : 0);
+  const ny = (top ? 1 : 0) - (bottom ? 1 : 0);
+  const info = blow(-1, 'sudden_death', 'sudden_death', Math.atan2(ny, nx));
+  info.knockback = MATCH_RULES.wallPushKnockback;
+  info.crushed = crushed;
+  applyDamage(ctx, rt.idx, amount, info);
+}
+
+/** How deep (px) the body sits inside the wall, pillar or live prop it overlaps most; 0 or less when clear. */
+function pinDepth(ctx: SimCtx, f: FighterState): number {
+  let depth = 0;
+  for (const r of ctx.geo.blockers) {
+    const qx = clamp(f.pos.x, r.x, r.x + r.w);
+    const qy = clamp(f.pos.y, r.y, r.y + r.h);
+    depth = Math.max(depth, f.radius - Math.hypot(f.pos.x - qx, f.pos.y - qy));
+  }
+  for (const p of ctx.state.props) {
+    if (p.alive) depth = Math.max(depth, f.radius + p.radius - Math.hypot(f.pos.x - p.pos.x, f.pos.y - p.pos.y));
+  }
+  return depth;
 }

@@ -2,6 +2,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { Strategy } from '../../core';
 import { offsetOf } from '../editor';
+import { SEVERITY_SVG, suggestionLine } from '../editor/issues';
 import { buildLine, strategyLabel } from '../format';
 import { CloseIcon, ImportIcon } from '../icons';
 import { checkImport, importVerdict, isJsonFile, issueSpot, rejectedFile } from '../importer';
@@ -213,6 +214,7 @@ function EntryCard(props: {
             const spot = issueSpot(iss);
             const body = (
               <>
+                <span className="issue-icon" aria-label={iss.severity} dangerouslySetInnerHTML={{ __html: SEVERITY_SVG[iss.severity] }} />
                 {spot || iss.path ? (
                   <code>
                     {spot}
@@ -221,7 +223,7 @@ function EntryCard(props: {
                   </code>
                 ) : null}
                 {iss.message}
-                {iss.suggestion ? <div className="hint">{/^did you mean/i.test(iss.suggestion) ? iss.suggestion : `Did you mean "${iss.suggestion}"?`}</div> : null}
+                {iss.suggestion ? <div className="hint">{suggestionLine(iss.suggestion)}</div> : null}
               </>
             );
             return (

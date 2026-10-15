@@ -22,7 +22,10 @@ import {
   STRATEGY_SCHEMA,
   WEAPONS,
   WEAPON_IDS,
+  addToHeatmap,
   attributesLegal,
+  createHeatmap,
+  emptyFighterStats,
   hashString,
   strategyKey,
 } from '../core';
@@ -249,11 +252,22 @@ export function fakeRunner(strength: (s: Strategy) => number, noise = 1): MatchR
         pickupsTaken: {},
         killsWhileBuffed: {},
         guardTrips: [],
+        stats: { ...emptyFighterStats(), accuracy: 0.5 },
+        death: (() => {
+          const k = kills.find((x) => x.victimId === `f${i}`);
+          return k ? { tick: k.tick, cause: k.cause, killerId: k.killerId, weapon: k.weapon, hazard: null, flags: [], title: 'SPLIT' } : null;
+        })(),
+        // Every seat keeps to its own spot along the north wall, so heatmaps have something to say.
+        heatmap: (() => {
+          const h = createHeatmap(1360, 860);
+          addToHeatmap(h, 100 + 150 * i, 100, alive);
+          return h;
+        })(),
       };
     });
     return {
       seed: config.seed, mapId: config.mapId, format: config.format, timeLimitTicks: config.timeLimitTicks, suddenDeath: config.suddenDeath,
-      friendlyFire: config.friendlyFire, ticks, ending: 'elimination', suddenDeathStart: null, roster, placements, kills, fighters, findings: [],
+      friendlyFire: config.friendlyFire, ticks, ending: 'elimination', suddenDeathStart: null, judges: null, roster, placements, kills, fighters, findings: [],
     };
   };
 }
@@ -295,9 +309,12 @@ export function placedReport(keys: readonly string[], order: readonly number[], 
     pickupsTaken: {},
     killsWhileBuffed: {},
     guardTrips: [],
+    stats: emptyFighterStats(),
+    death: null,
+    heatmap: createHeatmap(1360, 860),
   }));
   return {
     seed: 1, mapId: 'pit', format, timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS, suddenDeath: true, friendlyFire: true,
-    ticks: 1000, ending: 'elimination', suddenDeathStart: null, roster, placements, kills: [], fighters, findings: [],
+    ticks: 1000, ending: 'elimination', suddenDeathStart: null, judges: null, roster, placements, kills: [], fighters, findings: [],
   };
 }

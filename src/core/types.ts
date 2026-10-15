@@ -140,8 +140,17 @@ export type ValidStrategy = Strategy & { readonly [validStrategyBrand]: true };
 /**
  * Where a strategy came from. Every source goes through the same gate with the same rules; the
  * source only shapes message wording ("line 4 of the file", "in the pasted text") and logs.
+ *
+ * - `file`: an imported file. `paste`: text pasted into the import dialog. `code`: a `PIT2.` code.
+ * - `editor`: the gym's strategy editor checking what is being typed (live validation).
+ * - `saved`: read back from the local strategy library.
+ * - `house`: a built-in house stack (`HOUSE_STACKS`), wherever it plays (match slot, gym field).
+ * - `evolution`: a child bred by evolution.
+ * - `config`: any other strategy inside a `MatchConfig` or a gym request (batch candidates, an
+ *   evolution parent, field strategies that are not house stacks).
+ * - `cli`: `npm run lint:strategy`. `network`: a peer in a room. `test`: test code.
  */
-export type StrategySource = 'file' | 'paste' | 'code' | 'saved' | 'house' | 'evolution' | 'config' | 'cli' | 'network' | 'test';
+export type StrategySource = 'file' | 'paste' | 'code' | 'editor' | 'saved' | 'house' | 'evolution' | 'config' | 'cli' | 'network' | 'test';
 
 /**
  * Report of the gate. `strategy` is present exactly when `errors` is empty. Errors block loading;
@@ -302,7 +311,12 @@ export type FighterState = {
   place: number | null;
 };
 
-export type ProjectileState = { id: string; ownerId: string; weapon: WeaponId; pos: Vec2; vel: Vec2; ttl: number };
+/**
+ * A projectile in flight. `origin` is where it left the weapon: the muzzle point (staff tip, bow
+ * string, throwing hand), never the fighter's centre. Renderers draw trails and muzzle flashes from
+ * it; it never changes after the spawn. The `projectile` event's `pos` is the same point.
+ */
+export type ProjectileState = { id: string; ownerId: string; weapon: WeaponId; pos: Vec2; vel: Vec2; ttl: number; origin: Vec2 };
 
 export type FloorItemKind = 'arrow' | 'axe' | 'weapon' | 'helmet';
 export type FloorItem = { id: string; kind: FloorItemKind; pos: Vec2; ownerId: string | null };
@@ -420,9 +434,11 @@ export type DamageSource = 'weapon' | 'punch' | 'skill' | 'reflect' | 'hazard' |
 /**
  * Facts about a kill the sim knows at the moment it happens. `unseen` = the victim had not seen the
  * killer in the last second; `revenge` = the victim had killed one of the killer's squad or had hit
- * the killer last; `multi` = the killer's second+ kill within 3 s.
+ * the killer last; `multi` = the killer's second+ kill within 3 s; `crushed` = the closing
+ * sudden-death wall pinned the victim against a wall, pillar or prop (cause `sudden_death`, stamp
+ * "CRUSHED").
  */
-export type KillFlag = 'backstab' | 'crit' | 'unseen' | 'ranged' | 'splash' | 'reflect' | 'multi' | 'revenge' | 'overkill';
+export type KillFlag = 'backstab' | 'crit' | 'unseen' | 'ranged' | 'splash' | 'reflect' | 'multi' | 'revenge' | 'overkill' | 'crushed';
 
 export type GameEvent = { tick: number } & (
   | { type: 'swing'; fighterId: string; weapon: WeaponId }
@@ -443,6 +459,7 @@ export type GameEvent = { tick: number } & (
       source: DamageSource;
     }
   | { type: 'parry'; fighterId: string; attackerId: string; pos: Vec2 }
+  /** A projectile left its weapon. `pos` is the muzzle point (= `ProjectileState.origin`), `dir` its heading. */
   | { type: 'projectile'; projectileId: string; ownerId: string; weapon: WeaponId; pos: Vec2; dir: number }
   | { type: 'projectile_end'; projectileId: string; pos: Vec2; hitId: string | null }
   | {
@@ -471,6 +488,13 @@ export type GameEvent = { tick: number } & (
       flags: KillFlag[];
       /** Refinement: kind of hazard that landed the kill (also when a squadmate gets the blame), else null. */
       hazard: HazardKind | null;
+      /**
+       * This kill decided the match: it left one fighter (or squad) standing, and `match_end` with
+       * ending `elimination` follows on the same tick. Exactly one kill per elimination match has it
+       * (the last kill event of that tick); judged, timed and capped matches have none. Drives the
+       * final-kill slow motion, the WINNER stamp and the biggest roar.
+       */
+      final: boolean;
     }
   | { type: 'explosion'; pos: Vec2; radius: number }
   /**
@@ -489,7 +513,20 @@ export type GameEvent = { tick: number } & (
   | { type: 'pickup'; fighterId: string; kind: PickupKind | AmmoKind; pos: Vec2 }
   /** A power-up appeared on its pedestal: its first appearance (after `firstSpawnTicks`) and every respawn. */
   | { type: 'pickup_spawn'; pickupId: string; kind: PickupKind; pos: Vec2 }
-  | { type: 'heal'; fighterId: string; amount: number; pos: Vec2 }
+  /**
+   * A fighter healed. `amount` is the HP actually gained (capped at max HP), `pos` where the heal
+   * came from (the shrine's centre for a shrine heal). `shrineId` names the shrine that healed it
+   * and went on cooldown (`WorldState.shrines[].id`); null for any heal that is not a shrine's.
+   */
+  | { type: 'heal'; fighterId: string; amount: number; pos: Vec2; shrineId: string | null }
+  /**
+   * A living fighter touched the closing sudden-death wall this tick (emitted every tick of
+   * contact, moving wall or stopped). `damage` is the contact damage dealt this tick, which also
+   * arrives as a normal `hit` (source `sudden_death`, attacker null), so HP, reports and kill credit
+   * see it; this event is the cue for the grinding sparks, blood and sound. `pos` is the contact
+   * point on the wall's inner face (the spikes), not the fighter's centre.
+   */
+  | { type: 'wall_contact'; fighterId: string; damage: number; pos: Vec2 }
   | { type: 'hazard'; hazardId: string; victimId: string | null; pos: Vec2 }
   /** Refinement: a prop broke (keg also emits `explosion`; amphora spills acid). */
   | { type: 'prop_break'; propId: string; kind: PropKind; pos: Vec2 }
@@ -514,6 +551,24 @@ export type GameEvent = { tick: number } & (
 export type JudgedFighter = { id: string; hpFraction: number; damageDealt: number; kills: number };
 
 export type GameEventType = GameEvent['type'];
+
+/**
+ * Match-flow beats from the app's controller, not the sim: the sim never emits these and they never
+ * reach reports. They arrive in real time (not game time), once each, to the renderer
+ * (`GameRenderer.onSignal`) and to audio (`AudioModule.onSignal`), so a sting is never pitch-bent by
+ * slow motion. Never sent for a seek or a replay that jumps past the moment.
+ *
+ * - `countdown`: one beat of the round-start countdown, `value` 3, 2, then 1. The sim holds at
+ *   tick 0 until FIGHT; names and glyphs flash at the spawns.
+ * - `fight`: FIGHT! The countdown is over and the sim starts stepping this frame.
+ * - `final_kill`: the final-kill moment begins (ultra slow motion, camera easing onto the kill,
+ *   WINNER stamp). Sent in the frame the `kill` event with `final` true is delivered; same ids and
+ *   spot as that event. Judged, timed and capped endings have no final kill and no such signal.
+ */
+export type MatchSignal =
+  | { type: 'countdown'; value: number }
+  | { type: 'fight' }
+  | { type: 'final_kill'; killerId: string | null; victimId: string; pos: Vec2 };
 
 // ---------------------------------------------------------------------------------------------
 // Sim -> brain

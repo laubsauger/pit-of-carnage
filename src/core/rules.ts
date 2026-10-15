@@ -319,7 +319,7 @@ export const COMBAT_DOCS: DocsFor<typeof COMBAT> = {
   minSkillCooldown: 'Skill cooldown never drops below this many ticks.',
   skillStartCooldown: 'Skill cooldown at spawn, so nobody opens with a skill on tick one.',
   hasteMoveMul: 'Move speed multiplier while hasted.',
-  slowMoveMul: 'Move speed multiplier while slowed (longbow arrows).',
+  slowMoveMul: 'Move speed multiplier while slowed (longbow arrows, acid).',
   dismemberMinDamage: 'Smallest hit that can sever a limb.',
   dismemberBelowHp: 'Limbs can only come off when the victim is below this fraction of max HP.',
   dismemberChance: 'Chance that an eligible hit severs a limb.',
@@ -430,9 +430,14 @@ export type HazardRule = {
   /** Lifetime in ticks when spawned during a match (acid spills); map hazards are permanent. */
   durationTicks: number;
   knockback: number;
+  /**
+   * Ticks of slow (COMBAT.slowMoveMul) each damage tick leaves on its victim (0 = none). Longer than
+   * the damage interval, so the slow holds while you stand in it and lingers a moment after.
+   */
+  slowTicks: number;
 };
 
-const NO_HAZARD_FIELDS = { intervalTicks: 0, period: 0, triggerAt: 0, speed: 0, durationTicks: 0, knockback: 0 };
+const NO_HAZARD_FIELDS = { intervalTicks: 0, period: 0, triggerAt: 0, speed: 0, durationTicks: 0, knockback: 0, slowTicks: 0 };
 
 export const HAZARD_RULES: Readonly<Record<HazardKind, HazardRule>> = {
   spike: {
@@ -447,8 +452,8 @@ export const HAZARD_RULES: Readonly<Record<HazardKind, HazardRule>> = {
   },
   acid: {
     ...NO_HAZARD_FIELDS, kind: 'acid', name: 'Acid pool',
-    doc: '11 damage every 24 ticks while you stand in it. Spilled pools dry up after 400 ticks.',
-    damage: 11, intervalTicks: 24, radius: 62, durationTicks: 400,
+    doc: '11 damage every 24 ticks and a slow (x0.6 speed) while you stand in it, so wading out takes a while. Spilled pools dry up after 400 ticks.',
+    damage: 11, intervalTicks: 24, radius: 62, durationTicks: 400, slowTicks: 40,
   },
   fire: {
     ...NO_HAZARD_FIELDS, kind: 'fire', name: 'Fire pit',
@@ -537,6 +542,9 @@ export const MATCH_RULES = {
   suddenDeathMinHalfSize: 90,
   suddenDeathDamage: 4,
   suddenDeathIntervalTicks: 10,
+  wallContactDamage: 4,
+  wallPushKnockback: 10,
+  wallCrushDamage: 45,
   suddenDeathSawSpeedMul: 1.6,
   warningTicks: 3 * TICK_HZ,
   escalationStepTicks: TICK_HZ,
@@ -551,8 +559,11 @@ export const MATCH_RULES_DOCS: DocsFor<typeof MATCH_RULES> = {
   stalemateTicks: 'Sudden death starts early when no fighter has damaged another fighter for this long (15 s; weapons, skills and kegs count, hazards and the wall do not). Hiding cannot stall a match.',
   suddenDeathInsetPerTick: 'In sudden death the arena wall moves inward this many px per tick on every side.',
   suddenDeathMinHalfSize: 'The wall stops when the remaining arena is this many px from its centre to an edge.',
-  suddenDeathDamage: 'Damage to a fighter caught outside the sudden-death wall, every interval.',
+  suddenDeathDamage: 'Wall damage every interval to a fighter outside the playable area (a backstop: the solid wall keeps everyone inside) and, once escalation reaches everywhere, to everyone.',
   suddenDeathIntervalTicks: 'Ticks between sudden-death wall damage.',
+  wallContactDamage: 'The closing wall is solid and spiked: damage every tick a fighter touches it, walking into it or standing still.',
+  wallPushKnockback: 'Knockback impulse (before knockbackScale) that shoves a fighter touching the wall straight back into the arena, every tick of contact.',
+  wallCrushDamage: 'Extra damage every tick the wall pins a fighter against a wall, pillar or prop (CRUSHED).',
   suddenDeathSawSpeedMul: 'Saw speed multiplier during sudden death.',
   warningTicks: 'The floor warns where the wall will be this many ticks ahead (3 s).',
   escalationStepTicks: 'After the wall stops, the escalation level rises by one every this many ticks (every second).',

@@ -11,11 +11,15 @@
  * white, jolts along the blow and squashes, then both catch up with the live state in a quick
  * slide and the victim springs back. Every body and its weapon also throw soft shadows from the
  * lights around them.
+ *
+ * Acid hurts visibly: a fighter standing in a pool goes sickly green and sizzles (smoke puffs rise
+ * off it), and the tint lingers a moment after it gets out. A caster's staff crystal glows in its
+ * spell colour, the same colour as its orbs. Countdown beats ring every fighter in its colour.
  */
 
 import * as THREE from 'three/webgpu';
-import { LAYER_HEIGHT, MAX_FIGHTERS, WEAPONS, hashString } from '../core';
-import type { AnimPhase, FighterState, WeaponId, WorldState } from '../core';
+import { HAZARD_RULES, LAYER_HEIGHT, MAX_FIGHTERS, WEAPONS, hashString } from '../core';
+import type { AnimPhase, FighterState, HazardState, WeaponId, WorldState } from '../core';
 import { affine, applyX, applyY, setChild, setFrame, setSpan } from './affine';
 import type { Affine } from './affine';
 import { PartBatch, newStyle } from './cutout';
@@ -29,9 +33,11 @@ import {
 import type { Headgear } from './parts';
 import { eyeScale, flashAmount, hitStopSeconds, moveAmount, newWeaponPose, squashAmount, squashPeak, stride, weaponPose } from './rig';
 import type { WeaponPose } from './rig';
+import { spellColor } from './fx/impacts';
+import type { Rgb } from './fx/palette';
 import { newShadowBar } from './shadows';
 import type { ShadowLayer } from './shadows';
-import { QuadBatch } from './sprites';
+import { QuadBatch, smokeMaterial } from './sprites';
 
 /** Base heights (three Y) of each part inside the fighter band. */
 const H = {
@@ -55,6 +61,7 @@ const H = {
   stars: LAYER_HEIGHT.fighters + 7.8,
   arcs: LAYER_HEIGHT.fighters + 8.3,
   smear: LAYER_HEIGHT.fighters + 3.7,
+  sizzle: LAYER_HEIGHT.fighters + 9,
 } as const;
 
 const SKIN_TONES = ['#f1c7a5', '#e0ac83', '#c68863', '#a86b47', '#8a5434', '#6b3f27', '#f6d3b8', '#d29a73'];
@@ -77,6 +84,13 @@ const WEAPON_SHADOW_MAX = 38;
 const CATCH_UP = 0.07;
 /** Seconds the extra white flash fades after the hit-stop. */
 const FLASH_FADE = 0.12;
+/** Acid tint: rises this fast (per game second) while in a pool, fades this fast after leaving it. */
+const ACID_IN = 8;
+const ACID_OUT = 1.1;
+/** Smoke puffs rising off a fighter in acid at once. */
+const SIZZLE_PUFFS = 4;
+/** Real seconds a countdown ring takes to expand and fade. */
+const BEAT_SECONDS = 0.6;
 
 /** Each weapon as a shadow bar in its own frame: u0, v0, u1, v1, radius. */
 const WEAPON_BAR: Readonly<Record<WeaponId, readonly [number, number, number, number, number]>> = {
@@ -131,10 +145,16 @@ export class FighterLayer {
   private readonly squashAge = new Float32Array(MAX_FIGHTERS);
   private readonly squashTop = new Float32Array(MAX_FIGHTERS);
   private readonly flash = new Float32Array(MAX_FIGHTERS);
+  /** How soaked in acid each fighter looks, 0..1 (eased, lingers after leaving the pool). */
+  private readonly acid = new Float32Array(MAX_FIGHTERS);
+  /** Real seconds since the last countdown beat, and how big it was. */
+  private beatAge = 99;
+  private beatPower = 0;
   /** Weight of the frozen pose for the fighter being rigged (1 = frozen, 0 = live). */
   private poseBlend = 0;
 
   private readonly decals: QuadBatch;
+  private readonly sizzle: QuadBatch;
   private readonly smears: DynamicMesh;
   private readonly boots: PartBatch;
   private readonly stumps: PartBatch;
@@ -166,6 +186,8 @@ export class FighterLayer {
   private readonly glowSink: (x: number, y: number, size: number, r: number, g: number, b: number) => void;
 
   private readonly style = newStyle();
+  private readonly spell: Rgb = { r: 1, g: 1, b: 1 };
+  private readonly team = new THREE.Color();
   private readonly pose = newWeaponPose();
   private readonly idlePose = newWeaponPose();
   private readonly frozenPose = newWeaponPose();
@@ -188,6 +210,8 @@ export class FighterLayer {
     const mk = (name: string, g: THREE.BufferGeometry, cap = n) => new PartBatch(name, g, material, cap);
     this.decals = new QuadBatch('fighter-decals', decalMaterial, n);
     this.decals.mesh.renderOrder = 1;
+    this.sizzle = new QuadBatch('acid-sizzle', smokeMaterial(), n * SIZZLE_PUFFS);
+    this.sizzle.mesh.renderOrder = 7;
     this.smears = new DynamicMesh('strike-smears', n * 20 * 6, { additive: true, emissive: 0.45 });
     this.boots = mk('boots', bootGeometry(), n * 2);
     this.stumps = mk('stumps', stumpGeometry(), n * 4);
@@ -232,7 +256,7 @@ export class FighterLayer {
       this.warhammer, this.dagger, this.axe, this.bow, this.string, this.nock, this.staff, this.shield, this.parryArc,
       this.guardArc,
     ];
-    this.group.add(this.decals.mesh, this.smears.mesh, ...this.all.map((b) => b.mesh));
+    this.group.add(this.decals.mesh, this.sizzle.mesh, this.smears.mesh, ...this.all.map((b) => b.mesh));
     for (let i = 0; i < MAX_FIGHTERS; i++) {
       this.teamColors.push(new THREE.Color());
       this.skinColors.push(new THREE.Color());
@@ -288,13 +312,26 @@ export class FighterLayer {
     this.flash[v] = Math.max(this.flash[v]!, 0.6);
   }
 
-  /** Forget hit-stops and squashes (new match or seek). */
+  /** Forget hit-stops, squashes, acid and countdown rings (new match or seek). */
   resetHits(): void {
     this.stopLeft.fill(0);
     this.catchLeft.fill(0);
     this.squashTop.fill(0);
     this.squashAge.fill(0);
     this.flash.fill(0);
+    this.acid.fill(0);
+    this.beatAge = 99;
+  }
+
+  /** A countdown beat (3, 2, 1, FIGHT): every living fighter rings in its colour. `power` ~1 per beat. */
+  beat(power: number): void {
+    this.beatAge = 0;
+    this.beatPower = power;
+  }
+
+  /** Advance the countdown rings by real seconds (the sim holds still during the countdown). */
+  tickBeat(realDt: number): void {
+    this.beatAge += Math.max(0, realDt);
   }
 
   private freeze(i: number, stop: number, impact: number): void {
@@ -320,6 +357,7 @@ export class FighterLayer {
     this.syncRoster(curr.fighters);
     for (const b of this.all) b.begin();
     this.decals.begin();
+    this.sizzle.begin();
     this.smears.begin();
     const fighters = curr.fighters;
     const n = Math.min(fighters.length, MAX_FIGHTERS);
@@ -356,6 +394,8 @@ export class FighterLayer {
         walk += (this.fzWalk[i]! - walk) * blend;
       }
       this.poseBlend = blend;
+      const soaked = f.alive && inAcid(f.pos.x, f.pos.y, f.radius, curr.hazards);
+      this.acid[i] = soaked ? Math.min(1, this.acid[i]! + gameDt * ACID_IN) : Math.max(0, this.acid[i]! - gameDt * ACID_OUT);
       if (this.squashTop[i]! > 0) {
         this.squashAge[i] = this.squashAge[i]! + gameDt;
         if (this.squashAge[i]! >= 1) this.squashTop[i] = 0;
@@ -388,6 +428,7 @@ export class FighterLayer {
     }
     for (const b of this.all) b.end();
     this.decals.end();
+    this.sizzle.end();
     this.smears.end();
   }
 
@@ -449,6 +490,7 @@ export class FighterLayer {
     st.shadow = this.shadowSmooth[i]!;
     st.berserk = f.buffs.berserk > 0 ? 1 : 0;
     st.glow = 0;
+    st.acid = this.acid[i]!;
 
     const s = f.radius / NOMINAL_RADIUS;
     const speed = Math.hypot(f.vel.x, f.vel.y);
@@ -469,7 +511,8 @@ export class FighterLayer {
       d[k + 2] = st.team.b;
       d[k + 3] = (f.radius + 3.5) / half;
       d[k + 4] = selected ? 1 : 0;
-      d[k + 5] = hovered && !selected ? 1 : 0;
+      const beat = this.beatAge < BEAT_SECONDS ? (1 - this.beatAge / BEAT_SECONDS) * Math.min(1, this.beatPower) : 0;
+      d[k + 5] = hovered && !selected ? 1 : beat;
       d[k + 6] = f.buffs.haste > 0 ? 1 : 0;
       d[k + 7] = f.buffs.slow > 0 ? 1 : 0;
       d[k + 8] = 1;
@@ -544,6 +587,47 @@ export class FighterLayer {
     // Defensive markers: parry barrier (bright, blooms) and the guard-stance shield arc.
     if (f.parryTicks > 0) this.parryArc.push(B, H.arcs, st, 0.4 + 0.6 * Math.min(1, f.parryTicks / 10));
     else if (f.stance === 'guard' && WEAPONS[f.weapon].shield) this.guardArc.push(B, H.arcs, st);
+
+    if (st.acid > 0.02) this.sizzlePuffs(x, y, f.radius, st.acid, time, seed);
+    if (this.beatAge < BEAT_SECONDS) this.beatRing(x, y, f.radius, st.team);
+  }
+
+  /** Smoke rising off a fighter in acid: puffs on their own clocks, drifting and thinning as they rise. */
+  private sizzlePuffs(x: number, y: number, radius: number, amount: number, time: number, seed: number): void {
+    const T = this.T;
+    for (let j = 0; j < SIZZLE_PUFFS; j++) {
+      const age = (time * 1.15 + j / SIZZLE_PUFFS + seed * 0.37) % 1;
+      const a = seed * 2.3 + j * 2.4;
+      const px = x + Math.cos(a) * radius * 0.6 + age * 10;
+      const py = y + Math.sin(a) * radius * 0.6 - age * 22;
+      const k = this.sizzle.push(setFrame(T, px, py, a, radius * (0.9 + age * 1.6)), H.sizzle);
+      if (k < 0) return;
+      const d = this.sizzle.data;
+      d[k] = 0.62;
+      d[k + 1] = 0.72;
+      d[k + 2] = 0.5;
+      d[k + 3] = 0.42 * amount * Math.sin(Math.PI * age);
+      d[k + 4] = seed + j * 1.7;
+      d[k + 5] = age;
+    }
+  }
+
+  /** Countdown beat: a ring in the fighter's colour bursting out from its feet. */
+  private beatRing(x: number, y: number, radius: number, team: THREE.Color): void {
+    const t = this.beatAge / BEAT_SECONDS;
+    const ease = 1 - (1 - t) * (1 - t);
+    const r = radius + 6 + ease * 34 * Math.max(1, this.beatPower);
+    const a = (1 - t) * (1 - t) * Math.min(1, this.beatPower);
+    const w = 2 + 4 * (1 - t);
+    const segs = 28;
+    const cr = 0.35 + team.r * 0.65;
+    const cg = 0.35 + team.g * 0.65;
+    const cb = 0.35 + team.b * 0.65;
+    for (let k = 0; k < segs; k++) {
+      const a0 = (k / segs) * Math.PI * 2;
+      const a1 = ((k + 1) / segs) * Math.PI * 2;
+      this.smears.line(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r, w, H.decal + 0.2, cr, cg, cb, a);
+    }
   }
 
   /** Pose the weapon, set hand targets (this.rh / this.lh in body coords) and push weapon parts. */
@@ -624,8 +708,9 @@ export class FighterLayer {
         }
         const batch = isAxe ? this.axe : this.dagger;
         const idle = weaponPose(f.weapon, 'idle', 0, time + seed, this.idlePose);
-        // The attacking hand: the alternating one, or whichever arm is left.
-        let attackSide = this.leftHand[i] ? -1 : 1;
+        // The attacking hand: the alternating one, or whichever arm is left. Axes leave the hand the
+        // sim throws from (src/sim/combat.ts muzzlePoint: left on even ammo while the left arm is there).
+        let attackSide = isAxe ? (armL && f.ammo % 2 === 0 ? -1 : 1) : this.leftHand[i] ? -1 : 1;
         if (attackSide > 0 && !armR) attackSide = -1;
         if (attackSide < 0 && !armL) attackSide = 1;
         for (let side = 1; side >= -1; side -= 2) {
@@ -677,14 +762,20 @@ export class FighterLayer {
           break;
         }
         const w = held(W, B, 1, pose.swing, pose.reach, false);
+        // The crystal glows in the caster's spell colour (the staff has no team-coloured parts, so
+        // the instance colour carries the spell colour for this one push).
+        const c = spellColor(this.spell, f.color);
+        this.team.copy(st.team);
+        st.team.setRGB(c.r, c.g, c.b);
         this.staff.push(w, H.weapon, st, Math.max(glow, 0.25));
+        st.team.copy(this.team);
         this.holdBar(w, f.weapon);
         grab(B, rh, w, 0, 0);
         if (armL) grab(B, lh, w, 11, 0);
         const charge = f.maxAmmo > 0 ? f.ammo / f.maxAmmo : 1;
         const k = (0.35 + 0.65 * charge) * (0.8 + glow * 1.6);
         const s = f.radius / NOMINAL_RADIUS;
-        this.glowSink(applyX(w, 50.5, 0), applyY(w, 50.5, 0), (26 + glow * 26) * s, 0.75 * k, 0.45 * k, 1.0 * k);
+        this.glowSink(applyX(w, 50.5, 0), applyY(w, 50.5, 0), (26 + glow * 26) * s, c.r * k, c.g * k, c.b * k);
         break;
       }
     }
@@ -745,8 +836,22 @@ export class FighterLayer {
   dispose(): void {
     for (const b of this.all) b.dispose();
     this.decals.dispose();
+    this.sizzle.dispose();
     this.smears.dispose();
   }
+}
+
+/** Acid reaches bodies whose centre is within the pool radius + this share of the body radius (the sim's `POOL_BODY_SHARE`). */
+const ACID_BODY_SHARE = 0.3;
+
+/** Whether a fighter of `radius` standing at (x, y) is in an acid pool (where the sim's acid hurts it). */
+export function inAcid(x: number, y: number, radius: number, hazards: readonly HazardState[]): boolean {
+  for (const h of hazards) {
+    if (h.kind !== 'acid') continue;
+    const reach = (h.radius || HAZARD_RULES.acid.radius) + radius * ACID_BODY_SHARE;
+    if ((h.pos.x - x) ** 2 + (h.pos.y - y) ** 2 < reach * reach) return true;
+  }
+  return false;
 }
 
 /** Blend pose `a` toward `b` by `t` in place (hit-stop catch-up). */

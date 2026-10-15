@@ -8,7 +8,7 @@
  *
  * Per-vertex attributes: `color` (linear rgb), `slot` (how the colour is resolved, see SLOT) and
  * `shade` (0 rim .. 1 centre, a soft dome so bodies read as round).
- * Per-instance data (12 floats): team rgb, hit flash, skin rgb, shadow, glow, berserk, alpha, spare.
+ * Per-instance data (12 floats): team rgb, hit flash, skin rgb, shadow, glow, berserk, alpha, acid.
  */
 
 import * as THREE from 'three/webgpu';
@@ -30,6 +30,8 @@ export const SLOT = {
   ink: 3,
   /** Emissive: vertex colour, glowing with the instance glow (weapon telegraph, staff orb). */
   glow: 4,
+  /** Emissive in the instance team colour x vertex colour (the staff's crystal in the caster's spell colour). */
+  glowTeam: 5,
 } as const;
 
 /** Outline width in world px. */
@@ -155,10 +157,12 @@ export type InstanceStyle = {
   glow: number;
   /** 0..1: berserk ink glow. */
   berserk: number;
+  /** 0..1: soaked in acid (sickly green tint that sizzles). */
+  acid: number;
 };
 
 export function newStyle(): InstanceStyle {
-  return { team: new THREE.Color(1, 1, 1), flash: 0, skin: new THREE.Color(1, 1, 1), shadow: 0, glow: 0, berserk: 0 };
+  return { team: new THREE.Color(1, 1, 1), flash: 0, skin: new THREE.Color(1, 1, 1), shadow: 0, glow: 0, berserk: 0, acid: 0 };
 }
 
 export class PartBatch {
@@ -223,7 +227,7 @@ export class PartBatch {
     d[k + 8] = glow;
     d[k + 9] = style.berserk;
     d[k + 10] = alpha;
-    d[k + 11] = 0;
+    d[k + 11] = style.acid;
   }
 
   end(): void {
@@ -243,7 +247,7 @@ export class PartBatch {
 /**
  * The shared cut-out material: vertex colour resolved by slot, lit by the light field (never below
  * MIN_LIGHT), cool-dimmed in gameplay shadow, flashed white on hits, glow shapes emissive (they
- * bloom), ink outlines pulse red while berserk.
+ * bloom), ink outlines pulse red while berserk, fills tinted sickly green and sizzling in acid.
  */
 export function createCutoutMaterial(light: LightField, opts: { minLight?: number } = {}): THREE.MeshBasicNodeMaterial {
   const m = basicMaterial('cutout');
@@ -259,6 +263,10 @@ export function createCutoutMaterial(light: LightField, opts: { minLight?: numbe
   const isSkin = step(1.5, vSlot).mul(step(vSlot, 2.5));
   const isInk = step(2.5, vSlot).mul(step(vSlot, 3.5));
   const isGlow = step(3.5, vSlot);
+  const isGlowTeam = step(4.5, vSlot);
+  const glowBase = vColor.mul(mix(vec3(1), iTeam.xyz, isGlowTeam));
+  // Acid: fills go sickly green and flicker as they sizzle (the ink outline stays readable).
+  const acid = iFx.w.mul(sin(time.mul(23).add(positionWorld.x.mul(0.3))).mul(0.12).add(0.88));
 
   const lit = Fn(() => {
     const base = vColor.mul(mix(vec3(1), iTeam.xyz, isTeam)).mul(mix(vec3(1), iSkin.xyz, isSkin));
@@ -268,9 +276,10 @@ export function createCutoutMaterial(light: LightField, opts: { minLight?: numbe
     const lum = luminance(l);
     const lightTerm = mix(vec3(lum), l, 0.3).clamp(minLight, 1.35).mul(vShade.mul(0.32).add(0.82));
     const shadowTint = mix(vec3(1), vec3(0.62, 0.7, 0.98), iSkin.w.mul(0.55));
-    const c = base.mul(lightTerm).mul(shadowTint);
-    // Glow shapes: their own colour, brighter with the instance glow.
-    const glowCol = vColor.mul(iFx.x.mul(1.4).add(0.55));
+    const lightC = base.mul(lightTerm).mul(shadowTint);
+    const c = mix(lightC, lightC.mul(vec3(0.5, 1.05, 0.32)).add(vec3(0.03, 0.11, 0.01)), acid.mul(0.65));
+    // Glow shapes: their own colour (or the instance's), brighter with the instance glow.
+    const glowCol = glowBase.mul(iFx.x.mul(1.4).add(0.55));
     const pulse = sin(time.mul(14)).mul(0.25).add(0.75);
     const inkCol = mix(vec3(INK.r, INK.g, INK.b), vec3(0.9, 0.06, 0.03), iFx.y.mul(pulse));
     // Hit flash whitens the fills but keeps the ink outline, so the silhouette stays readable.
@@ -279,9 +288,11 @@ export function createCutoutMaterial(light: LightField, opts: { minLight?: numbe
   })();
   m.colorNode = lit;
   setEmissive(m, Fn(() => {
-    const glow = vColor.mul(iFx.x.mul(2.4)).mul(isGlow);
+    const glow = glowBase.mul(iFx.x.mul(2.4)).mul(isGlow);
     const rage = vec3(1.2, 0.08, 0.02).mul(iFx.y).mul(isInk);
-    return glow.add(rage).add(vec3(iTeam.w.mul(0.12)).mul(float(1).sub(isInk)));
+    const fills = float(1).sub(isInk).mul(float(1).sub(isGlow));
+    const sizzle = vec3(0.02, 0.09, 0.0).mul(acid).mul(fills);
+    return glow.add(rage).add(sizzle).add(vec3(iTeam.w.mul(0.12)).mul(float(1).sub(isInk)));
   })());
   m.opacityNode = float(1);
   return m;

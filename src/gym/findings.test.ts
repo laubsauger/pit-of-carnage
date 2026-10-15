@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MATCH_RULES, PICKUP_RULES, TICK_HZ } from '../core';
+import { MATCH_RULES, PICKUP_RULES, TICK_HZ, addToHeatmap, createHeatmap } from '../core';
 import type { FighterReport, KillRecord, MatchReport, PickupKind } from '../core';
 import { aggregateReports } from './aggregate';
 import { matchFindings } from './findings';
@@ -139,6 +139,40 @@ describe('strategy findings', () => {
       }),
     );
     expect(garyFindings(reports)).toContain('Guard trips in 2 matches: target produced NaN or infinity 50 times and behaviours.lurk.score hit division by zero 6 times.');
+  });
+});
+
+describe('strategy habits', () => {
+  // The Unpaid Intern "camps": the report has to say it in plain words, with the share, so a player
+  // or an LLM knows whether to fix scoring (idle), steering (stuck) or positioning (one spot).
+  it('calls out camping, getting stuck, never fighting and a favourite spot', () => {
+    const reports = [0, 1, 2].map((m) =>
+      match((_, gary) => {
+        gary.exposure = { ticksAlive: 1000, ticksSeen: 500, ticksInShadow: 0 };
+        gary.stats = { ...gary.stats, ticksIdle: 400, ticksStuck: 60, ticksToFirstContact: m === 0 ? 300 : null };
+        gary.heatmap = createHeatmap(1360, 860);
+        addToHeatmap(gary.heatmap, 60, 60, 700);
+        addToHeatmap(gary.heatmap, 680, 430, 300);
+      }),
+    );
+    const found = garyFindings(reports);
+    expect(found).toContain('Stood idle 40% of its time alive.');
+    expect(found).toContain('Stuck 6% of its time alive: it kept moving into walls, pillars, props or other fighters without getting anywhere.');
+    expect(found).toContain('Never fought anyone in 2 of 3 matches.');
+    expect(found).toContain('On pit it spent 70% of its time in one 240 px square, in the north-west corner.');
+  });
+
+  it('stays quiet about a fighter that roams, moves freely and fights', () => {
+    const reports = [0, 1, 2].map(() =>
+      match((_, gary) => {
+        gary.exposure = { ticksAlive: 1000, ticksSeen: 500, ticksInShadow: 0 };
+        gary.stats = { ...gary.stats, ticksIdle: 100, ticksStuck: 10, ticksToFirstContact: 200 };
+        gary.heatmap = createHeatmap(1360, 860);
+        for (let x = 40; x < 1360; x += 160) for (let y = 40; y < 860; y += 160) addToHeatmap(gary.heatmap, x, y, 10);
+      }),
+    );
+    const found = garyFindings(reports).join(' ');
+    expect(found).not.toMatch(/idle|Stuck|Never fought|spent \d+% of its time/);
   });
 });
 

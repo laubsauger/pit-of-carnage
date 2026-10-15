@@ -14,9 +14,10 @@
  * the shooter's speed and the distance. A melee hit on a ranged attacker in windup cancels the shot
  * (see damage.ts).
  *
- * Projectiles are swept every tick from their old to their new position and stop at the first
- * thing on that segment: wall, pillar, prop or any fighter (crowds take stray shots). A raised
- * shield stops every projectile from the front; a staff orb bursts on it and spares the bearer.
+ * Projectiles leave from the weapon's muzzle (staff tip, bow string, throwing hand) and are swept
+ * every tick from their old to their new position, stopping at the first thing on that segment:
+ * wall, pillar, prop or any fighter (crowds take stray shots). A raised shield stops every
+ * projectile from the front; a staff orb bursts on it and spares the bearer.
  */
 
 import {
@@ -36,7 +37,7 @@ import {
   skillDamage,
 } from '../core';
 import type { FighterRt, SimCtx } from './context';
-import type { AnimPhase, FighterState, ProjectileState, Vec2 } from '../core';
+import type { AnimPhase, FighterState, ProjectileState, Vec2, WeaponId } from '../core';
 import { applyDamage, bark, blow, canHurt, damageProp, dropItem } from './damage';
 import { circleBlocked, staticLosBlocked, staticSegmentT } from './geometry';
 import { remembers } from './perception';
@@ -59,6 +60,22 @@ const DROP_BACKOFF = 10;
 const SPLASH_KNOCKBACK = 0.6;
 /** SHADOWSTEP tries these rotations (radians) around the target's back when the spot is blocked. */
 const STEP_TRIES = [0, 0.5, -0.5, 1, -1, 1.6, -1.6];
+
+/**
+ * Where each ranged weapon lets go of its projectile, in the shooter's body frame: `u` px ahead
+ * along its facing, `v` px toward its right hand, for a body of MUZZLE_RADIUS (scaled by radius /
+ * MUZZLE_RADIUS, like the drawn rig). Read off the renderer's rig at release (render/fighters.ts
+ * with SWING_KEYS in render/rig.ts): the staff's orb tip at the end of the windup, the bow string
+ * at rest, and the throwing hand as the axe leaves it (a left-hand throw mirrors `v`).
+ */
+const MUZZLE: Readonly<Partial<Record<WeaponId, { u: number; v: number }>>> = {
+  THROWING_AXES: { u: 16, v: 15 },
+  LONGBOW: { u: 13, v: -3 },
+  ARCANE_STAFF: { u: 69.5, v: 20 },
+};
+const NO_MUZZLE = { u: 0, v: 0 };
+/** Body radius the rig is drawn at (the renderer's NOMINAL_RADIUS). */
+const MUZZLE_RADIUS = 18;
 
 function setPhase(f: FighterState, phase: AnimPhase, dur: number): void {
   f.anim.phase = phase;
@@ -315,15 +332,38 @@ function hitFighter(ctx: SimCtx, rt: FighterRt, j: number): void {
   applyDamage(ctx, j, resolveDamage(base, mult, v.attributes), info);
 }
 
+const muzzle: Vec2 = { x: 0, y: 0 };
+
 /**
- * Loose a projectile at the locked target (seen this tick, checked by `releaseShot`): along the
- * imperfectly led aim line, turned by a uniform random angle within `shotSpread(speed, distance)`.
- * A target closer than COMBAT.pointBlankRange makes it a point-blank shot (reduced damage).
+ * World position of f's muzzle (see MUZZLE), written into `out`. Axes alternate hands when both
+ * arms are there: an odd count throws from the right (the hand that holds a lone axe), an even
+ * count from the left.
+ */
+function muzzlePoint(f: FighterState, out: Vec2): Vec2 {
+  const m = MUZZLE[f.weapon] ?? NO_MUZZLE;
+  const side = f.weapon === 'THROWING_AXES' && f.limbs.armL && f.ammo % 2 === 0 ? -1 : 1;
+  const s = f.radius / MUZZLE_RADIUS;
+  const u = m.u * s;
+  const v = m.v * side * s;
+  const c = Math.cos(f.facing);
+  const n = Math.sin(f.facing);
+  out.x = f.pos.x + u * c - v * n;
+  out.y = f.pos.y + u * n + v * c;
+  return out;
+}
+
+/**
+ * Loose a projectile at the locked target (seen this tick, checked by `releaseShot`) from the
+ * weapon's muzzle: along the imperfectly led aim line from the muzzle, turned by a uniform random
+ * angle within `shotSpread(speed, distance)`. A target closer than COMBAT.pointBlankRange makes it
+ * a point-blank shot (reduced damage). The stretch from the body to the muzzle is swept first, so
+ * a staff held into a wall or a body bursts there instead of reaching through.
  */
 function fire(ctx: SimCtx, rt: FighterRt): void {
   const f = rt.f;
   const w = WEAPONS[f.weapon];
   const j = rt.attackTarget;
+  const m = muzzlePoint(f, muzzle);
   let dir = f.facing;
   let distance = Infinity;
   if (j >= 0) {
@@ -331,22 +371,25 @@ function fire(ctx: SimCtx, rt: FighterRt): void {
     aimPoint(ctx, rt, j, shotAim);
     distance = Math.hypot(rec.pos.x - f.pos.x, rec.pos.y - f.pos.y);
     const spread = shotSpread(Math.hypot(f.vel.x, f.vel.y), distance);
-    dir = Math.atan2(shotAim.y - f.pos.y, shotAim.x - f.pos.x) + ctx.combatRng.range(-spread, spread);
+    // Aimed from the muzzle, so a staff tip held off to the side still flies at the target.
+    dir = Math.atan2(shotAim.y - m.y, shotAim.x - m.x) + ctx.combatRng.range(-spread, spread);
   }
   const speed = projectileSpeed(f.weapon);
   const p: ProjectileState = {
     id: `p${ctx.nextId++}`,
     ownerId: f.id,
     weapon: f.weapon,
-    pos: { x: f.pos.x, y: f.pos.y },
+    pos: { x: m.x, y: m.y },
     vel: { x: Math.cos(dir) * speed, y: Math.sin(dir) * speed },
-    ttl: projectileTtl(f.weapon),
+    // The flight starts at the muzzle; the range still counts from the shooter.
+    ttl: Math.max(1, projectileTtl(f.weapon) - Math.floor(Math.hypot(m.x - f.pos.x, m.y - f.pos.y) / speed)),
+    origin: { x: m.x, y: m.y },
   };
   if (distance < COMBAT.pointBlankRange) ctx.pointBlank.add(p.id);
   f.ammo--;
   if (w.ammoRegenTicks > 0 && rt.ammoRegen === 0) rt.ammoRegen = w.ammoRegenTicks;
-  ctx.state.projectiles.push(p);
-  ctx.events.push({ type: 'projectile', tick: ctx.state.tick, projectileId: p.id, ownerId: f.id, weapon: f.weapon, pos: { x: p.pos.x, y: p.pos.y }, dir });
+  ctx.events.push({ type: 'projectile', tick: ctx.state.tick, projectileId: p.id, ownerId: f.id, weapon: f.weapon, pos: { x: m.x, y: m.y }, dir });
+  if (!sweep(ctx, p, f.pos, p.pos)) ctx.state.projectiles.push(p);
 }
 
 /**
@@ -405,24 +448,37 @@ const HIT_FIGHTER = 3;
 
 /** Advance one projectile; returns true when it ended this tick. */
 function stepProjectile(ctx: SimCtx, p: ProjectileState): boolean {
-  const oi = ctx.byId.get(p.ownerId)!;
-  const owner = ctx.rts[oi]!;
   segFrom.x = p.pos.x;
   segFrom.y = p.pos.y;
   segTo.x = p.pos.x + p.vel.x;
   segTo.y = p.pos.y + p.vel.y;
+  if (sweep(ctx, p, segFrom, segTo)) return true;
+  p.pos.x = segTo.x;
+  p.pos.y = segTo.y;
+  if (--p.ttl > 0) return false;
+  endProjectile(ctx, p, ctx.rts[ctx.byId.get(p.ownerId)!]!, p.pos.x, p.pos.y, -1);
+  return true;
+}
 
+/**
+ * Sweep projectile p along `from` -> `to` and stop it at the first thing on that segment: a wall,
+ * pillar or the closing wall, a live prop, or any fighter but its owner. Resolves what it hit
+ * (damage, shield, prop damage, then `endProjectile`) and returns true; false when the way is clear.
+ */
+function sweep(ctx: SimCtx, p: ProjectileState, from: Vec2, to: Vec2): boolean {
+  const oi = ctx.byId.get(p.ownerId)!;
+  const owner = ctx.rts[oi]!;
   let tBest = 2;
   let kind = HIT_NONE;
   let idx = -1;
-  const tw = staticSegmentT(ctx.geo, segFrom, segTo);
+  const tw = staticSegmentT(ctx.geo, from, to);
   if (tw >= 0) {
     tBest = tw;
     kind = HIT_WALL;
   }
   if (ctx.state.suddenDeath.active) {
     const b = ctx.bounds;
-    const te = exitT(segFrom, segTo, b.x, b.y, b.x + b.w, b.y + b.h);
+    const te = exitT(from, to, b.x, b.y, b.x + b.w, b.y + b.h);
     if (te >= 0 && te < tBest) {
       tBest = te;
       kind = HIT_WALL;
@@ -432,7 +488,7 @@ function stepProjectile(ctx: SimCtx, p: ProjectileState): boolean {
   for (let i = 0; i < props.length; i++) {
     const pr = props[i]!;
     if (!pr.alive) continue;
-    const t = segmentCircleT(segFrom, segTo, pr.pos, pr.radius);
+    const t = segmentCircleT(from, to, pr.pos, pr.radius);
     if (t >= 0 && t < tBest) {
       tBest = t;
       kind = HIT_PROP;
@@ -443,24 +499,17 @@ function stepProjectile(ctx: SimCtx, p: ProjectileState): boolean {
     if (!o.f.alive || o === owner) continue;
     // Without friendly fire, shots pass through squadmates instead of being soaked up by them.
     if (!ctx.config.friendlyFire && o.f.squad === owner.f.squad) continue;
-    const t = segmentCircleT(segFrom, segTo, o.f.pos, o.f.radius + PROJECTILE_BODY_SLACK);
+    const t = segmentCircleT(from, to, o.f.pos, o.f.radius + PROJECTILE_BODY_SLACK);
     if (t >= 0 && t < tBest) {
       tBest = t;
       kind = HIT_FIGHTER;
       idx = o.idx;
     }
   }
+  if (kind === HIT_NONE) return false;
 
-  if (kind === HIT_NONE) {
-    p.pos.x = segTo.x;
-    p.pos.y = segTo.y;
-    if (--p.ttl > 0) return false;
-    endProjectile(ctx, p, owner, p.pos.x, p.pos.y, -1);
-    return true;
-  }
-
-  const ex = segFrom.x + (segTo.x - segFrom.x) * tBest;
-  const ey = segFrom.y + (segTo.y - segFrom.y) * tBest;
+  const ex = from.x + (to.x - from.x) * tBest;
+  const ey = from.y + (to.y - from.y) * tBest;
   const w = WEAPONS[p.weapon];
   const dir = Math.atan2(p.vel.y, p.vel.x);
   const mult = shotMultiplier(ctx, p, owner);
@@ -647,7 +696,8 @@ function shadowstep(ctx: SimCtx, rt: FighterRt): boolean {
     const x = t.pos.x + Math.cos(a) * dist;
     const y = t.pos.y + Math.sin(a) * dist;
     if (circleBlocked(ctx.geo, x, y, f.radius)) continue;
-    if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) continue;
+    // The whole body lands inside the closing wall, never in or behind it.
+    if (x - f.radius < b.x || x + f.radius > b.x + b.w || y - f.radius < b.y || y + f.radius > b.y + b.h) continue;
     if (overlapsBody(ctx, rt, x, y)) continue;
     f.pos.x = x;
     f.pos.y = y;

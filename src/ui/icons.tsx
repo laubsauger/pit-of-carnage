@@ -170,3 +170,42 @@ export function ImportIcon({ size = 14 }: IconProps) {
     </Svg>
   );
 }
+
+/** Collapse or expand a side pane: a chevron pointing the way the pane will move. */
+export function ChevronIcon({ size = 14, dir }: IconProps & { dir: 'left' | 'right' | 'up' | 'down' }) {
+  const d = { left: 'M10 3.5 5.5 8l4.5 4.5', right: 'M6 3.5 10.5 8 6 12.5', up: 'M3.5 10 8 5.5l4.5 4.5', down: 'M3.5 6 8 10.5 12.5 6' }[dir];
+  return (
+    <Svg size={size}>
+      <path d={d} strokeWidth={1.6} />
+    </Svg>
+  );
+}
+
+/** Full-screen overview: four corners pushing outward. */
+export function ExpandIcon({ size = 14 }: IconProps) {
+  return (
+    <Svg size={size}>
+      <path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" />
+    </Svg>
+  );
+}
+
+/** Back to where you came from. */
+export function BackIcon({ size = 14 }: IconProps) {
+  return (
+    <Svg size={size}>
+      <path d="M6.5 3.5 2 8l4.5 4.5M2.5 8H14" />
+    </Svg>
+  );
+}
+
+/** Copy to the clipboard: two stacked sheets. */
+export function CopyIcon({ size = 14 }: IconProps) {
+  return (
+    <Svg size={size}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.4" />
+      <path d="M10.5 3.2V3a.9.9 0 0 0-.9-.9H3a.9.9 0 0 0-.9.9v6.6c0 .5.4.9.9.9h.2" />
+    </Svg>
+  );
+}
+

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { initialSuddenDeathState, matchHardCapTicks } from '../core';
 import type { FighterState, Match, MatchConfig, MatchEnding, WorldState } from '../core';
 import { createMatch } from '../sim';
-import { HOUSE_STACKS, gatedBrainFactory } from '../strategy';
+import { HOUSE_STACKS, gatedBrainFactory, headlessBrainFactory } from '../strategy';
 import { gymConfig } from './batch';
-import { SAFETY_MARGIN_TICKS, createSimRunner, headlessBrainFactory } from './runner';
+import { SAFETY_MARGIN_TICKS, createSimRunner } from './runner';
 import { makeStrategy } from './testkit';
 
 const config = gymConfig(5, 'pit', [makeStrategy('Gary'), makeStrategy('Brenda', { weapon: 'LONGBOW' })]);
@@ -74,5 +74,32 @@ describe('createSimRunner', () => {
     const inspected = createSimRunner({ createMatch, brainFactory: gatedBrainFactory })(duel);
     expect(headless).toEqual(inspected);
     expect(headless.ticks).toBeGreaterThan(0);
+  });
+
+  // The per-fighter stats are only worth quoting if they agree with the match they came from: no
+  // time counted after death, shares that fit inside the time alive, credit that fits the deaths.
+  it('records stats on a real match that stay consistent with the match', () => {
+    const ffa = gymConfig(21, 'catacombs', HOUSE_STACKS.slice(0, 8));
+    const report = createSimRunner({ createMatch, brainFactory: headlessBrainFactory })(ffa);
+    let moved = 0;
+    for (const f of report.fighters) {
+      const s = f.stats;
+      const alive = f.exposure.ticksAlive;
+      const squad = report.roster.find((e) => e.fighterId === f.fighterId)!.squad;
+      const enemyDeaths = report.kills.filter((k) => report.roster.find((e) => e.fighterId === k.victimId)!.squad !== squad).length;
+      expect(f.heatmap.total, f.fighterId).toBe(alive);
+      for (const ticks of [s.ticksEngaged, s.ticksIdle + s.ticksStuck, s.ticksNearWalls, s.ticksOutsideZone]) expect(ticks, f.fighterId).toBeLessThanOrEqual(alive);
+      expect(s.ticksToFirstContact === null, f.fighterId).toBe(s.ticksEngaged === 0);
+      expect(s.accuracy).toBeGreaterThanOrEqual(0);
+      expect(s.accuracy).toBeLessThanOrEqual(1);
+      expect(s.skillHits).toBeLessThanOrEqual(f.skillUses);
+      expect(s.assists + f.kills, f.fighterId).toBeLessThanOrEqual(enemyDeaths);
+      expect(s.killParticipation).toBeLessThanOrEqual(1);
+      if (!report.suddenDeathStart) expect(s.ticksOutsideZone).toBe(0);
+      if (f.death) expect(f.death.tick).toBe(f.diedAtTick);
+      else expect(f.diedAtTick).toBeNull();
+      moved += s.distanceTravelled;
+    }
+    expect(moved).toBeGreaterThan(0);
   });
 });

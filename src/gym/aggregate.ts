@@ -8,7 +8,23 @@
  * counts once there. The batch builder avoids mirrors unless the field is too small.
  */
 
-import type { AggregateReport, GuardTrip, KillCause, MatchReport, PickupKind, Rating, StrategyAggregate, WinRecord } from '../core';
+import { mergeHeatmap } from '../core';
+import type {
+  AggregateReport,
+  FighterStats,
+  GuardTrip,
+  Heatmap,
+  JudgedMatch,
+  KillCause,
+  MatchEnding,
+  MatchReport,
+  PickupKind,
+  Rating,
+  StrategyAggregate,
+  SuddenDeathReason,
+  SuddenDeathShare,
+  WinRecord,
+} from '../core';
 import { batchFindings, strategyFindings, type Appearance, type FindingContext, type StrategyFindingContext } from './findings';
 import { round, versionedName } from './format';
 import type { RatingBook } from './ratings';
@@ -70,6 +86,68 @@ function sumGuardTrips(lists: readonly (readonly GuardTrip[])[]): GuardTrip[] {
   return [...byKey.values()].sort((a, b) => b.count - a.count || (a.path < b.path ? -1 : a.path > b.path ? 1 : a.kind < b.kind ? -1 : 1));
 }
 
+/** How many of these matches reached sudden death, why, and when on average. */
+function suddenDeathShare(reports: readonly MatchReport[]): SuddenDeathShare {
+  const byReason: Partial<Record<SuddenDeathReason, number>> = {};
+  let matches = 0;
+  let startTicks = 0;
+  for (const r of reports) {
+    if (!r.suddenDeathStart) continue;
+    matches++;
+    startTicks += r.suddenDeathStart.tick;
+    byReason[r.suddenDeathStart.reason] = (byReason[r.suddenDeathStart.reason] ?? 0) + 1;
+  }
+  return {
+    matches,
+    share: reports.length > 0 ? round(matches / reports.length, 3) : 0,
+    byReason,
+    avgStartTick: matches > 0 ? Math.round(startTicks / matches) : null,
+  };
+}
+
+/**
+ * `FighterStats` over a strategy's appearances (see `StrategyAggregate.stats`): means per appearance,
+ * accuracy pooled over all attacks, per-second rates weighted by engaged time, time to first contact
+ * over the appearances that engaged.
+ */
+function averageStats(apps: readonly Appearance[]): FighterStats {
+  const n = apps.length;
+  const sum = (f: (s: FighterStats) => number) => apps.reduce((t, a) => t + f(a.fighter.stats), 0);
+  const mean = (f: (s: FighterStats) => number, digits: number) => round(sum(f) / n, digits);
+  const attacks = apps.reduce((t, a) => t + a.fighter.attacks, 0);
+  const landed = apps.reduce((t, a) => t + a.fighter.hitsLanded, 0);
+  const engaged = sum((s) => s.ticksEngaged);
+  const perEngaged = (f: (s: FighterStats) => number) => (engaged > 0 ? round(sum((s) => f(s) * s.ticksEngaged) / engaged, 1) : 0);
+  const contacts = apps.map((a) => a.fighter.stats.ticksToFirstContact).filter((t): t is number => t !== null);
+  return {
+    distanceTravelled: mean((s) => s.distanceTravelled, 0),
+    accuracy: attacks > 0 ? round(landed / attacks, 3) : 0,
+    skillHits: mean((s) => s.skillHits, 2),
+    ticksEngaged: mean((s) => s.ticksEngaged, 0),
+    damageDealtPerSecondEngaged: perEngaged((s) => s.damageDealtPerSecondEngaged),
+    damageTakenPerSecondEngaged: perEngaged((s) => s.damageTakenPerSecondEngaged),
+    ticksToFirstContact: contacts.length > 0 ? Math.round(contacts.reduce((t, c) => t + c, 0) / contacts.length) : null,
+    ticksIdle: mean((s) => s.ticksIdle, 0),
+    ticksStuck: mean((s) => s.ticksStuck, 0),
+    ticksNearWalls: mean((s) => s.ticksNearWalls, 0),
+    ticksOutsideZone: mean((s) => s.ticksOutsideZone, 0),
+    assists: mean((s) => s.assists, 2),
+    killParticipation: mean((s) => s.killParticipation, 3),
+  };
+}
+
+/** Every appearance's heatmap summed per map id. */
+function heatmapsByMap(apps: readonly Appearance[]): Record<string, Heatmap> {
+  const out: Record<string, Heatmap> = {};
+  for (const a of apps) {
+    const h = a.fighter.heatmap;
+    const into = out[a.report.mapId];
+    if (into) mergeHeatmap(into, h);
+    else out[a.report.mapId] = { ...h, counts: [...h.counts] };
+  }
+  return out;
+}
+
 function winRecord(matches: number, wins: number): WinRecord {
   return { matches, wins, winRate: matches > 0 ? round(wins / matches, 3) : 0 };
 }
@@ -94,11 +172,17 @@ export function strategyAggregate(key: string, apps: readonly Appearance[], rati
   for (const a of apps) placementHistogram[a.fighter.place - 1] = (placementHistogram[a.fighter.place - 1] ?? 0) + 1;
 
   let wins = 0;
+  let judged = 0;
+  let judgedWins = 0;
   const maps = new Map<string, { matches: number; wins: number }>();
   const opponents = new Map<string, { matches: number; wins: number }>();
   for (const [report, mine] of byReport) {
     const won = wonMatch(report, mine);
     if (won) wins++;
+    if (report.ending === 'judges') {
+      judged++;
+      if (won) judgedWins++;
+    }
     const m = maps.get(report.mapId) ?? { matches: 0, wins: 0 };
     m.matches++;
     if (won) m.wins++;
@@ -159,6 +243,10 @@ export function strategyAggregate(key: string, apps: readonly Appearance[], rati
     pickupsTaken: sumKinds(apps.map((a) => a.fighter.pickupsTaken)),
     killsWhileBuffed: sumKinds(apps.map((a) => a.fighter.killsWhileBuffed)),
     guardTrips: sumGuardTrips(apps.map((a) => a.fighter.guardTrips)),
+    stats: averageStats(apps),
+    heatmaps: heatmapsByMap(apps),
+    suddenDeath: suddenDeathShare([...byReport.keys()]),
+    judges: { matches: judged, share: round(judged / byReport.size, 3), wins: judgedWins },
     findings: [],
     rating: { ...rating },
   };
@@ -177,10 +265,22 @@ export function aggregateReports(reports: readonly MatchReport[], opts: Aggregat
   const strategies = [...appearancesByKey(reports)]
     .map(([key, apps]) => strategyAggregate(key, apps, opts.book.get(key), ctx))
     .sort((a, b) => b.rating.ordinal - a.rating.ordinal || a.avgPlace - b.avgPlace || (a.key < b.key ? -1 : 1));
+  const endings: Partial<Record<MatchEnding, number>> = {};
+  for (const r of reports) endings[r.ending] = (endings[r.ending] ?? 0) + 1;
+  const decisions: JudgedMatch[] = reports
+    .filter((r) => r.judges)
+    .map((r) => ({
+      seed: r.seed,
+      mapId: r.mapId,
+      survivors: r.judges!.map((j) => ({ ...j, strategyKey: r.roster.find((e) => e.fighterId === j.id)?.strategyKey ?? '' })),
+    }));
   return {
     matches: reports.length,
     seed: opts.seed,
     mapIds: [...opts.mapIds],
+    endings,
+    suddenDeath: suddenDeathShare(reports),
+    judges: { matches: decisions.length, share: reports.length > 0 ? round(decisions.length / reports.length, 3) : 0, decisions },
     strategies,
     findings: batchFindings(strategies, reports, {
       ...ctx,

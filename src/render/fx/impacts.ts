@@ -10,6 +10,11 @@
  *   burst and a ring the size of the splash,
  * - kegs: fire orange; a fireball and a scorch mark.
  *
+ * How big an impact is comes from what happened, never from the weapon (`impactSize`): every
+ * ordinary hit gets a similar, modest impact sized by its damage; crits and backstabs get a sharp
+ * flash and extra spray; kills get the full death burst (index.ts). A projectile's own impact is
+ * its identity (colour and kind of debris), kept small for every type, spells included.
+ *
  * Pure, no three.js: the world renderer can use the same colours for the projectile bodies.
  */
 
@@ -25,16 +30,45 @@ export type ProjectileFx = {
   impact: ImpactStyle;
   /** Trail, impact and spark colour (sRGB hex). Staff orbs use it only when the caster is unknown. */
   color: string;
+  /** Radius (px) of the impact's own flash. */
+  flash: number;
+  /** Particles (splinters, sparks, motes) the impact throws. */
+  particles: number;
 };
 
 export const PROJECTILE_FX: Readonly<Record<ProjectileWeapon, ProjectileFx>> = {
-  LONGBOW: { impact: 'splinters', color: '#e8b45a' },
-  THROWING_AXES: { impact: 'sparks', color: '#b8d4ff' },
-  ARCANE_STAFF: { impact: 'arcane', color: '#a565ff' },
+  LONGBOW: { impact: 'splinters', color: '#e8b45a', flash: 12, particles: 8 },
+  THROWING_AXES: { impact: 'sparks', color: '#b8d4ff', flash: 16, particles: 12 },
+  ARCANE_STAFF: { impact: 'arcane', color: '#a565ff', flash: 15, particles: 10 },
 };
 
-/** Keg blasts: an orange fireball and a scorch mark. */
-export const KEG_FX: Readonly<ProjectileFx> = { impact: 'fireball', color: '#ff6a12' };
+/** Keg blasts: an orange fireball and a scorch mark (sized by the blast radius, not by these). */
+export const KEG_FX: Readonly<ProjectileFx> = { impact: 'fireball', color: '#ff6a12', flash: 0, particles: 0 };
+
+/** Sizing of hit impacts by what happened. */
+export const IMPACT = {
+  /** Damage at which an ordinary hit reaches its full (modest) size. */
+  fullDamage: 40,
+  /** Size of the faintest hit (a scratch still shows). */
+  min: 0.25,
+  /** Size of an ordinary hit at `fullDamage` and above. */
+  max: 1,
+  /** Added for a crit or a backstab: the big moments... */
+  critBonus: 0.4,
+  /** ...which are never smaller than this, so even a weak crit outsizes every ordinary hit. */
+  critMin: 1.1,
+};
+
+/**
+ * Size of a hit's impact, 0.25..1 for ordinary hits (by damage alone, the same for every weapon) and
+ * 1.1..1.4 for crits and backstabs. Scales the floor spray, drops, ring and flash.
+ */
+export function impactSize(amount: number, crit: boolean, backstab: boolean): number {
+  const I = IMPACT;
+  const k = amount > 0 ? Math.min(1, amount / I.fullDamage) : 0;
+  const size = I.min + (I.max - I.min) * k;
+  return crit || backstab ? Math.max(I.critMin, size + I.critBonus) : size;
+}
 
 export function isProjectileWeapon(w: WeaponId | null | undefined): w is ProjectileWeapon {
   return w === 'LONGBOW' || w === 'THROWING_AXES' || w === 'ARCANE_STAFF';

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pit audio harness</title>
+    <style>
+      html, body { margin: 0; background: #0e0d0c; color: #e8e2d9; font: 13px/1.45 Inter, system-ui, sans-serif; }
+      main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      h2 { font-size: 14px; margin: 18px 0 6px; color: #a39a8e; text-transform: uppercase; letter-spacing: 0.06em; }
+      p { color: #a39a8e; margin: 4px 0 10px; }
+      button { background: #2a2622; color: #e8e2d9; border: 1px solid #3a352f; border-radius: 4px; padding: 4px 8px; margin: 2px; font: inherit; cursor: pointer; }
+      button:hover { border-color: #c4302b; }
+      .group { margin: 4px 0; }
+      .group b { display: inline-block; width: 70px; color: #a39a8e; font-weight: 500; }
+      table { border-collapse: collapse; font: 12px/1.3 'JetBrains Mono', ui-monospace, monospace; }
+      td, th { padding: 2px 6px; border-bottom: 1px solid #1f1c19; text-align: right; white-space: nowrap; }
+      th { color: #a39a8e; font-weight: 500; }
+      td:first-child, th:first-child { text-align: left; }
+      .warn { color: #c4302b; }
+      canvas { display: block; background: #161412; margin: 6px 0; max-width: 100%; }
+      pre { font: 11px/1.35 'JetBrains Mono', ui-monospace, monospace; color: #a39a8e; white-space: pre-wrap; }
+      #status { color: #e8e2d9; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pit audio harness</h1>
+      <p>Listen to every cue on the live engine, and render sounds, the crowd bed and a scripted match offline to check levels and spectra. <span id="status"></span></p>
+      <h2>Listen</h2>
+      <div id="listen"></div>
+      <h2>Offline checks</h2>
+      <button id="run">Run offline checks</button>
+      <div id="checks"></div>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

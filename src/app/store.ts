@@ -5,7 +5,7 @@
  * hand-edited or outdated entry can never reach a brain.
  */
 
-import type { SavedStrategy, Strategy, StrategyStore } from '../core';
+import type { SavedOrigin, SavedStrategy, Strategy, StrategyStore } from '../core';
 import { encodeStrategyCode, loadStrategy } from '../strategy';
 
 export const STRATEGIES_STORAGE_KEY = 'pit-of-carnage/strategies';
@@ -25,6 +25,15 @@ function isEntry(x: unknown): x is SavedStrategy {
   if (typeof x !== 'object' || x === null) return false;
   const e = x as Partial<SavedStrategy>;
   return typeof e.id === 'string' && typeof e.name === 'string' && typeof e.version === 'number' && typeof e.savedAt === 'number';
+}
+
+/** A stored origin, or null when missing or not one we know (entries saved before origins existed). */
+function originOf(x: unknown): SavedOrigin | null {
+  if (typeof x !== 'object' || x === null) return null;
+  const o = x as { kind?: unknown; generation?: unknown };
+  if (o.kind === 'editor' || o.kind === 'import' || o.kind === 'room') return { kind: o.kind };
+  if (o.kind === 'evolution' && typeof o.generation === 'number' && Number.isFinite(o.generation)) return { kind: 'evolution', generation: o.generation };
+  return null;
 }
 
 /** Read the stored library, keeping only entries whose strategy still validates. */
@@ -52,7 +61,8 @@ function load(storage: KeyValueStore | null): SavedStrategy[] {
       continue;
     }
     const strategy = { ...result.strategy, version: x.version };
-    out.push({ id: x.id, name: x.name, version: x.version, savedAt: x.savedAt, strategy, code: encodeStrategyCode(strategy) });
+    const parentId = typeof x.parentId === 'string' ? x.parentId : null;
+    out.push({ id: x.id, name: x.name, version: x.version, savedAt: x.savedAt, strategy, code: encodeStrategyCode(strategy), parentId, origin: originOf(x.origin) });
   }
   if (dropped > 0) console.warn(`Strategy library: ${dropped} saved strateg${dropped === 1 ? 'y' : 'ies'} failed validation and were left out.`);
   return out;
@@ -72,7 +82,7 @@ export function createStrategyStore(storage: KeyValueStore | null, now: () => nu
   return {
     list: () => entries,
 
-    save(s: Strategy): SavedStrategy {
+    save(s: Strategy, meta: { parentId?: string | null; origin?: SavedOrigin | null } = {}): SavedStrategy {
       const result = loadStrategy(s, 'saved');
       if (!result.strategy) {
         const first = result.errors[0];
@@ -81,7 +91,16 @@ export function createStrategyStore(storage: KeyValueStore | null, now: () => nu
       const name = result.strategy.name;
       const version = entries.reduce((v, e) => (e.name === name ? Math.max(v, e.version) : v), 0) + 1;
       const strategy = { ...result.strategy, version };
-      const entry: SavedStrategy = { id: `${name}@v${version}`, name, version, savedAt: now(), strategy, code: encodeStrategyCode(strategy) };
+      const entry: SavedStrategy = {
+        id: `${name}@v${version}`,
+        name,
+        version,
+        savedAt: now(),
+        strategy,
+        code: encodeStrategyCode(strategy),
+        parentId: meta.parentId ?? null,
+        origin: meta.origin ?? null,
+      };
       entries.push(entry);
       persist();
       return entry;

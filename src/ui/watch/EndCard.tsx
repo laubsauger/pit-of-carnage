@@ -1,7 +1,8 @@
 // Owned by: ui
-import { useEffect, useRef } from 'react';
+import { forwardRef } from 'react';
 import type { GameController, MatchReport, UiFighter, UiSnapshot } from '../../core';
 import { reportToText } from '../../gym';
+import { BRAND_URL } from '../brand';
 import { buildLine, formatClock, formatPlace, squadLetter } from '../format';
 import { usePolled } from '../hooks';
 import { CloseIcon } from '../icons';
@@ -14,13 +15,16 @@ type Props = {
   mapName: string;
   onNextMatch: () => void;
   onClose: () => void;
+  /** Open a fighter's strategy sheet: this match's overview plus the strategy itself. */
+  onSheet: (id: string) => void;
 };
 
-/** End-of-match card: who won, how, and what to do next. */
-export function EndCard({ controller, snap, mapName, onNextMatch, onClose }: Props) {
+/**
+ * End-of-match card. It slides in from the right edge instead of covering the middle, and the
+ * arena framing makes room for it (view insets), so the kill spot and the winner stay in view.
+ */
+export const EndCard = forwardRef<HTMLElement, Props>(function EndCard({ controller, snap, mapName, onNextMatch, onClose, onSheet }, ref) {
   const report = usePolled<MatchReport | null>(controller, () => controller.lastReport(), []);
-  const nextBtn = useRef<HTMLButtonElement>(null);
-  useEffect(() => nextBtn.current?.focus(), []);
 
   const byId = new Map(snap.fighters.map((f) => [f.id, f]));
   const nameOf = (id: string) => byId.get(id)?.name ?? report?.roster.find((r) => r.fighterId === id)?.name ?? 'someone';
@@ -42,56 +46,54 @@ export function EndCard({ controller, snap, mapName, onNextMatch, onClose }: Pro
   const findings = report?.findings.slice(0, 3) ?? [];
 
   return (
-    <div
-      className="endcard-scrim"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <section className="endcard" role="dialog" aria-label="Match result">
-        <div className="ec-top">
-          <div className="ec-band" style={{ background: winner?.color ?? 'var(--stone-4)' }} />
-          <button
-            type="button"
-            className="btn btn-sm btn-icon btn-quiet"
-            style={{ position: 'absolute', top: 12, right: 12 }}
-            onClick={onClose}
-            title="Close and look around (Esc)"
-          >
+    <section ref={ref} className="hud-panel endcard" role="dialog" aria-label="Match result">
+      <div className="ec-top">
+        <div className="ec-band" style={{ background: winner?.color ?? 'var(--stone-4)' }} />
+        <div className="ec-kicker-row">
+          <div className="ec-kicker">{report?.ending === 'judges' ? "The judges' decision" : 'Final'}</div>
+          <img className="ec-wordmark" src={`${BRAND_URL}wordmark.webp`} alt="" draggable={false} />
+          <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={onClose} title="Close and look around (Esc)" aria-label="Close">
             <CloseIcon />
           </button>
-          <h2 className="ec-title" style={{ color: winner?.color }}>
-            {title}
-          </h2>
-          {winner ? (
-            <div className="ec-sub">
-              {squads ? winningSquad.map((f) => f.name).join(', ') : buildLine(winner.weapon, winner.skill)}
+        </div>
+        <h2 className="ec-title" style={{ color: winner?.color }}>
+          {title}
+        </h2>
+        {winner ? (
+          <div className="ec-sub">
+            {squads ? winningSquad.map((f) => f.name).join(', ') : buildLine(winner.weapon, winner.skill)}
+            {!squads ? (
+              <button type="button" className="linkish ec-sheet" onClick={() => onSheet(winner.id)}>
+                Strategy sheet
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="ec-stats">
+          <div className="ec-stat">
+            <b>{kills}</b>
+            <span>{kills === 1 ? 'kill' : 'kills'}</span>
+          </div>
+          {winnerReport && !squads ? (
+            <div className="ec-stat">
+              <b>{Math.round(winnerReport.damageDealt)}</b>
+              <span>damage dealt</span>
             </div>
           ) : null}
-          <div className="ec-stats">
+          {winner && winner.alive ? (
             <div className="ec-stat">
-              <b>{kills}</b>
-              <span>{kills === 1 ? 'kill' : 'kills'}</span>
+              <b>{Math.ceil(winner.hp)}</b>
+              <span>HP left</span>
             </div>
-            {winnerReport && !squads ? (
-              <div className="ec-stat">
-                <b>{Math.round(winnerReport.damageDealt)}</b>
-                <span>damage dealt</span>
-              </div>
-            ) : null}
-            {winner && winner.alive ? (
-              <div className="ec-stat">
-                <b>{Math.ceil(winner.hp)}</b>
-                <span>HP left</span>
-              </div>
-            ) : null}
-            <div className="ec-stat">
-              <b>{formatClock(report?.ticks ?? snap.maxTick)}</b>
-              <span>match time</span>
-            </div>
+          ) : null}
+          <div className="ec-stat">
+            <b>{formatClock(report?.ticks ?? snap.maxTick)}</b>
+            <span>match time</span>
           </div>
         </div>
+      </div>
 
+      <div className="ec-scroll">
         {findings.length ? (
           <ul className="ec-findings">
             {findings.map((line) => (
@@ -100,39 +102,46 @@ export function EndCard({ controller, snap, mapName, onNextMatch, onClose }: Pro
           </ul>
         ) : null}
 
-        <div className="ec-places">
+        <div className="ec-places" onPointerLeave={() => controller.hover(null)}>
           {order.map((f, i) => (
-            <div className="ec-place" key={f.id}>
+            <button
+              type="button"
+              className={`ec-place${i === 0 ? ' winner' : ''}`}
+              key={f.id}
+              onClick={() => onSheet(f.id)}
+              onPointerEnter={() => controller.hover(f.id)}
+              title={`${f.name}: the strategy sheet for this match`}
+            >
               <span className="num">{formatPlace(i + 1)}</span>
               <span className="swatch" style={{ background: f.color }} />
-              <span>
+              <span className="ec-name">
                 {f.name}
                 {f.kills > 0 ? <span className="faint"> {f.kills} {f.kills === 1 ? 'kill' : 'kills'}</span> : null}
               </span>
               <span className="how">{i === 0 ? (f.alive ? 'last one standing' : '') : report ? howOut(f.id, report.kills, nameOf) : ''}</span>
-            </div>
+            </button>
           ))}
         </div>
+      </div>
 
-        <div className="ec-actions">
-          <button ref={nextBtn} type="button" className="btn btn-primary" onClick={onNextMatch}>
-            Next match
-          </button>
-          <button type="button" className="btn" onClick={() => controller.restart()}>
-            Watch again
-          </button>
-          <span className="spacer" />
-          <button
-            type="button"
-            className="btn"
-            disabled={!report}
-            title={report ? 'Battle report as text plus JSON, ready to paste into an LLM' : 'The report is still being written.'}
-            onClick={() => report && copyAndToast(reportToText(report), 'Report')}
-          >
-            Copy report for LLM
-          </button>
-        </div>
-      </section>
-    </div>
+      <div className="ec-actions">
+        <button type="button" className="btn btn-primary" onClick={onNextMatch}>
+          Next match
+        </button>
+        <button type="button" className="btn" onClick={() => controller.restart()}>
+          Watch again
+        </button>
+        <span className="spacer" />
+        <button
+          type="button"
+          className="btn"
+          disabled={!report}
+          title={report ? 'Battle report as text plus JSON, ready to paste into an LLM' : 'The report is still being written.'}
+          onClick={() => report && copyAndToast(reportToText(report), 'Report')}
+        >
+          Copy report for LLM
+        </button>
+      </div>
+    </section>
   );
-}
+});

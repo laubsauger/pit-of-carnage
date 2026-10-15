@@ -22,9 +22,9 @@ import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { DEFAULT_MAP_ID } from '../src/core';
 import type { MatchConfig, MatchReport } from '../src/core';
 import { analyseBalance, balanceMarkdown, balancePlan, type BalanceOptions } from '../src/gym/balance';
-import { createSimRunner, headlessBrainFactory } from '../src/gym/runner';
+import { createSimRunner } from '../src/gym/runner';
 import { MAPS, MAP_IDS, createMatch } from '../src/sim';
-import { HOUSE_STACKS } from '../src/strategy';
+import { HOUSE_STACKS, headlessBrainFactory } from '../src/strategy';
 
 type Job = { index: number; config: MatchConfig };
 type Done = { index: number; report: MatchReport } | { index: number; error: string };

@@ -4,7 +4,24 @@
  * invented; `findings` are plain sentences generated in code from those numbers.
  */
 
-import type { DamageSource, GuardTrip, KillCause, KillFlag, MatchEnding, MatchFormat, PickupKind, SkillId, Strategy, SuddenDeathReason, Vec2, WeaponId } from './types';
+import { TICK_HZ } from './constants';
+import { PERCEPTION } from './rules';
+import type {
+  DamageSource,
+  GuardTrip,
+  HazardKind,
+  JudgedFighter,
+  KillCause,
+  KillFlag,
+  MatchEnding,
+  MatchFormat,
+  PickupKind,
+  SkillId,
+  Strategy,
+  SuddenDeathReason,
+  Vec2,
+  WeaponId,
+} from './types';
 
 /**
  * Identity of a strategy across matches: `name@vN` (version defaults to 1).
@@ -65,6 +82,141 @@ export type KillRecord = {
   victimBehaviour: string;
 };
 
+// ---------------------------------------------------------------------------------------------
+// Per-fighter stats and heatmaps
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * How the per-fighter stats (`FighterStats`) are measured. These are measurement thresholds for
+ * reports, not gameplay rules; the UI and `reportToText` may quote them ("near a wall: within 48 px").
+ */
+export const REPORT_STATS = {
+  /**
+   * Engaged: from a tick where the fighter started an attack, or dealt damage to or took damage
+   * from an enemy, until this many ticks later (the same window as the `fighting` sensor).
+   * Hazards, kegs nobody broke and the wall do not engage anyone.
+   */
+  engagedWindowTicks: PERCEPTION.fightingWindowTicks,
+  /** Moving less than this many px in a tick counts as standing still (idle or stuck). */
+  stillPxPerTick: 0.15,
+  /** Standing still while its decision's throttle (`Decision.speed`) is at least this = stuck, below = idle. */
+  stuckThrottle: 0.5,
+  /** Near a wall: the fighter's centre within this many px of a map wall or pillar. */
+  nearWallPx: 48,
+  /** Assist: dealt damage to an enemy within this many ticks before its death without landing the kill. */
+  assistWindowTicks: 5 * TICK_HZ,
+} as const;
+
+/** Edge of one heatmap cell in world px: 17 x 11 cells on a 1360 x 860 map. */
+export const HEATMAP_CELL_PX = 80;
+
+/**
+ * Where a fighter spent its time (or a strategy, summed over its appearances on one map). Plain
+ * JSON. `counts` is row-major with `rows x cols` entries: cell (col, row) covers world x in
+ * [col x cell, (col + 1) x cell) and y in [row x cell, (row + 1) x cell), and counts the ticks the
+ * fighter was alive with its centre inside it (positions off the map count in the nearest edge
+ * cell). `total` is the sum of `counts`, so `counts[i] / total` is the share of time in cell i.
+ * Build and fill them with `createHeatmap`, `addToHeatmap` and `mergeHeatmap`.
+ */
+export type Heatmap = { cell: number; cols: number; rows: number; counts: number[]; total: number };
+
+/** An empty heatmap covering a `width` x `height` px map. */
+export function createHeatmap(width: number, height: number, cell: number = HEATMAP_CELL_PX): Heatmap {
+  const cols = Math.max(1, Math.ceil(width / cell));
+  const rows = Math.max(1, Math.ceil(height / cell));
+  return { cell, cols, rows, counts: new Array<number>(cols * rows).fill(0), total: 0 };
+}
+
+/** Count `n` ticks (default 1) at world point (x, y). Non-finite points are ignored. */
+export function addToHeatmap(h: Heatmap, x: number, y: number, n = 1): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const col = Math.min(h.cols - 1, Math.max(0, Math.floor(x / h.cell)));
+  const row = Math.min(h.rows - 1, Math.max(0, Math.floor(y / h.cell)));
+  h.counts[row * h.cols + col]! += n;
+  h.total += n;
+}
+
+/** Add every count of `from` into `into` (same map, same cell size), e.g. to sum a strategy's matches. */
+export function mergeHeatmap(into: Heatmap, from: Heatmap): void {
+  if (into.cell !== from.cell || into.cols !== from.cols || into.rows !== from.rows) {
+    throw new Error(`mergeHeatmap: shapes differ (${into.cols}x${into.rows} @${into.cell}px vs ${from.cols}x${from.rows} @${from.cell}px).`);
+  }
+  for (let i = 0; i < into.counts.length; i++) into.counts[i]! += from.counts[i]!;
+  into.total += from.total;
+}
+
+/**
+ * Movement and engagement numbers for one fighter in one match ("for humans and LLMs"). Ticks are
+ * sim ticks (`TICK_HZ` per second) counted while the fighter was alive; thresholds in
+ * `REPORT_STATS`. In a `StrategyAggregate` the same shape holds averages, see there.
+ */
+export type FighterStats = {
+  /** px moved while alive (sum of per-tick movement; a Shadowstep teleport counts as no movement). */
+  distanceTravelled: number;
+  /** `hitsLanded / attacks`, 0..1; 0 when it never attacked. */
+  accuracy: number;
+  /** Skill uses that damaged or stunned at least one enemy (Whirlwind, Shockwave; buffs and moves never count). */
+  skillHits: number;
+  /** Ticks spent engaged (`REPORT_STATS.engagedWindowTicks`). */
+  ticksEngaged: number;
+  /** Damage dealt to enemies per second of engaged time; 0 when never engaged. */
+  damageDealtPerSecondEngaged: number;
+  /** Damage taken from enemies per second of engaged time; 0 when never engaged. */
+  damageTakenPerSecondEngaged: number;
+  /** Ticks from the match start to its first engaged tick; null when it never engaged anyone. */
+  ticksToFirstContact: number | null;
+  /** Ticks standing still without wanting to move (not attacking, not stunned, throttle below `stuckThrottle`). */
+  ticksIdle: number;
+  /** Ticks standing still while its decision asked to move (pressed into a wall, pillar, prop or crowd). */
+  ticksStuck: number;
+  /** Ticks with its centre within `REPORT_STATS.nearWallPx` of a map wall or pillar. */
+  ticksNearWalls: number;
+  /**
+   * Ticks during sudden death outside `SuddenDeathState.warning`: beyond the wall or in the strip it
+   * reaches within 3 s (the brains' `outside_zone`).
+   */
+  ticksOutsideZone: number;
+  /** Enemy deaths it dealt damage to within `REPORT_STATS.assistWindowTicks` before, without the kill. */
+  assists: number;
+  /** `(kills + assists) / enemy deaths in the match`, 0..1; 0 when no enemy died. */
+  killParticipation: number;
+};
+
+/**
+ * All zero (`ticksToFirstContact` null): a fighter that never moved, attacked or engaged. Also the
+ * starting value for sums and the fill for test fixtures.
+ */
+export function emptyFighterStats(): FighterStats {
+  return {
+    distanceTravelled: 0,
+    accuracy: 0,
+    skillHits: 0,
+    ticksEngaged: 0,
+    damageDealtPerSecondEngaged: 0,
+    damageTakenPerSecondEngaged: 0,
+    ticksToFirstContact: null,
+    ticksIdle: 0,
+    ticksStuck: 0,
+    ticksNearWalls: 0,
+    ticksOutsideZone: 0,
+    assists: 0,
+    killParticipation: 0,
+  };
+}
+
+/** How a fighter died: its kill as recorded (see KillRecord), plus the hazard kind and the stamp. */
+export type DeathRecord = {
+  tick: number;
+  cause: KillCause;
+  /** Who got the kill (the victim itself for an own goal), or null (hazard, wall, nobody's keg). */
+  killerId: string | null;
+  weapon: WeaponId | null;
+  hazard: HazardKind | null;
+  flags: KillFlag[];
+  /** The kill stamp shown ("SPLIT", "SAWED", "CRUSHED"). */
+  title: string;
+};
+
 export type FighterReport = {
   fighterId: string;
   place: number;
@@ -100,6 +252,12 @@ export type FighterReport = {
   killsWhileBuffed: Partial<Record<PickupKind, number>>;
   /** Runtime guard trips of this fighter's brain over the match (from `MatchResult`), most first. */
   guardTrips: GuardTrip[];
+  /** Movement and engagement numbers (distance, accuracy, damage per engaged second, idle, walls, ...). */
+  stats: FighterStats;
+  /** How it died, or null when it survived. */
+  death: DeathRecord | null;
+  /** Where it spent its time alive on this match's map. */
+  heatmap: Heatmap;
 };
 
 export type MatchReport = {
@@ -116,6 +274,11 @@ export type MatchReport = {
   ending: MatchEnding;
   /** When and why sudden death started, or null if it never did. */
   suddenDeathStart: { tick: number; reason: SuddenDeathReason } | null;
+  /**
+   * The judges' scorecards (survivors in judged order, 1st first, with the numbers they used) when
+   * the match ended `judges`; null otherwise.
+   */
+  judges: JudgedFighter[] | null;
   roster: ReportRosterEntry[];
   /** Fighter ids, 1st place first. */
   placements: string[];
@@ -130,6 +293,25 @@ export type MatchReport = {
 // ---------------------------------------------------------------------------------------------
 
 export type WinRecord = { matches: number; wins: number; winRate: number };
+
+/** How often a set of matches reached sudden death, and why. */
+export type SuddenDeathShare = {
+  /** Matches where sudden death started. */
+  matches: number;
+  /** `matches` / matches counted, 0..1. */
+  share: number;
+  byReason: Partial<Record<SuddenDeathReason, number>>;
+  /** Mean tick sudden death started at over those matches; null when none reached it. */
+  avgStartTick: number | null;
+};
+
+/** One match the judges decided, for batch reports ("The judges gave it to Gary on the Pit, seed 42"). */
+export type JudgedMatch = {
+  seed: number;
+  mapId: string;
+  /** Survivors in judged order (1st first) with their scorecards and strategy keys. */
+  survivors: (JudgedFighter & { strategyKey: string })[];
+};
 
 /**
  * One strategy's results across a batch. Units: `placementHistogram`, `avgPlace`, `avgKills`,
@@ -164,6 +346,18 @@ export type StrategyAggregate = {
   killsWhileBuffed: Partial<Record<PickupKind, number>>;
   /** Guard-trip totals across the batch, summed per path and kind, most first. */
   guardTrips: GuardTrip[];
+  /**
+   * `FighterStats` averaged per appearance, except: `accuracy` pools all landed attacks over all
+   * attacks; the per-second rates are weighted by engaged time; `ticksToFirstContact` averages only
+   * the appearances that engaged (null when none did).
+   */
+  stats: FighterStats;
+  /** Where it spent its time, summed over its appearances, by map id (compare strategies per map). */
+  heatmaps: Record<string, Heatmap>;
+  /** Of its matches: how many reached sudden death, and why. */
+  suddenDeath: SuddenDeathShare;
+  /** Of its matches: how many the judges decided (`share` of its matches), and how many of those it won. */
+  judges: { matches: number; share: number; wins: number };
   /** Plain sentences computed from the numbers above. */
   findings: string[];
   /** Rating after this batch (continues from the stored rating when one exists). */
@@ -174,6 +368,12 @@ export type AggregateReport = {
   matches: number;
   seed: number;
   mapIds: string[];
+  /** How the batch's matches ended, by ending. */
+  endings: Partial<Record<MatchEnding, number>>;
+  /** How many of the batch's matches reached sudden death, and why. */
+  suddenDeath: SuddenDeathShare;
+  /** Matches the judges decided (`share` of the batch), each with its scorecards. */
+  judges: { matches: number; share: number; decisions: JudgedMatch[] };
   /** Sorted by rating ordinal, best first. */
   strategies: StrategyAggregate[];
   /** Batch-level findings, e.g. "Lurking Daggers v3 beats the house stacks 7 of 10 on the Pit." */

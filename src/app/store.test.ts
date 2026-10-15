@@ -37,6 +37,25 @@ describe('strategy store', () => {
     expect(again.save(gary).version).toBe(3);
   });
 
+  // "Slurpy Hawk v4, evolved from v3, generation 140": origin and parent are separate from the
+  // version number, survive a reload, and libraries saved before they existed still load.
+  it('keeps each version’s parent and origin across a reload, null for older saves', () => {
+    const storage = memory();
+    const store = createStrategyStore(storage);
+    const v1 = store.save({ ...gary, version: 140 }, { origin: { kind: 'import' } });
+    const v2 = store.save(gary, { parentId: v1.id, origin: { kind: 'evolution', generation: 140 } });
+    const plain = store.save(brenda);
+    expect(v1.version).toBe(1); // the JSON's own version is never trusted
+    expect([plain.parentId, plain.origin]).toEqual([null, null]);
+    const again = createStrategyStore(storage).list();
+    expect(again.find((e) => e.id === v2.id)).toMatchObject({ parentId: v1.id, origin: { kind: 'evolution', generation: 140 } });
+    expect(again.find((e) => e.id === v1.id)).toMatchObject({ parentId: null, origin: { kind: 'import' } });
+
+    const old = memory();
+    old.data.set(STRATEGIES_STORAGE_KEY, JSON.stringify([{ ...v1, parentId: undefined, origin: { kind: 'teleporter' } }]));
+    expect(createStrategyStore(old).list()[0]).toMatchObject({ id: v1.id, parentId: null, origin: null });
+  });
+
   it('gives every entry a strategy code that decodes back to the saved version', () => {
     const entry = createStrategyStore(memory()).save(gary);
     const decoded = decodeStrategyCode(entry.code);

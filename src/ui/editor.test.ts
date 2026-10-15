@@ -203,6 +203,8 @@ describe('issue placement', () => {
     expect(t.slice(13, tokenEnd(t, 13))).toBe('12.5e3');
     expect(tokenEnd('"open\nnext', 0)).toBe(5);
     expect(tokenEnd('{ }', 0)).toBe(1);
+    // Inside an expression a name ends at the next operator, so only the misspelt word is marked.
+    expect(tokenEnd('self.hpp+1', 0)).toBe('self.hpp'.length);
   });
 
   it('lists errors before warnings and never draws two underlines over each other', () => {

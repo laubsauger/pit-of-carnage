@@ -34,10 +34,10 @@ describe('determinism', () => {
   afterEach(() => vi.restoreAllMocks());
 
   // Replays, seeking and gym reports all assume a config + seed replays exactly. 16 fighters on
-  // the catacombs (long, dark: hearing estimates, memory, search) with seed 2 runs past 3000 ticks
-  // and into sudden death, so every system is involved.
+  // the catacombs (long, dark: hearing estimates, memory, search) with seed 3 runs past 3000 ticks
+  // and into sudden death (the closing wall pushing and crushing), so every system is involved.
   it('replays the same seed to an identical state, checked every 100 ticks for 3000+ ticks', () => {
-    const config = testConfig({ seed: 2, mapId: 'catacombs', fighters: 16 });
+    const config = testConfig({ seed: 3, mapId: 'catacombs', fighters: 16 });
     const a = createMatch(config, seekerBrain);
     const b = createMatch(config, seekerBrain);
     let checked = 0;
@@ -127,6 +127,27 @@ describe('match flow', () => {
     expect(m.state.tick).toBeLessThan(timeLimitTicks + 60 * 60);
     expect(m.state.ending).toBe('elimination');
     expect(events.filter((e) => e.type === 'match_end')[0]).toMatchObject({ ending: 'elimination' });
+  });
+
+  // The final-kill slow motion, the WINNER stamp and the biggest roar hang off this flag: exactly
+  // the kill that decided the match, on the match_end tick, and never a kill in a match the clock ended.
+  it('marks exactly one kill as final: the last kill of an elimination, on the match_end tick', () => {
+    for (const seed of [11, 12]) {
+      const m = createMatch(testConfig({ seed, fighters: 6 }), seekerBrain);
+      const events = runToEnd(m);
+      expect(m.isOver, `seed ${seed} did not finish within the tick cap`).toBe(true);
+      expect(m.state.ending).toBe('elimination');
+      const kills = events.filter((e): e is Extract<GameEvent, { type: 'kill' }> => e.type === 'kill');
+      const finals = kills.filter((k) => k.final);
+      expect(finals).toHaveLength(1);
+      const end = events.find((e) => e.type === 'match_end')!;
+      expect(finals[0]!.tick).toBe(end.tick);
+      expect(finals[0]).toBe(kills.filter((k) => k.tick === end.tick).at(-1));
+    }
+    const timed = createMatch(testConfig({ seed: 5, fighters: 4, timeLimitTicks: 300, suddenDeath: false }), seekerBrain);
+    const timedEvents = runToEnd(timed);
+    expect(timed.state.ending).toBe('time');
+    expect(timedEvents.some((e) => e.type === 'kill' && e.final)).toBe(false);
   });
 
   it('without sudden death the match ends at the time limit, ranked by remaining health', () => {

@@ -3,6 +3,7 @@
 // mutates its state in place, so the HUD keeps its own copies, taken at controller notifications
 // (about 10 Hz).
 import { PICKUP_RULES, TICK_HZ } from '../../core';
+import type { DecisionWithTargets } from './overview';
 import type {
   Attributes,
   Decision,
@@ -51,6 +52,8 @@ export type DecisionCopy = Pick<Decision, 'behaviour' | 'targetId' | 'heading' |
   terms: { label: string; ratings: number[] }[];
   sensors: Record<string, number>;
   guardTrips: GuardTrip[];
+  /** Per-enemy target scores, when the brain reports them (proposed `Decision` refinement). */
+  targetScores?: Record<string, number>;
 };
 
 /** What the inspector keeps of one knowledge record (the sim's records are live). */
@@ -79,6 +82,7 @@ export function copyDecision(d: Decision | null): DecisionCopy | null {
     terms: d.terms.map((t) => ({ label: t.label, ratings: [...t.ratings] })),
     sensors: { ...(d.sensors ?? {}) },
     guardTrips: (d.guardTrips ?? []).map((t) => ({ ...t })),
+    ...((d as DecisionWithTargets).targetScores ? { targetScores: { ...(d as DecisionWithTargets).targetScores } } : {}),
   };
 }
 

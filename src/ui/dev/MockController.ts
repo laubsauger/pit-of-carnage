@@ -6,14 +6,20 @@ import {
   DEFAULT_TIME_LIMIT_TICKS,
   DEFAULT_VIEW_SETTINGS,
   FIGHTER_COLORS,
+  HAZARD_RULES,
+  LOADING_STAGES,
   MATCH_RULES,
   PICKUP_RULES,
+  PROP_RULES,
   Rng,
   STEER_DIRS,
   TICK_HZ,
   WEAPONS,
+  addToHeatmap,
   clamp,
+  createHeatmap,
   displayRating,
+  mergeHeatmap,
   fighterRadius,
   hashString,
   initialSuddenDeathState,
@@ -25,8 +31,10 @@ import {
 } from '../../core';
 import type {
   AggregateReport,
+  BackgroundJob,
   BatchRequest,
   BatchResult,
+  DeathRecord,
   Decision,
   EvolveCandidate,
   EvolveGeneration,
@@ -35,16 +43,22 @@ import type {
   FeedItem,
   FighterReport,
   FighterState,
+  FighterStats,
   GameController,
+  Heatmap,
   GuardTrip,
   KillCause,
   KillFlag,
   KillRecord,
   KnownFighter,
   LeaderboardEntry,
+  MapObjectKind,
   MatchConfig,
+  MatchEnding,
+  MatchPhase,
   MatchReport,
   MoveTerm,
+  ObjectInfo,
   Rating,
   SavedStrategy,
   Strategy,
@@ -55,6 +69,7 @@ import type {
   ViewSettings,
   WeaponId,
 } from '../../core';
+import type { ArchiveCell } from '../../gym';
 import { MAPS } from '../../sim';
 import { encodeStrategyCode } from '../../strategy';
 import { readStored, writeStored } from '../hooks';
@@ -234,6 +249,18 @@ function buildScript(config: MatchConfig): Script {
 const hpAt = (f: ScriptFighter, tick: number) => Math.max(0, f.maxHp - f.hits.reduce((s, h) => (h.tick <= tick ? s + h.amount : s), 0));
 const aliveAt = (f: ScriptFighter, tick: number) => f.deathTick === null || tick < f.deathTick;
 
+/** Where a scripted fighter actually went, sampled twice a second, as a report heatmap. */
+function pathHeatmap(f: ScriptFighter, s: Script): Heatmap {
+  const map = MAPS[s.config.mapId] ?? MAPS.pit!;
+  const h = createHeatmap(map.width, map.height);
+  const end = f.deathTick ?? s.endTick;
+  for (let t = 0; t < end; t += 30) {
+    const p = posAt(f, t, map.width, map.height);
+    addToHeatmap(h, p.x, p.y, Math.min(30, end - t));
+  }
+  return h;
+}
+
 function posAt(f: ScriptFighter, tick: number, w: number, h: number): { x: number; y: number } {
   const t = (f.deathTick !== null ? Math.min(tick, f.deathTick) : tick) / TICK_HZ;
   const o = f.orbit;
@@ -277,6 +304,76 @@ function rating(avgPlace: number, fighters: number, matches: number): Rating {
 
 /** Fake strength per strategy so the same names win and lose consistently across batches. */
 const strength = (s: Strategy) => (hashString(strategyKey(s)) % 1000) / 1000;
+
+/** Kill stamps as the sim would title a death, by weapon or cause (mock only). */
+const STAMPS: Record<WeaponId, string> = {
+  GREATSWORD: 'SPLIT', WARHAMMER: 'FLATTENED', TWIN_DAGGERS: 'BACKSTAB', THROWING_AXES: 'AXED', LONGBOW: 'PINNED', ARCANE_STAFF: 'VAPORIZED',
+};
+const CAUSE_STAMPS: Partial<Record<KillCause, string>> = { hazard: 'SAWED', keg: 'KABOOM', sudden_death: 'CLOSED IN', friendly: 'OOPS' };
+
+function deathRecord(k: KillRecord | undefined): DeathRecord | null {
+  if (!k) return null;
+  return {
+    tick: k.tick, cause: k.cause, killerId: k.killerId, weapon: k.weapon, hazard: k.cause === 'hazard' ? 'saw' : null, flags: k.flags,
+    title: CAUSE_STAMPS[k.cause] ?? (k.weapon ? STAMPS[k.weapon] : 'DOWN'),
+  };
+}
+
+/** Believable movement and engagement numbers for `alive` ticks of a match. */
+function fakeStats(rng: Rng, alive: number, attacks: number, hits: number, kills: number, enemyDeaths: number): FighterStats {
+  const engaged = Math.round(alive * rng.range(0.15, 0.55));
+  const assists = rng.int(0, 2);
+  return {
+    distanceTravelled: Math.round(alive * rng.range(0.6, 1.5)),
+    accuracy: attacks > 0 ? Math.min(1, hits / attacks) : 0,
+    skillHits: rng.int(0, 4),
+    ticksEngaged: engaged,
+    damageDealtPerSecondEngaged: Math.round(rng.range(8, 40) * 10) / 10,
+    damageTakenPerSecondEngaged: Math.round(rng.range(8, 40) * 10) / 10,
+    ticksToFirstContact: rng.chance(0.93) ? rng.int(2, 15) * TICK_HZ : null,
+    ticksIdle: rng.int(0, 420),
+    ticksStuck: rng.chance(0.4) ? rng.int(0, 160) : 0,
+    ticksNearWalls: Math.round(alive * rng.range(0.05, 0.5)),
+    ticksOutsideZone: rng.chance(0.3) ? rng.int(10, 240) : 0,
+    assists,
+    killParticipation: enemyDeaths > 0 ? Math.min(1, (kills + assists) / enemyDeaths) : 0,
+  };
+}
+
+/** A home spot it keeps going back to, plus wandering, so heatmaps have a shape worth reading. */
+function fakeHeatmap(rng: Rng, mapId: string, alive: number): Heatmap {
+  const map = MAPS[mapId] ?? MAPS.pit!;
+  const h = createHeatmap(map.width, map.height);
+  const hx = rng.range(0.1, 0.9) * map.width;
+  const hy = rng.range(0.1, 0.9) * map.height;
+  const homeShare = rng.range(0.3, 0.8);
+  for (let t = 0; t < alive; t += 30) {
+    const home = rng.chance(homeShare);
+    addToHeatmap(h, home ? hx + rng.normal(0, 70) : rng.range(0, map.width), home ? hy + rng.normal(0, 60) : rng.range(0, map.height), Math.min(30, alive - t));
+  }
+  return h;
+}
+
+function averageStats(list: readonly FighterStats[]): FighterStats {
+  const n = Math.max(1, list.length);
+  const avg = (f: (s: FighterStats) => number) => list.reduce((a, s) => a + f(s), 0) / n;
+  const contacts = list.map((s) => s.ticksToFirstContact).filter((v): v is number => v !== null);
+  return {
+    distanceTravelled: avg((s) => s.distanceTravelled),
+    accuracy: avg((s) => s.accuracy),
+    skillHits: avg((s) => s.skillHits),
+    ticksEngaged: avg((s) => s.ticksEngaged),
+    damageDealtPerSecondEngaged: avg((s) => s.damageDealtPerSecondEngaged),
+    damageTakenPerSecondEngaged: avg((s) => s.damageTakenPerSecondEngaged),
+    ticksToFirstContact: contacts.length ? contacts.reduce((a, v) => a + v, 0) / contacts.length : null,
+    ticksIdle: avg((s) => s.ticksIdle),
+    ticksStuck: avg((s) => s.ticksStuck),
+    ticksNearWalls: avg((s) => s.ticksNearWalls),
+    ticksOutsideZone: avg((s) => s.ticksOutsideZone),
+    assists: avg((s) => s.assists),
+    killParticipation: avg((s) => s.killParticipation),
+  };
+}
 
 function fakeReports(req: { candidates: Strategy[]; field: Strategy[]; mapIds: string[]; matches: number; fighters: number; seed: number }, boost: number): MatchReport[] {
   const rng = new Rng(req.seed).fork('batch');
@@ -325,8 +422,12 @@ function fakeReports(req: { candidates: Strategy[]; field: Strategy[]; mapIds: s
         victimBehaviour: 'heal',
       });
     }
+    const mapId = req.mapIds[m % req.mapIds.length];
     const fighters: FighterReport[] = placements.map((id, p) => {
       const died = kills.find((k) => k.victimId === id);
+      const attacks = rng.int(8, 40);
+      const hitsLanded = rng.int(3, Math.max(3, Math.min(attacks, 20)));
+      const aliveTicks = died ? died.tick : ticks;
       return {
         fighterId: id,
         place: p + 1,
@@ -339,26 +440,32 @@ function fakeReports(req: { candidates: Strategy[]; field: Strategy[]; mapIds: s
         exposure: { ticksAlive: died ? died.tick : ticks, ticksSeen: rng.int(200, 2000), ticksInShadow: rng.int(0, 1800) },
         damageDealtBySource: { weapon: rng.int(40, 300), skill: rng.int(0, 80) },
         damageTakenBySource: { weapon: rng.int(80, 300), hazard: rng.int(0, 40) },
-        attacks: rng.int(8, 40),
-        hitsLanded: rng.int(3, 20),
+        attacks,
+        hitsLanded,
         skillUses: rng.int(0, 6),
         parries: rng.int(0, 4),
         pickupsTaken: rng.chance(0.5) ? { berserk: rng.int(1, 3) } : {},
         killsWhileBuffed: {},
         guardTrips: [],
+        stats: fakeStats(rng, aliveTicks, attacks, hitsLanded, killCount.get(id) ?? 0, n - 1),
+        death: deathRecord(died),
+        heatmap: fakeHeatmap(rng, mapId, aliveTicks),
       };
     });
+    const ending: MatchEnding = rng.chance(0.08) ? 'judges' : 'elimination';
+    const sdStart = rng.chance(0.45) ? { tick: rng.int(60, 90) * TICK_HZ, reason: rng.chance(0.7) ? ('time' as const) : ('stalemate' as const) } : null;
     const winner = roster.find((r) => r.fighterId === placements[0])!;
     reports.push({
       seed: (req.seed + m * 7919) >>> 0,
-      mapId: req.mapIds[m % req.mapIds.length],
+      mapId,
       format: 'ffa',
       timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS,
       suddenDeath: true,
       friendlyFire: true,
       ticks,
-      ending: 'elimination',
-      suddenDeathStart: null,
+      ending,
+      suddenDeathStart: ending === 'judges' ? { tick: DEFAULT_TIME_LIMIT_TICKS, reason: 'time' } : sdStart,
+      judges: ending === 'judges' ? [{ id: placements[0]!, hpFraction: 0.4, damageDealt: 300, kills: killCount.get(placements[0]!) ?? 0 }] : null,
       roster,
       placements,
       kills,
@@ -370,18 +477,38 @@ function fakeReports(req: { candidates: Strategy[]; field: Strategy[]; mapIds: s
 }
 
 function aggregate(reports: MatchReport[], seed: number, mapIds: string[], fighters: number): AggregateReport {
-  type Acc = { key: string; name: string; version: number; places: number[]; byMap: Map<string, [number, number]>; byOpp: Map<string, [number, number]>; kills: number; dmg: number; surv: number; deaths: Map<KillCause, number>; killers: Map<string, number> };
+  type Acc = {
+    key: string; name: string; version: number; places: number[]; byMap: Map<string, [number, number]>; byOpp: Map<string, [number, number]>;
+    kills: number; dmg: number; surv: number; deaths: Map<KillCause, number>; killers: Map<string, number>;
+    stats: FighterStats[]; heat: Map<string, Heatmap>; sd: number; judged: number; judgedWins: number; matchesSeen: Set<number>;
+  };
   const accs = new Map<string, Acc>();
   for (const r of reports) {
     const keyOf = new Map(r.roster.map((x) => [x.fighterId, x.strategyKey]));
     for (const entry of r.roster) {
       let a = accs.get(entry.strategyKey);
       if (!a) {
-        a = { key: entry.strategyKey, name: entry.strategyName, version: entry.strategyVersion, places: [], byMap: new Map(), byOpp: new Map(), kills: 0, dmg: 0, surv: 0, deaths: new Map(), killers: new Map() };
+        a = {
+          key: entry.strategyKey, name: entry.strategyName, version: entry.strategyVersion, places: [], byMap: new Map(), byOpp: new Map(), kills: 0, dmg: 0, surv: 0,
+          deaths: new Map(), killers: new Map(), stats: [], heat: new Map(), sd: 0, judged: 0, judgedWins: 0, matchesSeen: new Set(),
+        };
         accs.set(entry.strategyKey, a);
       }
       const fr = r.fighters.find((f) => f.fighterId === entry.fighterId)!;
       a.places.push(fr.place);
+      a.stats.push(fr.stats);
+      const heat = a.heat.get(r.mapId);
+      if (heat) mergeHeatmap(heat, fr.heatmap);
+      else a.heat.set(r.mapId, { ...fr.heatmap, counts: [...fr.heatmap.counts] });
+      const ri = reports.indexOf(r);
+      if (!a.matchesSeen.has(ri)) {
+        a.matchesSeen.add(ri);
+        if (r.suddenDeathStart) a.sd++;
+        if (r.ending === 'judges') {
+          a.judged++;
+          if (fr.place === 1) a.judgedWins++;
+        }
+      }
       const m = a.byMap.get(r.mapId) ?? [0, 0];
       a.byMap.set(r.mapId, [m[0] + 1, m[1] + (fr.place === 1 ? 1 : 0)]);
       for (const other of r.roster) {
@@ -432,19 +559,63 @@ function aggregate(reports: MatchReport[], seed: number, mapIds: string[], fight
       pickupsTaken: {},
       killsWhileBuffed: {},
       guardTrips: [],
+      stats: averageStats(a.stats),
+      heatmaps: Object.fromEntries(a.heat),
+      suddenDeath: { matches: a.sd, share: a.sd / Math.max(1, a.matchesSeen.size), byReason: { time: a.sd }, avgStartTick: a.sd ? 80 * TICK_HZ : null },
+      judges: { matches: a.judged, share: a.judged / Math.max(1, a.matchesSeen.size), wins: a.judgedWins },
       findings,
       rating: rating(avgPlace, fighters, matches),
     };
   });
   strategies.sort((x, y) => y.rating.ordinal - x.rating.ordinal);
-  return { matches: reports.length, seed, mapIds, strategies, findings: [] };
+  const judged = reports.filter((r) => r.ending === 'judges');
+  const sd = reports.filter((r) => r.suddenDeathStart);
+  const byReason: Partial<Record<'time' | 'stalemate', number>> = {};
+  for (const r of sd) byReason[r.suddenDeathStart!.reason] = (byReason[r.suddenDeathStart!.reason] ?? 0) + 1;
+  return {
+    matches: reports.length,
+    seed,
+    mapIds,
+    endings: { elimination: reports.length - judged.length, ...(judged.length ? { judges: judged.length } : {}) },
+    suddenDeath: {
+      matches: sd.length,
+      share: sd.length / Math.max(1, reports.length),
+      byReason,
+      avgStartTick: sd.length ? sd.reduce((n, r) => n + r.suddenDeathStart!.tick, 0) / sd.length : null,
+    },
+    judges: {
+      matches: judged.length,
+      share: judged.length / Math.max(1, reports.length),
+      decisions: judged.map((r) => ({
+        seed: r.seed,
+        mapId: r.mapId,
+        survivors: (r.judges ?? []).map((j) => ({ ...j, strategyKey: r.roster.find((x) => x.fighterId === j.id)?.strategyKey ?? '?' })),
+      })),
+    },
+    strategies,
+    findings: [],
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------------------------
 
-export type MockOptions = { saved?: { strategy: Strategy; ageMs: number }[] };
+/**
+ * `splash`: start on the splash (loading stages tick off one by one, then "Enter the pit"), like the
+ * real app. Off by default so the harness opens straight onto the match.
+ */
+export type MockOptions = { saved?: { strategy: Strategy; ageMs: number }[]; splash?: boolean };
+
+/** Round start: three beats, then FIGHT! for a moment. The final moment lasts about 3 s. */
+const BEAT_MS = 800;
+const FIGHT_MS = 600;
+const FINAL_MS = 3000;
+/** Each loading stage takes this long in the mock splash. */
+const STAGE_MS = 450;
+
+/** Rule docs talk in ticks; hover cards talk in seconds. */
+const inSeconds = (doc: string) => doc.replace(/(\d+) ticks/g, (_, n: string) => `${(Number(n) / TICK_HZ).toFixed(1)} s`);
 
 export function createMockController(opts: MockOptions = {}): GameController {
   const listeners = new Set<() => void>();
@@ -456,6 +627,18 @@ export function createMockController(opts: MockOptions = {}): GameController {
   let selectedId: string | null = null;
   let hoveredId: string | null = null;
   let followId: string | null = null;
+  let hoveredObject: { kind: MapObjectKind; id: string } | null = null;
+  let insets = { left: 0, right: 0, top: 0, bottom: 0 };
+  // Match flow: splash, countdown, final moment (wall-clock, like the real controller).
+  const bootAt = performance.now();
+  let entered = !opts.splash;
+  let countdownEnd = 0;
+  let fightUntil = 0;
+  let finalUntil = 0;
+  /** The final moment of this match was already shown; replaying to the end goes straight to the card. */
+  let admired = false;
+  let jobs: BackgroundJob[] = [];
+  let nextJobId = 1;
   // Persisted like the real controller does, under a dev-only key.
   let view: ViewSettings = readStored('poc.dev.view', { ...DEFAULT_VIEW_SETTINGS }, (v, fallback) =>
     typeof v === 'object' && v !== null ? { ...fallback, ...pickKnown(v as Record<string, unknown>) } : fallback,
@@ -491,7 +674,14 @@ export function createMockController(opts: MockOptions = {}): GameController {
         })
       : [];
     const finished = !!s && t >= s.endTick;
+    const loading = loadingNow();
+    const phase = phaseNow(loading.every((st) => st.done), finished);
+    const now = performance.now();
     return {
+      phase,
+      countdown: phase === 'countdown' ? Math.max(1, Math.ceil((countdownEnd - now) / BEAT_MS)) : phase === 'live' && now < fightUntil ? 0 : null,
+      loading,
+      jobs: jobs.map((j) => ({ ...j })),
       tick: t,
       speed,
       paused,
@@ -506,14 +696,45 @@ export function createMockController(opts: MockOptions = {}): GameController {
       marks: s ? s.marks.filter((x) => x.tick <= maxTick) : [],
       selectedId,
       hoveredId,
+      hoveredObject,
       followId,
       // The mock has no arena camera to take over.
       cameraManual: false,
       view,
       finished,
       placements: finished && s ? s.placements : [],
+      ending: finished ? 'elimination' : null,
+      source: 'local',
       arenaError: null,
     };
+  }
+
+  function loadingNow() {
+    const ms = performance.now() - bootAt;
+    return LOADING_STAGES.map((st, i) => ({
+      id: st.id,
+      label: st.label,
+      done: (!opts.splash || ms > (i + 1) * STAGE_MS) && (st.id !== 'match' || script !== null),
+    }));
+  }
+
+  function phaseNow(loaded: boolean, finished: boolean): MatchPhase {
+    if (!loaded) return 'loading';
+    if (!entered) return 'splash';
+    const now = performance.now();
+    if (countdownEnd > now) return 'countdown';
+    if (finished) return finalUntil > now ? 'final' : 'ended';
+    return 'live';
+  }
+
+  /** Every match starts with "3, 2, 1, FIGHT!" once the splash has been entered. */
+  function beginRound() {
+    admired = false;
+    finalUntil = 0;
+    if (!entered) return;
+    const now = performance.now();
+    countdownEnd = now + 3 * BEAT_MS;
+    fightUntil = countdownEnd + FIGHT_MS;
   }
 
   function publish() {
@@ -533,11 +754,19 @@ export function createMockController(opts: MockOptions = {}): GameController {
   const frame = (now: number) => {
     const dt = Math.min(0.1, (now - lastFrame) / 1000);
     lastFrame = now;
-    if (script && !paused && tick < script.endTick) {
+    const phase = snapshot.phase;
+    // The sim holds behind the splash and during the countdown.
+    if (script && !paused && tick < script.endTick && entered && countdownEnd <= now) {
       tick = Math.min(script.endTick, tick + dt * TICK_HZ * speed);
       if (Math.floor(tick) > maxTick) maxTick = Math.floor(tick);
+      if (tick >= script.endTick && !admired) {
+        admired = true;
+        finalUntil = now + FINAL_MS;
+      }
       dirty = true;
     }
+    // Wall-clock beats (loading stages, countdown, FIGHT!, the final moment) need notifications too.
+    if (phase === 'loading' || phase === 'countdown' || phase === 'final' || now < fightUntil + 200 || (phase === 'splash' && !entered)) dirty = true;
     if (now - lastNotify >= 100) {
       lastNotify = now;
       publish();
@@ -791,12 +1020,64 @@ export function createMockController(opts: MockOptions = {}): GameController {
     };
   }
 
+  /** Hover-card data for a map object, with a live state that cycles like the real one would. */
+  function objectInfo(kind: MapObjectKind, id: string): ObjectInfo | null {
+    const map = MAPS[script?.config.mapId ?? 'pit'];
+    if (!map || !script) return null;
+    const t = Math.floor(tick);
+    const sec = (ticks: number) => `${(Math.max(0, ticks) / TICK_HZ).toFixed(1)} s`;
+    switch (kind) {
+      case 'shrine': {
+        if (!map.shrines.some((x) => x.id === id)) return null;
+        const rule = PICKUP_RULES.shrine;
+        const cycle = t % 900;
+        return {
+          kind, id, name: rule.name,
+          description: `Heals ${Math.round(rule.amount * 100)}% of max HP on touch, then recharges for ${sec(rule.cooldownTicks)}.`,
+          state: cycle < 580 ? 'Ready' : `Recharging, ${sec(900 - cycle)}`,
+        };
+      }
+      case 'pickup': {
+        const p = map.pickups.find((x) => x.id === id);
+        if (!p) return null;
+        const rule = PICKUP_RULES[p.kind];
+        const cycle = (t - rule.firstSpawnTicks) % (rule.cooldownTicks + 300);
+        const up = t >= rule.firstSpawnTicks && cycle < 300;
+        const back = t < rule.firstSpawnTicks ? rule.firstSpawnTicks - t : rule.cooldownTicks + 300 - cycle;
+        return { kind, id, name: rule.name, description: inSeconds(rule.doc), state: up ? 'Up for grabs' : `Back in ${sec(back)}` };
+      }
+      case 'hazard': {
+        const h = map.hazards.find((x) => x.id === id);
+        if (!h) return null;
+        const rule = HAZARD_RULES[h.kind];
+        const period = h.period ?? rule.period;
+        const state = h.kind === 'spike' ? `Thrusts in ${sec((rule.triggerAt * period - (t % period) + period) % period)}` : h.kind === 'saw' ? 'Rolling its track' : null;
+        return { kind, id, name: rule.name, description: inSeconds(rule.doc), state };
+      }
+      case 'prop': {
+        const pr = map.props.find((x) => x.id === id);
+        if (!pr) return null;
+        const rule = PROP_RULES[pr.kind];
+        return { kind, id, name: rule.name, description: inSeconds(rule.doc), state: `${rule.hp} of ${rule.hp} HP` };
+      }
+    }
+  }
+
   // Strategy store
   const saved: SavedStrategy[] = [];
-  const saveAt = (s: Strategy, savedAt: number): SavedStrategy => {
+  const saveAt = (s: Strategy, savedAt: number, meta: Parameters<GameController['strategies']['save']>[1] = {}): SavedStrategy => {
     const version = Math.max(0, ...saved.filter((x) => x.name === s.name).map((x) => x.version)) + 1;
     const strategy = { ...s, version };
-    const entry: SavedStrategy = { id: `${s.name}@v${version}`, name: s.name, version, savedAt, strategy, code: encodeStrategyCode(strategy) };
+    const entry: SavedStrategy = {
+      id: `${s.name}@v${version}`,
+      name: s.name,
+      version,
+      savedAt,
+      strategy,
+      code: encodeStrategyCode(strategy),
+      parentId: meta?.parentId ?? null,
+      origin: meta?.origin ?? null,
+    };
     saved.push(entry);
     return entry;
   };
@@ -822,15 +1103,35 @@ export function createMockController(opts: MockOptions = {}): GameController {
     }
   };
 
+  /** Background job for the top-bar chip, like the real controller wraps the gym. */
+  const trackJob = (kind: BackgroundJob['kind'], total: number, label: (done: number) => string) => {
+    const id = nextJobId++;
+    jobs = [...jobs, { id, kind, label: label(0), done: 0, total }];
+    change();
+    return {
+      update(done: number) {
+        jobs = jobs.map((j) => (j.id === id ? { ...j, done, label: label(done) } : j));
+        change();
+      },
+      end() {
+        jobs = jobs.filter((j) => j.id !== id);
+        change();
+      },
+    };
+  };
+
   const gym: GameController['gym'] = {
     runBatch(req: BatchRequest, onProgress) {
+      const tracked = trackJob('batch', req.matches, (d) => `Testing: ${d} of ${req.matches} matches`);
       return new Promise<BatchResult>((resolve, reject) => {
         let done = 0;
         const timer = window.setInterval(() => {
           done++;
           onProgress?.(done, req.matches);
+          tracked.update(done);
           if (done < req.matches) return;
           window.clearInterval(timer);
+          tracked.end();
           job = null;
           const reports = fakeReports(req, 0.12);
           const agg = aggregate(reports, req.seed, req.mapIds, req.fighters);
@@ -848,6 +1149,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
         job = {
           stop: () => {
             window.clearInterval(timer);
+            tracked.end();
             job = null;
             reject(abortError());
           },
@@ -855,6 +1157,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
       });
     },
     evolve(req: EvolveRequest, onGeneration) {
+      const tracked = trackJob('evolve', req.generations, (d) => `Evolving: gen ${Math.min(d + 1, req.generations)} of ${req.generations}`);
       return new Promise<EvolveResult>((resolve, reject) => {
         const rng = new Rng(req.seed).fork('evolve');
         let champion: Strategy = { ...req.parent, version: req.parent.version ?? 1 };
@@ -887,7 +1190,30 @@ export function createMockController(opts: MockOptions = {}): GameController {
           const summary = promoted
             ? `New contender: ${label(promoted.strategy)} beats ${label(champion)} by ${(champAgg.avgPlace - promoted.aggregate.avgPlace).toFixed(1)} places on the same seeds (${promoted.mutations.join('; ')}).`
             : `${label(champion)} holds. Best mutant was ${(best.aggregate.avgPlace - champAgg.avgPlace).toFixed(1)} places off.`;
-          generations.push({ generation: g, champion: champAgg, candidates, promoted, summary });
+          const archive: ArchiveCell[] = [champion, ...candidates.map((c) => c.strategy)].map((st, i) => {
+            const family = WEAPONS[st.build.weapon].family;
+            const range = (['close', 'mid', 'far'] as const)[(i + g) % 3]!;
+            const aggression = (['cautious', 'balanced', 'aggressive'] as const)[(i * 2 + g) % 3]!;
+            const agg = i === 0 ? champAgg : candidates[i - 1]!.aggregate;
+            return {
+              niche: { family, range, aggression },
+              nicheKey: `${family}/${range}/${aggression}`,
+              key: strategyKey(st),
+              name: label(st),
+              strategy: st,
+              fitness: 1 - (agg.avgPlace - 1) / Math.max(1, req.fighters - 1),
+              avgPlace: agg.avgPlace,
+              matches: agg.matches,
+              bornGeneration: i === 0 ? Math.max(0, g - 1) : g,
+              parent: i === 0 ? null : label(champion),
+              mutations: i === 0 ? [] : candidates[i - 1]!.mutations,
+              champion: i === 0,
+            };
+          });
+          // One elite per niche, like the real archive.
+          const elites = archive.filter((c, i) => archive.findIndex((x) => x.nicheKey === c.nicheKey) === i);
+          const report: EvolveGeneration & { archive: ArchiveCell[] } = { generation: g, champion: champAgg, candidates, promoted, summary, archive: elites };
+          generations.push(report);
           if (promoted) {
             champion = promoted.strategy;
             nextVersion = (champion.version ?? 1) + 1;
@@ -895,8 +1221,10 @@ export function createMockController(opts: MockOptions = {}): GameController {
             nextVersion += req.population;
           }
           onGeneration?.(generations[generations.length - 1], g, req.generations);
+          tracked.update(g);
           if (g < req.generations) return;
           window.clearInterval(timer);
+          tracked.end();
           job = null;
           const improved = strategyKey(champion) !== strategyKey(req.parent);
           resolve({
@@ -911,6 +1239,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
         job = {
           stop: () => {
             window.clearInterval(timer);
+            tracked.end();
             job = null;
             reject(abortError());
           },
@@ -929,18 +1258,37 @@ export function createMockController(opts: MockOptions = {}): GameController {
         listeners.delete(fn);
       };
     },
+    enter() {
+      if (entered) return;
+      entered = true;
+      beginRound();
+      change();
+    },
+    skip() {
+      const now = performance.now();
+      if (countdownEnd > now) {
+        countdownEnd = now;
+        fightUntil = now + FIGHT_MS;
+      } else if (finalUntil > now) finalUntil = 0;
+      change();
+    },
     startMatch(config) {
       script = buildScript(config);
       tick = 0;
       maxTick = 0;
       selectedId = null;
       hoveredId = null;
+      hoveredObject = null;
       followId = null;
+      beginRound();
       change();
     },
     restart() {
       if (!script) return;
+      // A replay is a fresh run of the same match: nothing simulated yet.
       tick = 0;
+      maxTick = 0;
+      beginRound();
       change();
     },
     setPaused(p) {
@@ -987,6 +1335,10 @@ export function createMockController(opts: MockOptions = {}): GameController {
     decision,
     knowledge,
     fighter: fighterState,
+    objectInfo,
+    setViewInsets(v) {
+      insets = { ...v };
+    },
     lastReport() {
       const s = script;
       if (!s || tick < s.endTick) return null;
@@ -1000,6 +1352,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
         ticks: s.endTick,
         ending: 'elimination',
         suddenDeathStart: null,
+        judges: null,
         roster: s.fighters.map((f) => ({
           fighterId: f.id,
           entrantId: f.entrantId,
@@ -1033,11 +1386,20 @@ export function createMockController(opts: MockOptions = {}): GameController {
           pickupsTaken: {},
           killsWhileBuffed: {},
           guardTrips: [],
+          stats: fakeStats(new Rng(s.config.seed).fork(f.id), f.deathTick ?? s.endTick, 24, 11, s.kills.filter((k) => k.killerId === f.id).length, s.fighters.length - 1),
+          death: deathRecord(s.kills.find((k) => k.victimId === f.id)),
+          heatmap: pathHeatmap(f, s),
         })),
         findings: findingsFor(s),
       };
     },
-    mountCanvas: (el) => mountPreview(el, () => ({ script, tick: Math.floor(tick), selectedId, hoveredId, followId }), {
+    mountCanvas: (el) => mountPreview(el, () => ({ script, tick: Math.floor(tick), selectedId, hoveredId, followId, insets }), {
+      hoverObject: (obj) => {
+        if (obj?.kind !== hoveredObject?.kind || obj?.id !== hoveredObject?.id) {
+          hoveredObject = obj;
+          change();
+        }
+      },
       hover: (id) => {
         if (hoveredId !== id) {
           hoveredId = id;
@@ -1055,7 +1417,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
     }),
     strategies: {
       list: () => [...saved],
-      save: (s) => saveAt(s, Date.now()),
+      save: (s, meta) => saveAt(s, Date.now(), meta),
       versions: (name) => saved.filter((x) => x.name === name).sort((a, b) => b.version - a.version),
       remove(id) {
         const i = saved.findIndex((x) => x.id === id);
@@ -1088,8 +1450,21 @@ function findingsFor(s: Script): string[] {
 // Stand-in arena (2D). Dev harness only: lets hover, click-to-select and follow be exercised.
 // ---------------------------------------------------------------------------------------------
 
-type PreviewState = { script: Script | null; tick: number; selectedId: string | null; hoveredId: string | null; followId: string | null };
-type PreviewActions = { hover: (id: string | null) => void; select: (id: string | null) => void; follow: (id: string | null) => void };
+type PreviewState = {
+  script: Script | null;
+  tick: number;
+  selectedId: string | null;
+  hoveredId: string | null;
+  followId: string | null;
+  /** What the HUD covers; the stand-in frames the map in the rest, like the real camera. */
+  insets: { left: number; right: number; top: number; bottom: number };
+};
+type PreviewActions = {
+  hover: (id: string | null) => void;
+  hoverObject: (obj: { kind: MapObjectKind; id: string } | null) => void;
+  select: (id: string | null) => void;
+  follow: (id: string | null) => void;
+};
 
 function mountPreview(el: HTMLElement, read: () => PreviewState, act: PreviewActions): () => void {
   const canvas = document.createElement('canvas');
@@ -1107,13 +1482,37 @@ function mountPreview(el: HTMLElement, read: () => PreviewState, act: PreviewAct
     const wx = (cx - r.left - view.ox) / view.s;
     const wy = (cy - r.top - view.oy) / view.s;
     for (const f of st.script.fighters) {
+      // A corpse is never picked: dead fighters show nothing under the pointer.
+      if (!aliveAt(f, st.tick)) continue;
       const p = posAt(f, st.tick, map.width, map.height);
       if (Math.hypot(p.x - wx, p.y - wy) < fighterRadius(f.strategy.build.attributes) + 8) return f.id;
     }
     return null;
   };
-  const onMove = (e: PointerEvent) => act.hover(pick(e.clientX, e.clientY));
-  const onLeave = () => act.hover(null);
+  const pickObject = (cx: number, cy: number): { kind: MapObjectKind; id: string } | null => {
+    const st = read();
+    if (!st.script) return null;
+    const r = canvas.getBoundingClientRect();
+    const map = MAPS[st.script.config.mapId] ?? MAPS.pit;
+    if (!map) return null;
+    const wx = (cx - r.left - view.ox) / view.s;
+    const wy = (cy - r.top - view.oy) / view.s;
+    const near = (p: { x: number; y: number }, rad: number) => Math.hypot(p.x - wx, p.y - wy) < rad;
+    for (const s of map.shrines) if (near(s.pos, 40)) return { kind: 'shrine', id: s.id };
+    for (const p of map.pickups) if (near(p.pos, 34)) return { kind: 'pickup', id: p.id };
+    for (const h of map.hazards) if (near(h.pos, h.radius + 6)) return { kind: 'hazard', id: h.id };
+    for (const p of map.props) if (near(p.pos, p.radius + 6)) return { kind: 'prop', id: p.id };
+    return null;
+  };
+  const onMove = (e: PointerEvent) => {
+    const id = pick(e.clientX, e.clientY);
+    act.hover(id);
+    act.hoverObject(id ? null : pickObject(e.clientX, e.clientY));
+  };
+  const onLeave = () => {
+    act.hover(null);
+    act.hoverObject(null);
+  };
   const onClick = (e: MouseEvent) => act.select(pick(e.clientX, e.clientY));
   const onDbl = (e: MouseEvent) => {
     const id = pick(e.clientX, e.clientY);
@@ -1138,8 +1537,10 @@ function mountPreview(el: HTMLElement, read: () => PreviewState, act: PreviewAct
     const st = read();
     const map = MAPS[st.script?.config.mapId ?? 'pit'] ?? MAPS.pit;
     if (!map) return;
-    const s = Math.min((w - 40) / map.width, (h - 40) / map.height);
-    view = { s, ox: (w - map.width * s) / 2, oy: (h - map.height * s) / 2 };
+    // Frame the map inside what the HUD leaves visible (the real camera does the same with insets).
+    const vis = { x: st.insets.left, y: st.insets.top, w: Math.max(80, w - st.insets.left - st.insets.right), h: Math.max(80, h - st.insets.top - st.insets.bottom) };
+    const s = Math.min((vis.w - 40) / map.width, (vis.h - 40) / map.height);
+    view = { s, ox: vis.x + (vis.w - map.width * s) / 2, oy: vis.y + (vis.h - map.height * s) / 2 };
     ctx.save();
     ctx.translate(view.ox, view.oy);
     ctx.scale(s, s);
@@ -1154,6 +1555,28 @@ function mountPreview(el: HTMLElement, read: () => PreviewState, act: PreviewAct
     }
     ctx.fillStyle = '#4a433b';
     for (const r of [...map.walls, ...map.pillars]) ctx.fillRect(r.x, r.y, r.w, r.h);
+    // Map objects, so their hover cards can be found.
+    ctx.lineWidth = 4;
+    for (const sh of map.shrines) {
+      ctx.strokeStyle = 'rgba(111, 191, 115, 0.8)';
+      ctx.beginPath();
+      ctx.arc(sh.pos.x, sh.pos.y, 26, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (const p of map.pickups) {
+      ctx.strokeStyle = 'rgba(217, 164, 65, 0.8)';
+      ctx.beginPath();
+      ctx.arc(p.pos.x, p.pos.y, 20, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (const hz of map.hazards) {
+      ctx.fillStyle = hz.kind === 'acid' ? 'rgba(120, 200, 80, 0.25)' : 'rgba(196, 48, 43, 0.25)';
+      ctx.beginPath();
+      ctx.arc(hz.pos.x, hz.pos.y, hz.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#6b4a2e';
+    for (const pr of map.props) ctx.fillRect(pr.pos.x - pr.radius, pr.pos.y - pr.radius, pr.radius * 2, pr.radius * 2);
     const sc = st.script;
     if (sc) {
       for (const f of sc.fighters) {

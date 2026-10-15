@@ -41,7 +41,6 @@ export const C = {
   hair: 0x3d2819,
   glowGold: 0xffc75a,
   glowGreen: 0x8dffc6,
-  glowArcane: 0xc58cff,
   glowCyan: 0x7fe3ff,
   string: 0xeae3d0,
   purpleWood: 0x4b2d5e,
@@ -309,7 +308,10 @@ export function weaponGeometry(kind: 'greatsword' | 'warhammer' | 'dagger' | 'ax
         { poly: rect(-6, -2.9, -3.5, 2.9), color: C.gold, outline: 0.6 },
         { poly: rect(30, -2.9, 32.5, 2.9), color: C.gold, outline: 0.6 },
         { poly: [42, -6.5, 48.5, -3.6, 46, 0, 48.5, 3.6, 42, 6.5, 44, 0], color: C.gold },
-        { poly: circle(50.5, 0, 6, 18), color: C.glowArcane, slot: SLOT.glow },
+        // The crystal glows in the caster's spell colour (instance team colour = spell colour), with
+        // a white-hot heart like the orbs it fires.
+        { poly: circle(50.5, 0, 6, 18), color: 0xffffff, slot: SLOT.glowTeam },
+        { poly: circle(50.5, 0, 2.4, 12), color: 0xfff6ff, slot: SLOT.glow, outline: 0 },
       ]);
   }
 }

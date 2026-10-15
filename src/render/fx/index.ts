@@ -2,38 +2,45 @@
 /**
  * The effects module: gore, particles, debris and popups driven by sim events.
  *
- * - Persistent gore goes into the floor decal target (multiply colour, see decals.ts): splats,
+ * - Persistent gore goes into the floor decal target as data (blood density, wetness, tone and
+ *   soot; see decals.ts), which the floor maps through one blood gradient (goreFloor.ts): splats,
  *   sprays, streaks from sliding pieces, bloody footprints, scorch marks. It never covers a fighter
- *   and stays for the whole match; old blood darkens to maroon and loses its sheen, never greys.
- * - Every hit stamps blood; big hits gush; a death is a comic explosion (gib burst, blood fountain,
- *   radial splatter painted far across the floor). The View setting "blood amount" scales it all.
+ *   and stays for the whole match; overlaps get deeper red and drying shifts to maroon, never grey.
+ * - Impacts are sized by what happened, not by the weapon (impacts.ts): every ordinary hit gets a
+ *   modest impact sized by its damage; crits and backstabs a sharp flash and extra spray; a death
+ *   is a comic explosion (gib burst, blood fountain, radial splatter painted far across the floor).
+ *   The View setting "blood amount" scales all the gore.
+ * - A severed limb sprays from both pieces: the limb trails blood in flight and the stump pumps for
+ *   several seconds with weakening spurts, then drips wherever the fighter walks.
  * - Blood drops, mist, sparks, dust, debris and embers are GPU particles (TSL compute); landed drops
  *   stamp themselves into the floor on the GPU.
  * - Projectiles are colour-coded (impacts.ts): trail, impact and sparks share one colour per type,
  *   and every type has its own impact (splinters, sparks and a clang, an arcane burst, a fireball).
  * - Hits get local weight (impact ring, knockback dust, weapon sparks); the camera stays calm.
+ * - The closing wall grinds sparks and blood off whoever touches it; acid sizzles on the bodies
+ *   standing in it; heals burst green with a "+N".
  * - Gibs, severed limbs, helmets and dropped weapons are CPU-simulated pieces drawn from a part
  *   atlas; wet gibs ooze a pool where they come to rest.
- * - Kill stamps and barks are pooled canvas-texture popups; damage numbers are atlas glyphs.
+ * - Kill stamps and barks are pooled canvas-texture popups; damage and heal numbers are atlas glyphs.
  *
  * Everything is cosmetic (Math.random is fine here), pooled, and advanced with the scaled frame time
  * the renderer passes in, so slow motion and pause apply to effects too.
  */
 
 import * as THREE from 'three/webgpu';
-import { DEFAULT_VIEW_SETTINGS, LIVE_EVENT_TICKS, SKILLS, WEAPONS } from '../../core';
+import { DEFAULT_VIEW_SETTINGS, HAZARD_RULES, LIVE_EVENT_TICKS, SKILLS, WEAPONS } from '../../core';
 import type { FighterState, FxModule, GameEvent, Limb, Rect, RenderContext, ViewSettings, WeaponId, WorldState } from '../../core';
 import { createPartAtlas } from './atlas';
 import { barkShown } from './barks';
-import { fountainStep, poolStep, spurtStep, startFountain, startPool, startSpurt } from './bleeders';
+import { fountainStep, poolStep, spurtStep, startFountain, startPool, startSpurt, startTrail, trailStep } from './bleeders';
 import type { Fountain, GrowingPool, Spurt } from './bleeders';
 import { DecalPainter } from './decals';
 import { BloodGrid, BootPrints } from './density';
-import { KEG_FX, PROJECTILE_FX, isProjectileWeapon, projectileColor } from './impacts';
+import { KEG_FX, PROJECTILE_FX, impactSize, isProjectileWeapon, projectileColor } from './impacts';
 import type { ProjectileWeapon } from './impacts';
 import { DECAL } from './masks';
 import { DamageNumbers } from './numbers';
-import { DUST_COLORS, bloodColor, hexToLinear } from './palette';
+import { DUST_COLORS, bloodColor, hexToLinear, srgbToLinear, wetAfter } from './palette';
 import type { Rgb } from './palette';
 import { PARTS, deathGibs } from './parts';
 import type { GibKind, PartId } from './parts';
@@ -60,6 +67,19 @@ const OOZE_SECONDS = 1.7;
 const TRAIL_RATE: Readonly<Record<ProjectileWeapon, number>> = { LONGBOW: 45, THROWING_AXES: 34, ARCANE_STAFF: 80 };
 /** Damage numbers for hits nobody landed (hazards, the closing wall). */
 const HAZARD_NUMBER: Rgb = { r: 1, g: 0.62, b: 0.28 };
+/** Heal glow (linear): clean green, the colour of "+N" heal numbers. */
+const HEAL_GLOW: Rgb = { r: 0.2, g: 1, b: 0.32 };
+/** Acid (linear): hot yellow-green motes (they must read over the green pool) and pale steam. */
+const ACID_MOTE: Rgb = { r: srgbToLinear(0xe2), g: srgbToLinear(0xff), b: srgbToLinear(0x5a) };
+const ACID_STEAM: Rgb = { r: srgbToLinear(0xd6), g: srgbToLinear(0xec), b: srgbToLinear(0xb4) };
+/** Sizzle particles per second on a fighter standing in acid (between its damage ticks). */
+const ACID_SIZZLE_RATE = 14;
+/** Share of a fighter's radius that must be inside an acid pool for it to sizzle (as the sim's). */
+const ACID_BODY_SHARE = 0.3;
+/** Ticks between the closing wall's sparks and smears on one fighter (contact is every tick). */
+const WALL_FX_TICKS = 4;
+/** Ticks between blood marks from the wall's per-tick contact damage on one fighter. */
+const WALL_BLEED_TICKS = 8;
 
 type Gpu = {
   renderer: THREE.WebGPURenderer;
@@ -125,6 +145,18 @@ export function createFx(): FxModule {
   const projDir = new Map<string, number>();
   /** Spell colour (linear) per caster id, computed once. */
   const spellOf = new Map<string, Rgb>();
+  /** Tick of each fighter's latest acid damage (a `hazard` event precedes its `hit`). */
+  const acidTick = new Map<string, number>();
+  /** Next tick a fighter may get wall sparks / wall blood (contact events come every tick). */
+  const wallFxAt = new Map<string, number>();
+  const wallBleedAt = new Map<string, number>();
+  /** Fractional sizzle particles owed per fighter standing in acid. */
+  const sizzleCarry = new Map<string, number>();
+  /**
+   * Wetness of blood painted for the event being handled: 1 when live, less for catch-up events
+   * after a seek (that blood was spilled a while ago and has partly dried).
+   */
+  let wetNow = 1;
   const gibList: GibKind[] = [];
   const splatter: SplatterStamp[] = [];
   const col: Rgb = { r: 0, g: 0, b: 0 };
@@ -135,12 +167,14 @@ export function createFx(): FxModule {
 
   // ---- Painting helpers -----------------------------------------------------------------------
 
-  /** Persistent blood stamp + fresh-blood bookkeeping for footprints. `t` picks the colour ramp. */
-  function bloodStamp(kind: number, x: number, y: number, angle: number, halfLen: number, halfWid: number, t: number, alpha: number, wet: number): void {
+  /**
+   * Persistent blood stamp + fresh-blood bookkeeping for footprints. `tone` 0..1 (1 = bright
+   * arterial spray, 0.4 = pooled), `density` the blood laid down (1 = a normal spray), `wet` 0..1.
+   */
+  function bloodStamp(kind: number, x: number, y: number, angle: number, halfLen: number, halfWid: number, tone: number, density: number, wet: number): void {
     if (!gpu) return;
-    bloodColor(col, t);
-    gpu.decals.stamp(kind, x, y, angle, halfLen, halfWid, col.r, col.g, col.b, alpha, wet);
-    grid.add(x, y, (halfLen + halfWid) * 0.5, alpha * (kind === DECAL.print ? 0 : 1));
+    gpu.decals.stamp(kind, x, y, angle, halfLen, halfWid, density, wet * wetNow, tone);
+    grid.add(x, y, (halfLen + halfWid) * 0.5, density * (kind === DECAL.print ? 0 : 1) * wetNow);
   }
 
   function particle(kind: ParticleKind, x: number, y: number, z: number, vx: number, vy: number, vz: number, size: number, life: number, c: Rgb, a: number): void {
@@ -260,7 +294,7 @@ export function createFx(): FxModule {
   function throwPiece(
     part: PartId, x: number, y: number, z: number, vx: number, vy: number, vz: number, spin: number,
     owner: string | null, live: boolean, flip = sign(),
-  ): void {
+  ): Piece {
     const p = pieces.acquire();
     if (live) {
       launchPiece(p, part, x, y, z, vx, vy, vz, Math.random() * Math.PI * 2, spin, flip);
@@ -274,6 +308,7 @@ export function createFx(): FxModule {
     p.r = tint.r;
     p.g = tint.g;
     p.b = tint.b;
+    return p;
   }
 
   /** A wet gib came to rest: it oozes a pool under itself (guts most), growing for a moment. */
@@ -364,9 +399,18 @@ export function createFx(): FxModule {
     const p = poolNow;
     if (!p) return;
     if (!gpu) return;
-    bloodColor(col, 0.45);
-    gpu.decals.stamp(DECAL.pool, p.x, p.y, p.angle, radius, radius * 0.86, col.r, col.g, col.b, 0.12, 0.9, p.seed);
+    // Many thin stamps grow into a thick, dark pool in the middle.
+    gpu.decals.stamp(DECAL.pool, p.x, p.y, p.angle, radius, radius * 0.86, 0.13, 0.9, 0.45, p.seed);
     grid.add(p.x, p.y, radius * 0.8, 0.25);
+  };
+
+  /** A flying limb sheds a drop from its cut end (called by `trailStep`). */
+  let trailPiece: Piece | null = null;
+  const trailDrop = (strength: number): void => {
+    const p = trailPiece;
+    if (!p) return;
+    const S = amount.size;
+    drop(p.x + rnd(-2, 2), p.y + rnd(-2, 2), p.z + 3, p.vx * 0.55 + rnd(-40, 40), p.vy * 0.55 + rnd(-40, 40), Math.max(0, p.vz * 0.3) + rnd(10, 70), rnd(1.4, 2.8) * S * (0.6 + 0.4 * strength), rnd(0.7, 1));
   };
 
   // ---- Event handlers -------------------------------------------------------------------------
@@ -374,82 +418,114 @@ export function createFx(): FxModule {
   function onHit(ev: Extract<GameEvent, { type: 'hit' }>, state: WorldState, live: boolean): void {
     lastHitDir.set(ev.victimId, ev.dir);
     const victim = findFighter(state, ev.victimId);
+    if (ev.amount <= 0) return;
     const x = ev.pos.x;
     const y = ev.pos.y;
-    const S = amount.size;
-    const N = amount.count;
-    const sev = Math.min(1.5, Math.max(0.2, (ev.amount - 3) / 28)) * (ev.crit ? 1.3 : 1) * (ev.source === 'punch' ? 0.55 : 1);
-    const big = ev.crit || ev.amount >= 28;
-    const dir = ev.dir;
-    const dx = Math.cos(dir);
-    const dy = Math.sin(dir);
     const r = victim ? victim.radius : 18;
     const ux = victim ? victim.pos.x : x;
     const uy = victim ? victim.pos.y : y;
+    if (live) damageNumber(ev, state, ux, uy, r);
+    // The closing wall's contact damage arrives every tick: a slow bleed, not a string of blows
+    // (its sparks and blood come from `wall_contact`).
+    if (ev.source === 'sudden_death') {
+      wallBleed(ev, ux, uy, live);
+      return;
+    }
+    // Acid burns rather than cuts: its look is the sizzle (see `hazard` events).
+    if (ev.source === 'hazard' && acidTick.get(ev.victimId) === ev.tick) return;
+    const S = amount.size;
+    const N = amount.count;
+    // Sized by what happened, the same for every weapon; punches are lighter.
+    const size = impactSize(ev.amount, ev.crit, ev.backstab) * (ev.source === 'punch' ? 0.6 : 1);
+    const big = ev.crit || ev.backstab;
+    const dir = ev.dir;
+    const dx = Math.cos(dir);
+    const dy = Math.sin(dir);
     // Floor: every hit stamps. A spray thrown along the blow from the far side of the body (the
     // spray's head sits a third of its length behind its centre), and blood dropping under the victim.
-    const len = (24 + 42 * sev) * S;
+    const len = (22 + 40 * size) * S;
     const head = r * 0.45;
-    bloodStamp(DECAL.spray, ux + dx * (head + len * 0.66), uy + dy * (head + len * 0.66), dir + spread() * 0.12, len, (8 + 10 * sev) * S, rnd(0.8, 1), 0.95, 1);
-    bloodStamp(sev > 0.75 ? DECAL.splat : DECAL.pool, ux + rnd(-5, 5), uy + rnd(-5, 5), Math.random() * 6.3, (7 + 11 * sev) * S, (6 + 10 * sev) * S, rnd(0.65, 0.95), 0.9, 0.9);
+    bloodStamp(DECAL.spray, ux + dx * (head + len * 0.66), uy + dy * (head + len * 0.66), dir + spread() * 0.12, len, (7 + 10 * size) * S, rnd(0.8, 1), 0.95, 1);
+    bloodStamp(size > 0.75 ? DECAL.splat : DECAL.pool, ux + rnd(-5, 5), uy + rnd(-5, 5), Math.random() * 6.3, (6 + 11 * size) * S, (5 + 10 * size) * S, rnd(0.6, 0.85), 0.9, 0.9);
     if (big) {
-      // A big hit gushes: a second, wider spray and a splat further out along the blow.
+      // A crit or backstab gushes: a second, wider spray and a splat further out along the blow.
       const a = dir + spread() * 0.3;
-      bloodStamp(DECAL.spray, ux + Math.cos(a) * (head + len * 0.9), uy + Math.sin(a) * (head + len * 0.9), a, len * 0.85, (10 + 10 * sev) * S, rnd(0.8, 1), 0.95, 1);
-      bloodStamp(DECAL.splat, ux + dx * (r + len * 1.5), uy + dy * (r + len * 1.5), Math.random() * 6.3, (9 + 8 * sev) * S, (8 + 7 * sev) * S, 0.85, 0.9, 1);
+      bloodStamp(DECAL.spray, ux + Math.cos(a) * (head + len * 0.9), uy + Math.sin(a) * (head + len * 0.9), a, len * 0.85, (10 + 10 * size) * S, rnd(0.8, 1), 0.95, 1);
+      bloodStamp(DECAL.splat, ux + dx * (r + len * 1.5), uy + dy * (r + len * 1.5), Math.random() * 6.3, (9 + 8 * size) * S, (8 + 7 * size) * S, 0.85, 0.9, 1);
     }
     if (!live) {
-      flecks(ux, uy, dir, 0.45, Math.round((3 + 6 * sev) * N), r, r + (50 + 110 * sev) * S, S);
+      flecks(ux, uy, dir, 0.45, Math.round((3 + 6 * size) * N), r, r + (50 + 110 * size) * S, S);
       return;
     }
     // Blood leaves the far side of the body along the blow, with a little back-spatter.
     const ex = x + dx * r * 0.7;
     const ey = y + dy * r * 0.7;
-    const n = Math.min(80, Math.round((10 + 26 * sev) * N));
-    sprayDrops(ex, ey, 16, dir, 0.45, n, 70, 170 + 170 * sev, S);
+    const n = Math.min(80, Math.round((8 + 24 * size) * N));
+    sprayDrops(ex, ey, 16, dir, 0.45, n, 70, 160 + 170 * size, S);
     sprayDrops(x - dx * r * 0.6, y - dy * r * 0.6, 14, dir + Math.PI, 0.7, Math.round(n * 0.25), 40, 130, 0.8 * S);
-    if (big) sprayDrops(ex, ey, 18, dir, 0.22, Math.round(n * 0.7), 240, 420 + 120 * sev, 1.25 * S);
-    mist(ex, ey, dir, ev.crit ? 5 : 2, 12 + 6 * sev);
-    gpu?.shapes.flash(x, y, 14 + 12 * sev, ev.crit ? 0.14 : 0.09, 1, 0.85, 0.7, ev.crit ? 3 : 2);
+    if (big) {
+      sprayDrops(ex, ey, 18, dir, 0.22, Math.round(n * 0.8), 240, 440 + 120 * size, 1.25 * S);
+      mist(ex, ey, dir, 5, 18);
+      // The sharp flash: white-hot and brief, the one thing that says "crit" at a glance.
+      gpu?.shapes.flash(x, y, 30 + 12 * size, 0.08, 1, 0.95, 0.85, 3.6);
+    } else {
+      mist(ex, ey, dir, size > 0.6 ? 2 : 1, 10 + 6 * size);
+      gpu?.shapes.flash(x, y, 9 + 9 * size, 0.07, 1, 0.82, 0.68, 1.4);
+    }
     // Weight without moving the camera: a small impact ring on the floor and knockback dust.
-    gpu?.shapes.ring(ux, uy, r * 0.7, r * 1.2 + 16 * sev, 0.22, 1, 0.86, 0.7, 0.55, 0.15, 0.12);
+    gpu?.shapes.ring(ux, uy, r * 0.7, r * 1.05 + 12 * size, 0.2, 1, 0.86, 0.7, 0.5, 0.15, 0.12);
     if (ev.knockback >= 3) {
       const kb = ev.knockback;
-      dustPuffs(ux - dx * r * 0.4, uy - dy * r * 0.4, 2 + Math.round(kb * 0.35), 6 + kb * 0.4, 30 + kb * 7, 0.3, dust, dir, 0.6);
+      dustPuffs(ux - dx * r * 0.4, uy - dy * r * 0.4, 2 + Math.round(kb * 0.3), 6 + kb * 0.35, 30 + kb * 6, 0.28, dust, dir, 0.6);
     }
-    weaponSparks(ev, state, x, y, sev);
-    if (view.damageNumbers && gpu) {
-      fighterColor(tint, state, ev.attackerId, HAZARD_NUMBER);
-      // Lift dark fighter colours a little so the number reads on the floor.
-      gpu.numbers.add(ev.victimId, ev.attackerId ?? '', ux, uy, r, ev.amount, ev.crit, ev.backstab, tint.r * 0.85 + 0.15, tint.g * 0.85 + 0.15, tint.b * 0.85 + 0.15);
-    }
+    weaponSparks(ev, state, x, y, size, big);
   }
 
-  /** Sparks or spray coloured by the weapon that landed the hit. */
-  function weaponSparks(ev: Extract<GameEvent, { type: 'hit' }>, state: WorldState, x: number, y: number, sev: number): void {
+  function damageNumber(ev: Extract<GameEvent, { type: 'hit' }>, state: WorldState, x: number, y: number, r: number): void {
+    if (!view.damageNumbers || !gpu) return;
+    fighterColor(tint, state, ev.attackerId, HAZARD_NUMBER);
+    // Lift dark fighter colours a little so the number reads on the floor.
+    gpu.numbers.add(ev.victimId, ev.attackerId ?? '', x, y, r, ev.amount, ev.crit, ev.backstab, tint.r * 0.85 + 0.15, tint.g * 0.85 + 0.15, tint.b * 0.85 + 0.15);
+  }
+
+  /** Per-tick wall damage: a little blood under the victim a few times a second. */
+  function wallBleed(ev: Extract<GameEvent, { type: 'hit' }>, x: number, y: number, live: boolean): void {
+    if (ev.tick < (wallBleedAt.get(ev.victimId) ?? -1)) return;
+    wallBleedAt.set(ev.victimId, ev.tick + WALL_BLEED_TICKS);
+    const S = amount.size;
+    bloodStamp(DECAL.drop, x + rnd(-7, 7), y + rnd(-7, 7), Math.random() * 6.3, rnd(3, 5) * S, rnd(2.5, 4) * S, 0.75, 0.9, 1);
+    if (live) sprayDrops(x, y, 12, ev.dir, 0.9, Math.round(3 * amount.count), 40, 120, 0.8 * S);
+  }
+
+  /**
+   * Sparks coloured by the weapon that landed the hit: its identity, not its size. Counts are small
+   * and the same order for every weapon; crits and backstabs throw a few more.
+   */
+  function weaponSparks(ev: Extract<GameEvent, { type: 'hit' }>, state: WorldState, x: number, y: number, size: number, big: boolean): void {
     const dir = ev.dir;
+    const extra = big ? 4 : 0;
     switch (ev.weapon) {
       case 'GREATSWORD':
-        if (sev > 0.45 || ev.crit) sparks(x, y, ev.crit ? 9 : 5, 240, 0.85, 0.92, 1, 1.6, dir, 0.7);
+        if (size > 0.55 || big) sparks(x, y, 3 + extra, 230, 0.85, 0.92, 1, 1.5, dir, 0.7);
         break;
       case 'WARHAMMER':
-        sparks(x, y, ev.crit ? 10 : 6, 220, 1, 0.55, 0.2, 1.6, dir, 0.8);
-        dustPuffs(x, y, 3, 9, 70, 0.28);
+        sparks(x, y, 3 + extra, 210, 1, 0.55, 0.2, 1.5, dir, 0.8);
+        dustPuffs(x, y, 2, 8, 60, 0.24);
         break;
       case 'TWIN_DAGGERS':
-        sparks(x, y, ev.crit || ev.backstab ? 5 : 2, 200, 1, 1, 0.95, 1.4, dir, 0.5);
+        sparks(x, y, 2 + extra, 200, 1, 1, 0.95, 1.4, dir, 0.5);
         break;
       case 'THROWING_AXES':
       case 'LONGBOW':
         projectileColor(pcol, ev.weapon, null);
-        sparks(x, y, ev.crit ? 6 : 3, 180, pcol.r, pcol.g, pcol.b, 1.3, dir, 0.6);
+        sparks(x, y, 3 + extra, 180, pcol.r, pcol.g, pcol.b, 1.3, dir, 0.6);
         break;
       case 'ARCANE_STAFF':
-        // Splash victims glitter in the caster's colour.
-        embers(x, y, 6, 120, spell(state, ev.attackerId ?? undefined), 1.6, 0.8, 0.7);
+        // Hit and splash victims glitter in the caster's colour: a few motes, no fireworks.
+        embers(x, y, 3 + extra, 90, spell(state, ev.attackerId ?? undefined), 1.4, 0.7, 0.6);
         break;
       default:
-        if (ev.crit) sparks(x, y, 8, 220, 1, 0.55, 0.2, 1.6, dir, 0.8);
+        if (big) sparks(x, y, 6, 210, 1, 0.55, 0.2, 1.5, dir, 0.8);
     }
   }
 
@@ -461,6 +537,10 @@ export function createFx(): FxModule {
     gpu?.shapes.ring(x, y, 6, 36, 0.22, 1, 0.7, 0.35, 1.2, 0, 0.18);
   }
 
+  /**
+   * A projectile's own impact: its identity (colour and debris), kept small for every type. On a hit
+   * the `hit` event already gave the impact its size; this only says what landed.
+   */
   function onProjectileEnd(ev: Extract<GameEvent, { type: 'projectile_end' }>, state: WorldState, live: boolean): void {
     const weapon = projWeapon.get(ev.projectileId);
     const owner = projOwner.get(ev.projectileId);
@@ -472,35 +552,36 @@ export function createFx(): FxModule {
     const x = ev.pos.x;
     const y = ev.pos.y;
     const hit = ev.hitId !== null;
-    switch (PROJECTILE_FX[weapon].impact) {
+    const fx = PROJECTILE_FX[weapon];
+    switch (fx.impact) {
       case 'splinters': {
-        // Wood splinters bounce back off whatever it hit, with a small spray in the arrow's amber.
+        // Wood splinters bounce back off whatever it hit, in the arrow's amber.
         projectileColor(pcol, weapon, null);
         tint.r = pcol.r * 0.55;
         tint.g = pcol.g * 0.5;
         tint.b = pcol.b * 0.45;
-        debris(x, y, Math.round(rnd(6, 10)), 190, tint, 1.5, 0.8, dir + Math.PI, 1.1);
-        sparks(x, y, 6, 150, pcol.r, pcol.g, pcol.b, 1.1, dir + Math.PI, 0.9);
-        gpu.shapes.flash(x, y, 12, 0.08, pcol.r, pcol.g, pcol.b, 1.4);
-        if (!hit) dustPuffs(x, y, 3, 6, 45, 0.28, dust, dir, 0.6);
+        debris(x, y, fx.particles, 170, tint, 1.4, 0.7, dir + Math.PI, 1.1);
+        sparks(x, y, 3, 140, pcol.r, pcol.g, pcol.b, 1.1, dir + Math.PI, 0.9);
+        gpu.shapes.flash(x, y, fx.flash, 0.07, pcol.r, pcol.g, pcol.b, 1.3);
+        if (!hit) dustPuffs(x, y, 3, 6, 45, 0.26, dust, dir, 0.6);
         break;
       }
       case 'sparks': {
-        // Steel on whatever it hit: a shower of metal sparks and a bright clang flash.
+        // Steel on whatever it hit: a burst of metal sparks and a short clang flash.
         projectileColor(pcol, weapon, null);
-        sparks(x, y, 14, 320, pcol.r, pcol.g, pcol.b, 1.9);
-        sparks(x, y, 5, 260, 1, 0.65, 0.3, 1.6, dir + Math.PI, 1.0);
-        gpu.shapes.flash(x, y, 26, 0.12, pcol.r, pcol.g, pcol.b, 3.2);
-        gpu.shapes.ring(x, y, 4, 30, 0.18, pcol.r, pcol.g, pcol.b, 2, 0, 0.12);
+        sparks(x, y, fx.particles, 280, pcol.r, pcol.g, pcol.b, 1.7);
+        sparks(x, y, 3, 230, 1, 0.65, 0.3, 1.5, dir + Math.PI, 1.0);
+        gpu.shapes.flash(x, y, fx.flash, 0.09, pcol.r, pcol.g, pcol.b, 2.4);
         break;
       }
       case 'arcane': {
-        // The orb bursts in the caster's spell colour, with a ring the size of its splash.
+        // The orb pops in the caster's spell colour: a small burst and a thin, quick ring the size
+        // of its splash. Colour says "spell"; size stays that of any other projectile.
         const c = spell(state, owner);
         const r = WEAPONS.ARCANE_STAFF.splash;
-        embers(x, y, 30, 260, c, 1.9);
-        gpu.shapes.flash(x, y, r * 0.75, 0.22, c.r, c.g, c.b, 2, 0.25);
-        gpu.shapes.ring(x, y, r * 0.2, r, 0.32, c.r, c.g, c.b, 1.6, 0, 0.16);
+        embers(x, y, fx.particles, 150, c, 1.5, 0.8, 0.6);
+        gpu.shapes.flash(x, y, fx.flash, 0.12, c.r, c.g, c.b, 1.6);
+        gpu.shapes.ring(x, y, r * 0.35, r, 0.2, c.r, c.g, c.b, 0.8, 0, 0.07);
         break;
       }
       case 'fireball':
@@ -521,7 +602,9 @@ export function createFx(): FxModule {
     const part: PartId = ev.limb === 'armL' || ev.limb === 'armR' ? 'limbArm' : 'limbLeg';
     const flip = ev.limb === 'armL' || ev.limb === 'legL' ? -1 : 1;
     const color = victim ? victim.color : null;
-    throwPiece(part, x, y, 12, vx + Math.cos(dir) * 60, vy + Math.sin(dir) * 60, rnd(170, 290), rnd(6, 14) * sign(), color, live, flip);
+    const limb = throwPiece(part, x, y, 12, vx + Math.cos(dir) * 60, vy + Math.sin(dir) * 60, rnd(170, 290), rnd(6, 14) * sign(), color, live, flip);
+    // Both pieces bleed: the limb trails blood from its cut end while it flies.
+    if (live) startTrail(limb.bleed);
     if (ev.limb === WEAPON_ARM && victim) {
       // Losing the weapon arm drops the weapon.
       const a = dir + spread() * 0.8;
@@ -601,7 +684,7 @@ export function createFx(): FxModule {
     const y = ev.pos.y;
     const r = ev.radius;
     if (!gpu) return;
-    gpu.decals.stamp(DECAL.scorch, x, y, Math.random() * 6.3, r * 0.9, r * 0.9, 0, 0, 0, 0.9, 0);
+    gpu.decals.stamp(DECAL.scorch, x, y, Math.random() * 6.3, r * 0.9, r * 0.9, 0.9, 0, 0);
     if (!live) return;
     hexToLinear(pcol, KEG_FX.color);
     // ACES tone mapping washes bright HDR orange out to cream: keep the fireball near 1.0 so it
@@ -659,6 +742,78 @@ export function createFx(): FxModule {
     }
   }
 
+  /** A heal: a green burst on the fighter (and a ring at the shrine that gave it) and a "+N". */
+  function onHeal(ev: Extract<GameEvent, { type: 'heal' }>, state: WorldState): void {
+    if (!gpu || ev.amount <= 0) return;
+    const c = HEAL_GLOW;
+    if (ev.shrineId !== null) gpu.shapes.ring(ev.pos.x, ev.pos.y, 10, 54, 0.45, c.r, c.g, c.b, 1.6, 0, 0.1);
+    const f = findFighter(state, ev.fighterId);
+    if (!f) return;
+    const x = f.pos.x;
+    const y = f.pos.y;
+    const r = f.radius;
+    gpu.shapes.flash(x, y, r * 1.4, 0.3, c.r, c.g, c.b, 1.7);
+    gpu.shapes.ring(x, y, r * 0.6, r * 2.1, 0.4, c.r, c.g, c.b, 1.8, 0, 0.12);
+    // Motes drift up off the body (up the screen) and fade.
+    for (let i = 0; i < 14; i++) {
+      particle(PK.ember, x + rnd(-r, r), y + rnd(-0.6, 0.6) * r, rnd(10, 22), rnd(-14, 14), -rnd(40, 90), rnd(30, 90), rnd(1.8, 2.8), rnd(0.6, 1), c, 1.6);
+    }
+    if (view.damageNumbers) gpu.numbers.addHeal(f.id, x, y, r, ev.amount);
+  }
+
+  /** The closing wall grinds whoever touches it: sparks off the spikes, blood flung and smeared. */
+  function onWallContact(ev: Extract<GameEvent, { type: 'wall_contact' }>, state: WorldState, live: boolean): void {
+    if (ev.tick < (wallFxAt.get(ev.fighterId) ?? -1)) return;
+    wallFxAt.set(ev.fighterId, ev.tick + WALL_FX_TICKS);
+    const f = findFighter(state, ev.fighterId);
+    const x = ev.pos.x;
+    const y = ev.pos.y;
+    const away = f ? Math.atan2(f.pos.y - y, f.pos.x - x) : Math.random() * Math.PI * 2;
+    const S = amount.size;
+    // A smear along the spike face (perpendicular to the push), where the body is dragged.
+    bloodStamp(DECAL.streak, x, y, away + Math.PI / 2 + spread() * 0.2, rnd(8, 14) * S, rnd(3, 5) * S, 0.85, 0.75, 1);
+    if (!live) return;
+    sparks(x, y, 4, 280, 1, 0.62, 0.25, 1.8, away, 0.9);
+    sprayDrops(x, y, 12, away, 0.7, Math.round(4 * amount.count), 60, 170, 0.9 * S);
+    if (Math.random() < 0.35) gpu?.shapes.flash(x, y, 10, 0.06, 1, 0.7, 0.35, 1.6);
+  }
+
+  /** Acid eats at a body: bright acid motes popping and pale green steam rising off it. */
+  function sizzle(x: number, y: number, r: number, n: number): void {
+    for (let i = 0; i < n; i++) {
+      const sx = x + rnd(-0.8, 0.8) * r;
+      const sy = y + rnd(-0.8, 0.8) * r;
+      if (i % 2 === 0) particle(PK.ember, sx, sy, rnd(4, 12), rnd(-22, 22), rnd(-22, 22), rnd(40, 110), rnd(1.8, 2.8), rnd(0.3, 0.55), ACID_MOTE, 1.8);
+      else particle(PK.dust, sx, sy, rnd(4, 12), rnd(-10, 10), -rnd(14, 34), rnd(4, 14), rnd(7, 12), rnd(0.55, 0.95), ACID_STEAM, 0.3);
+    }
+  }
+
+  function hazardKind(state: WorldState, id: string): string | null {
+    for (const h of state.hazards) if (h.id === id) return h.kind;
+    return null;
+  }
+
+  /** Fighters standing in acid sizzle all the time, not only on its damage ticks. */
+  function acidSizzle(state: WorldState, dt: number): void {
+    if (dt <= 0) return;
+    for (const h of state.hazards) {
+      if (h.kind !== 'acid') continue;
+      const radius = h.radius || HAZARD_RULES.acid.radius;
+      for (const f of state.fighters) {
+        if (!f.alive) continue;
+        const reach = radius + f.radius * ACID_BODY_SHARE;
+        const dx = f.pos.x - h.pos.x;
+        const dy = f.pos.y - h.pos.y;
+        if (dx * dx + dy * dy >= reach * reach) continue;
+        let carry = (sizzleCarry.get(f.id) ?? 0) + ACID_SIZZLE_RATE * dt;
+        const n = Math.floor(carry);
+        carry -= n;
+        sizzleCarry.set(f.id, carry);
+        if (n > 0) sizzle(f.pos.x, f.pos.y, f.radius, n);
+      }
+    }
+  }
+
   function onFootstep(ev: Extract<GameEvent, { type: 'footstep' }>, state: WorldState, live: boolean): void {
     const f = findFighter(state, ev.fighterId);
     const r = f ? f.radius : 18;
@@ -671,9 +826,8 @@ export function createFx(): FxModule {
     const fy = ev.pos.y + py * side * r * 0.32 + Math.sin(heading) * 2;
     const strength = boots.step(ev.fighterId, grid, fx, fy, ev.bloody);
     if (strength > 0 && gpu) {
-      bloodColor(col, 0.45 + 0.3 * strength);
       const s = r / 18;
-      gpu.decals.stamp(DECAL.print, fx, fy, heading + spread() * 0.05, 7 * s, 4 * s, col.r, col.g, col.b, 0.25 + 0.5 * strength, 0);
+      gpu.decals.stamp(DECAL.print, fx, fy, heading + spread() * 0.05, 7 * s, 4 * s, 0.3 + 0.55 * strength, 0.5 * strength * wetNow, 0.5);
     }
     if (live) dustPuffs(fx, fy, 2, 5, 22, 0.16, dust, heading + Math.PI, 0.9);
   }
@@ -805,6 +959,10 @@ export function createFx(): FxModule {
     projOwner.clear();
     projDir.clear();
     spellOf.clear();
+    acidTick.clear();
+    wallFxAt.clear();
+    wallBleedAt.clear();
+    sizzleCarry.clear();
     if (!gpu) return;
     gpu.decals.clear(gpu.renderer);
     gpu.particles.clear();
@@ -837,7 +995,9 @@ export function createFx(): FxModule {
     onEvents(events: GameEvent[], state: WorldState) {
       if (!gpu) return;
       for (const ev of events) {
-        const live = state.tick - ev.tick <= LIVE_EVENT_TICKS;
+        const age = state.tick - ev.tick;
+        const live = age <= LIVE_EVENT_TICKS;
+        wetNow = wetAfter(age / 60);
         switch (ev.type) {
           case 'hit':
             onHit(ev, state, live);
@@ -878,10 +1038,10 @@ export function createFx(): FxModule {
             break;
           }
           case 'heal':
-            if (live) {
-              gpu.shapes.ring(ev.pos.x, ev.pos.y, 8, 46, 0.5, 1, 0.82, 0.35, 2.2, 0, 0.14);
-              gpu.shapes.flash(ev.pos.x, ev.pos.y, 26, 0.3, 1, 0.85, 0.45, 2);
-            }
+            if (live) onHeal(ev, state);
+            break;
+          case 'wall_contact':
+            onWallContact(ev, state, live);
             break;
           case 'pickup':
             if (live) {
@@ -897,9 +1057,19 @@ export function createFx(): FxModule {
               embers(ev.pos.x, ev.pos.y, 14, 90, c, 1.6, 0.8, 0.8);
             }
             break;
-          case 'hazard':
-            if (live) dustPuffs(ev.pos.x, ev.pos.y, 3, 8, 50, 0.25);
+          case 'hazard': {
+            const acid = ev.victimId !== null && hazardKind(state, ev.hazardId) === 'acid';
+            if (acid && ev.victimId !== null) acidTick.set(ev.victimId, ev.tick);
+            if (!live) break;
+            if (acid) {
+              const f = ev.victimId !== null ? findFighter(state, ev.victimId) : null;
+              sizzle(ev.pos.x, ev.pos.y, f ? f.radius : 18, 8);
+              gpu.shapes.flash(ev.pos.x, ev.pos.y, 16, 0.14, ACID_MOTE.r, ACID_MOTE.g, ACID_MOTE.b, 1.1);
+            } else {
+              dustPuffs(ev.pos.x, ev.pos.y, 3, 8, 50, 0.25);
+            }
             break;
+          }
           case 'match_end':
           case 'sudden_death':
           case 'escalation':
@@ -908,6 +1078,7 @@ export function createFx(): FxModule {
             break;
         }
       }
+      wetNow = 1;
       syncHelmets(state);
     },
 
@@ -930,7 +1101,8 @@ export function createFx(): FxModule {
       for (const s of spurts.items) {
         if (!s.active) continue;
         const f = findFighter(state, s.fighterId);
-        if (!f) {
+        // A death blows the body apart: the stump goes with it.
+        if (!f || !f.alive) {
           s.active = false;
           continue;
         }
@@ -968,11 +1140,17 @@ export function createFx(): FxModule {
       for (const p of pieces.items) {
         if (!p.active || p.settled) continue;
         stepPiece(p, dt, walls, Math.random, sink);
+        if (p.bleed.on) {
+          trailPiece = p;
+          trailStep(p.bleed, dt, trailDrop);
+          trailPiece = null;
+        }
         if (p.settled) ooze(p, true);
       }
       g.pieces.sync(pieces.items);
 
       trails(state, dt, alpha);
+      acidSizzle(state, dt);
       g.particles.update(g.renderer, dt);
       g.particles.decalMesh.visible = g.particles.needsDecalPass;
       g.decals.render(g.renderer, g.particles.needsDecalPass, dt);
@@ -984,8 +1162,8 @@ export function createFx(): FxModule {
       const px = visH / Math.max(1, viewSize.y);
 
       g.shapes.update(dt);
-      g.numbers.update(dt, state, px);
-      g.popups.update(dt, state, g.camera, px, view.nameTags);
+      g.numbers.update(dt, state, px, view.nameTags);
+      g.popups.update(dt, state, px, Math.max(1, viewSize.y), view.nameTags);
     },
 
     reset() {

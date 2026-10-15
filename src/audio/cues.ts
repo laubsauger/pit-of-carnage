@@ -6,7 +6,7 @@
  */
 
 import { LIVE_EVENT_TICKS, MATCH_RULES, TICK_HZ, WEAPONS } from '../core';
-import type { GameEvent, HazardKind, PickupKind, PropKind, SkillId, WeaponId, WorldState } from '../core';
+import type { GameEvent, HazardKind, MatchSignal, PickupKind, PropKind, SkillId, WeaponId, WorldState } from '../core';
 import type { VoiceGroup } from './mix';
 
 export type SoundId =
@@ -20,13 +20,17 @@ export type SoundId =
   | 'crit_crunch' | 'backstab_shink'
   // Projectiles stopped by a wall, pillar, prop or shield.
   | 'thunk_arrow' | 'clang_axe' | 'burst_orb'
-  | 'parry' | 'dismember' | 'death_splat' | 'kill_sting' | 'crowd_roar' | 'explosion'
+  | 'parry' | 'dismember' | 'death_splat' | 'crush' | 'kill_sting' | 'final_sting' | 'crowd_roar' | 'explosion'
+  // Sparse crowd reactions (crowd.ts decides when).
+  | 'crowd_gasp' | 'crowd_whistle' | 'crowd_boo' | 'crowd_chant'
   | 'skill_whirlwind' | 'skill_shadowstep' | 'skill_dash' | 'skill_shockwave' | 'skill_bloodrage'
   | 'footstep' | 'footstep_wet'
   | 'pickup_haste' | 'pickup_berserk' | 'pickup_ammo' | 'spawn_haste' | 'spawn_berserk' | 'heal'
   | 'hazard_spike' | 'hazard_saw' | 'hazard_acid' | 'hazard_fire'
   | 'break_keg' | 'break_amphora' | 'break_crate'
-  | 'wall_grind' | 'horn' | 'escalation' | 'gong' | 'bell';
+  | 'wall_grind' | 'zone_burn' | 'horn' | 'escalation' | 'gong' | 'bell'
+  // Match signals from the controller: the round-start countdown and FIGHT.
+  | 'countdown' | 'fight';
 
 /** Which bus a sound feeds and how much it ducks the others. */
 export type DuckSpec = { sfx: number; amb: number; hold: number };
@@ -75,8 +79,14 @@ export const SOUND_SPECS: Readonly<Record<SoundId, SoundSpec>> = {
   parry: spec('big', 70, 0.85, 0.04),
   dismember: spec('big', 80, 0.6, 0.04),
   death_splat: spec('big', 90, 1.1),
+  crush: spec('big', 92, 1, 0.1),
   kill_sting: spec('big', 95, 0.95, 0.08, 0, { sfx: 0.45, amb: 0.6, hold: 0.3 }),
+  final_sting: spec('signal', 100, 4.4, 1, 0, { sfx: 0.5, amb: 0.7, hold: 1.4 }),
   crowd_roar: spec('crowd', 88, 4.6, 0.25, 0, { sfx: 0, amb: 0.75, hold: 1.5 }),
+  crowd_gasp: spec('crowd', 60, 1.4, 0.5),
+  crowd_whistle: spec('crowd', 50, 1.1, 0.5),
+  crowd_boo: spec('crowd', 55, 2.8, 0.5),
+  crowd_chant: spec('crowd', 70, 5, 1),
   explosion: spec('big', 85, 2.1, 0.05, 0, { sfx: 0.2, amb: 0.55, hold: 0.5 }),
   skill_whirlwind: spec('misc', 55, 0.85, 0.05),
   skill_shadowstep: spec('misc', 55, 0.7, 0.05, 0.22),
@@ -98,12 +108,79 @@ export const SOUND_SPECS: Readonly<Record<SoundId, SoundSpec>> = {
   break_keg: spec('misc', 50, 0.4),
   break_amphora: spec('misc', 50, 0.45),
   break_crate: spec('misc', 50, 0.4),
-  wall_grind: spec('misc', 20, 0.32, 0.2),
+  wall_grind: spec('misc', 20, 0.32, 0.28),
+  zone_burn: spec('misc', 18, 0.4, 0.3),
   horn: spec('signal', 100, 3.2, 0.5, 0, { sfx: 0.5, amb: 0.7, hold: 1.6 }),
   escalation: spec('signal', 75, 0.55, 0.2),
   gong: spec('signal', 100, 4.6, 0.5, 0, { sfx: 0.35, amb: 0.6, hold: 1.2 }),
   bell: spec('signal', 100, 1.8, 0.5, 0, { sfx: 0.3, amb: 0.3, hold: 0.8 }),
+  countdown: spec('signal', 100, 1.1, 0.2),
+  fight: spec('signal', 100, 2.6, 0.5, 0, { sfx: 0.3, amb: 0.5, hold: 0.6 }),
 };
+
+/**
+ * Level trim per sound (dB), calibrated from offline renders (src/audio/dev, "Run offline checks"):
+ * recipes come out at very different levels, so this lines each one up with its target before the
+ * cue's own gain adds the dynamics. Targets, as peak dBFS at the default volume: ordinary hits
+ * -14..-9, swings and releases -20..-15, kills, stings and announcer beats -6..-3, crowd reactions
+ * about -11, footsteps about -35. Re-measure after changing a recipe.
+ */
+export const TRIM_DB: Readonly<Partial<Record<SoundId, number>>> = {
+  swing_greatsword: -4,
+  swing_warhammer: -2.5,
+  swing_daggers: 0.5,
+  swing_axe: 5.5,
+  draw_bow: 4,
+  swing_punch: 8,
+  release_bow: 6.5,
+  release_axe: 2,
+  release_staff: 7.5,
+  hit_blade: 7,
+  hit_hammer: 8.5,
+  hit_dagger: 11.5,
+  hit_arrow: 10,
+  hit_axe: 8.5,
+  hit_arcane: 12,
+  hit_punch: 10,
+  hit_flesh: 10,
+  crit_crunch: 10.5,
+  backstab_shink: 15.5,
+  thunk_arrow: 13,
+  clang_axe: 6.5,
+  burst_orb: 9,
+  parry: 4.5,
+  crowd_roar: -2.5,
+  skill_whirlwind: -1.5,
+  skill_shadowstep: -4,
+  skill_dash: -2.5,
+  skill_bloodrage: -6,
+  footstep: 8.5,
+  footstep_wet: 10,
+  pickup_haste: -3.5,
+  pickup_berserk: -4.5,
+  pickup_ammo: 16.5,
+  spawn_berserk: -1,
+  hazard_spike: 13.5,
+  hazard_saw: -2,
+  hazard_fire: 1,
+  break_keg: 9,
+  break_amphora: 6.5,
+  break_crate: 1.5,
+  wall_grind: 15,
+  zone_burn: 8,
+  escalation: 7,
+  bell: -1.5,
+  countdown: 3,
+  crowd_gasp: -10.5,
+  crowd_whistle: 3,
+  crowd_boo: -8,
+  crowd_chant: -7,
+};
+
+/** Linear gain of a sound's trim. */
+export function trimGain(sound: SoundId): number {
+  return Math.pow(10, (TRIM_DB[sound] ?? 0) / 20);
+}
 
 /** One sound to play. */
 export type Cue = {
@@ -118,16 +195,44 @@ export type Cue = {
   intensity: number;
   /** Game seconds to wait before playing (a swing's whoosh lands on the strike, not the windup). */
   delay: number;
+  /** Sound-specific choice (the chant's style); 0 when absent. */
+  variant?: number;
 };
 
-/** What the mapping remembers between events (a projectile's weapon, the escalation stage). */
+/** What the mapping remembers between events (a projectile's weapon, the escalation stage, wall contact). */
 export type CueMemory = {
   projectiles: Map<string, WeaponId>;
   everywhereSeen: boolean;
+  /** Fighter id -> last tick it touched the closing wall. */
+  contacts: Map<string, number>;
 };
 
 export function createCueMemory(): CueMemory {
-  return { projectiles: new Map(), everywhereSeen: false };
+  return { projectiles: new Map(), everywhereSeen: false, contacts: new Map() };
+}
+
+/**
+ * Note every wall contact in a batch before mapping it, so a fighter's wall damage sounds as
+ * spikes whether its `hit` comes before or after its `wall_contact` in the batch.
+ */
+export function rememberContacts(events: readonly GameEvent[], memory: CueMemory): void {
+  for (const ev of events) if (ev.type === 'wall_contact') memory.contacts.set(ev.fighterId, ev.tick);
+}
+
+/**
+ * The grinding at the closing wall in one batch: how many fighters scrape along it (0 = none) and
+ * where they are on average. The engine holds a continuous grind loop open while this is non-zero;
+ * contact arrives every tick, so retriggering a sound per contact would machine-gun.
+ */
+export function wallContact(events: readonly GameEvent[], state: WorldState): { fighters: number; pan: number } {
+  const seen = new Set<string>();
+  let pan = 0;
+  for (const ev of events) {
+    if (ev.type !== 'wall_contact' || !isLive(ev, state) || seen.has(ev.fighterId)) continue;
+    seen.add(ev.fighterId);
+    pan += panForX(ev.pos.x, state);
+  }
+  return { fighters: seen.size, pan: seen.size > 0 ? pan / seen.size : 0 };
 }
 
 /** Events older than this relative to their state are catch-up from a seek: they make no sound. */
@@ -169,21 +274,28 @@ export function killDrama(ev: KillEvent, state: WorldState, finalKill: boolean):
   return Math.min(Math.max(d, 0), 1);
 }
 
-/** How much an event warms up the crowd murmur (0 = not at all). Decays in the engine. */
+/**
+ * How much action energy an event gives the crowd (0 = none). The crowd director adds it with a
+ * soft ceiling and lets it cool within seconds, so a steady exchange of blows keeps the crowd up
+ * and a lull lets it fall nearly silent. Wall damage arrives every tick of contact: almost nothing
+ * each, or the crowd would boil over from one fighter leaning on the spikes.
+ */
 export function excitementBump(ev: GameEvent): number {
   switch (ev.type) {
     case 'hit':
-      return ev.source === 'sudden_death' || ev.source === 'hazard' ? 0.01 : Math.min(0.06, ev.amount / 500);
+      if (ev.source === 'sudden_death') return 0.004;
+      if (ev.source === 'hazard') return 0.03;
+      return Math.min(0.15, ev.amount / 180);
     case 'kill':
-      return 0.3;
+      return 0.45;
     case 'dismember':
-      return 0.15;
-    case 'explosion':
-      return 0.15;
-    case 'sudden_death':
       return 0.25;
+    case 'explosion':
+      return 0.25;
+    case 'sudden_death':
+      return 0.3;
     case 'parry':
-      return 0.04;
+      return 0.08;
     case 'escalation':
       return 0.05;
     default:
@@ -251,9 +363,8 @@ const PUNCH_WINDUP_TICKS = 7;
 /** Escalation level at which the escalated damage starts hitting everyone. */
 const EVERYWHERE_LEVEL = 1 + Math.floor(MATCH_RULES.escalationEverywhereTicks / MATCH_RULES.escalationStepTicks);
 
-/** Semitone steps for the kill sting: multi-kills climb, the final kill lands lower and grander. */
+/** Semitone step for the kill sting: multi-kills climb. The final kill has its own sting. */
 const STING_MULTI = Math.pow(2, 3 / 12);
-const STING_FINAL = Math.pow(2, -2 / 12);
 
 function fighterById(state: WorldState, id: string | null): WorldState['fighters'][number] | null {
   if (id === null) return null;
@@ -267,8 +378,9 @@ function vary(rand: () => number, spread: number): number {
 }
 
 /**
- * Append the cues for one event. `finalKill`: this kill ends the match (the crowd goes loudest).
- * Stale events (catch-up after a seek) only update memory. `rand` is cosmetic randomness.
+ * Append the cues for one event. `finalKill`: this kill ends the match (also read from the kill's
+ * own `final`): it gets the final sting and the loudest roar. Stale events (catch-up after a seek)
+ * only update memory. `rand` is cosmetic randomness.
  */
 export function cuesForEvent(
   ev: GameEvent,
@@ -289,6 +401,7 @@ export function cuesForEvent(
     memory.projectiles.delete(ev.projectileId);
   }
   if (ev.type === 'sudden_death') memory.everywhereSeen = false;
+  if (ev.type === 'wall_contact') memory.contacts.set(ev.fighterId, ev.tick);
   if (!isLive(ev, state)) return;
 
   const push = (sound: SoundId, gain: number, pan: number, pitch = 1, intensity = 0.5, delay = 0): void => {
@@ -328,7 +441,10 @@ export function cuesForEvent(
     case 'hit': {
       const pan = panForX(ev.pos.x, state);
       if (ev.source === 'sudden_death') {
-        push('wall_grind', 0.5, pan, vary(rand, 0.05));
+        // Pressed into the spikes (the grind loop carries the scrape), or the floor biting everyone.
+        const touching = (memory.contacts.get(ev.victimId) ?? -Infinity) >= ev.tick - 1;
+        if (touching) push('wall_grind', 0.45, pan, vary(rand, 0.06));
+        else push('zone_burn', 0.4, pan, vary(rand, 0.08));
         break;
       }
       // Bigger blows are louder and a little deeper.
@@ -354,10 +470,12 @@ export function cuesForEvent(
       break;
     case 'kill': {
       const pan = panForX(ev.pos.x, state);
-      const drama = killDrama(ev, state, finalKill);
+      const final = finalKill || ev.final;
+      const drama = killDrama(ev, state, final);
+      if (ev.flags.includes('crushed')) push('crush', 1, pan, vary(rand, 0.04), 1);
       push('death_splat', 1, pan, vary(rand, 0.05), ev.flags.includes('overkill') ? 1 : 0.6);
-      const step = finalKill ? STING_FINAL : ev.flags.includes('multi') ? STING_MULTI : 1;
-      push('kill_sting', 0.85, 0, step, drama);
+      if (final) push('final_sting', 0.9, 0, 1, 1);
+      else push('kill_sting', 0.85, 0, ev.flags.includes('multi') ? STING_MULTI : 1, drama);
       push('crowd_roar', 0.5 + 0.5 * drama, 0, vary(rand, 0.03), drama, 0.08);
       break;
     }
@@ -383,7 +501,8 @@ export function cuesForEvent(
       push(SPAWN[ev.kind], 0.6, panForX(ev.pos.x, state));
       break;
     case 'heal':
-      push('heal', 0.5, panForX(ev.pos.x, state));
+      // A shrine's blessing shimmers fuller (a choir under the bells) than any other heal.
+      push('heal', 0.5, panForX(ev.pos.x, state), vary(rand, 0.02), ev.shrineId !== null ? 1 : 0.45);
       break;
     case 'hazard': {
       const kind = state.hazards.find((h) => h.id === ev.hazardId)?.kind;
@@ -414,7 +533,53 @@ export function cuesForEvent(
       if (ev.ending !== 'elimination') push('crowd_roar', 0.75, 0, 1, 0.6, 0.5);
       break;
     case 'bark':
+    case 'wall_contact':
       break;
+  }
+}
+
+/** Semitones the countdown climbs per beat (3, 2, 1: tension rising into FIGHT). */
+const COUNTDOWN_STEP = 2;
+
+/** Cues for a match signal (real time, never bent by slow motion except the crowd's roar). */
+export function cuesForSignal(signal: MatchSignal, out: Cue[]): void {
+  switch (signal.type) {
+    case 'countdown': {
+      const v = Math.min(Math.max(Math.round(signal.value), 1), 3);
+      out.push({ sound: 'countdown', gain: 0.8, pan: 0, pitch: Math.pow(2, ((3 - v) * COUNTDOWN_STEP) / 12), intensity: (3 - v) / 2, delay: 0 });
+      break;
+    }
+    case 'fight':
+      out.push({ sound: 'fight', gain: 0.95, pan: 0, pitch: 1, intensity: 1, delay: 0 });
+      out.push({ sound: 'crowd_roar', gain: 0.6, pan: 0, pitch: 1, intensity: 0.55, delay: 0.05 });
+      break;
+    case 'final_kill':
+      out.push({ sound: 'final_sting', gain: 0.9, pan: 0, pitch: 1, intensity: 1, delay: 0 });
+      break;
+  }
+}
+
+/**
+ * The final sting plays once per final kill. The kill event (with `final`) and the controller's
+ * `final_kill` signal arrive in the same frame in either order; whichever comes first plays it.
+ * A replay of the same match after `windowSec` may play it again.
+ */
+export class FinalGate {
+  private victim: string | null = null;
+  private at = -Infinity;
+
+  constructor(readonly windowSec = 5) {}
+
+  take(victimId: string, now: number): boolean {
+    if (this.victim === victimId && now - this.at < this.windowSec) return false;
+    this.victim = victimId;
+    this.at = now;
+    return true;
+  }
+
+  reset(): void {
+    this.victim = null;
+    this.at = -Infinity;
   }
 }
 

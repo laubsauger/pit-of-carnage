@@ -10,12 +10,16 @@
  *
  * Weight without rumble: only kills shake the camera (and only with the viewer's shake setting on);
  * ordinary hits land locally on the two fighters (hit-stop, flash, squash) and never move the camera.
+ *
+ * Init reports its stages through `options.onProgress` for the splash: `renderer` once the WebGPU
+ * device is up, `shaders` after a warm-up frame has compiled the pipelines of every batch and the
+ * post-processing chain (so the first match frame does not hitch), `ready` just before returning.
  */
 
 import * as THREE from 'three/webgpu';
-import { DEFAULT_VIEW_SETTINGS, LAYER_HEIGHT, LIVE_EVENT_TICKS, MAX_FIGHTERS, WEAPONS, clamp } from '../core';
+import { DEFAULT_VIEW_SETTINGS, LAYER_HEIGHT, LIVE_EVENT_TICKS, MAX_FIGHTERS, NO_VIEW_INSETS, WEAPONS, clamp } from '../core';
 import type {
-  Decision, FxModule, GameEvent, GameRenderer, KnownFighter, MapDef, RenderContext, SkillId, ViewSettings, WorldState,
+  Decision, FxModule, GameEvent, GameRenderer, KnownFighter, MapDef, RenderContext, RendererOptions, SkillId, ViewInsets, ViewSettings, WorldState,
 } from '../core';
 import { affine, setFrame } from './affine';
 import { ArenaLayer } from './arena';
@@ -25,11 +29,12 @@ import { createCutoutMaterial } from './cutout';
 import { FighterLayer } from './fighters';
 import { Floor } from './floor';
 import { createFx } from './fx';
-import { pickIndex } from './hud';
+import { pickIndex, pickMapObject } from './hud';
 import { LightField } from './lightfield';
 import { OverlayLayer } from './overlays';
 import { Post } from './post';
 import { ProjectileLayer } from './projectiles';
+import { KillPunch } from './punch';
 import { IMPACT_PROGRESS, PUNCH_IMPACT, hitSeverity } from './rig';
 import { ShadowLayer } from './shadows';
 import { QuadBatch, acidMaterial, fireMaterial, glowMaterial, groundDecalMaterial } from './sprites';
@@ -55,13 +60,14 @@ const SKILL_FLASH: Readonly<Record<SkillId, number>> = {
   BLOODRAGE: 0xff3a24,
 };
 
-export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = createFx()): Promise<GameRenderer> {
+export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = createFx(), options: RendererOptions = {}): Promise<GameRenderer> {
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
   await renderer.init();
   if ((renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend !== true) {
     renderer.dispose();
     throw new Error('WebGPU is required: this browser could not create a WebGPU device.');
   }
+  options.onProgress?.('renderer');
   const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
   renderer.setPixelRatio(pixelRatio);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -83,7 +89,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
   glow.mesh.renderOrder = 5;
   const fire = new QuadBatch('fires', fireMaterial(), 96);
   fire.mesh.renderOrder = 6;
-  const acid = new QuadBatch('acid', acidMaterial(), 48);
+  const acid = new QuadBatch('acid', acidMaterial(light), 48);
   acid.mesh.renderOrder = 0;
   const floor = new Floor(renderer, light, decalTarget.texture);
   const walls = new Walls(light);
@@ -110,6 +116,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
   const msaa = pixelRatio <= 1.25;
   const post = new Post(renderer, scene, camera, msaa);
   const director = new CameraDirector();
+  const punch = new KillPunch();
 
   let map: MapDef | null = null;
   let ctx: RenderContext | null = null;
@@ -125,8 +132,12 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
   let knowledgeOf: (id: string) => readonly KnownFighter[] = () => [];
   let needsSnap = true;
   let disposed = false;
+  /** The state of the last frame drawn (map-object picking reads it). */
+  let lastState: WorldState | null = null;
   const points = new Float32Array(MAX_FIGHTERS * 2);
-  const frame: FrameInput = { viewW, viewH, mapW: 1, mapH: 1, points, count: 0, followX: null, followY: null };
+  /** Canvas edges covered by UI panels; the camera frames the action inside the rest. */
+  const viewInsets: ViewInsets = { ...NO_VIEW_INSETS };
+  const frame: FrameInput = { viewW, viewH, mapW: 1, mapH: 1, points, count: 0, followX: null, followY: null, insets: viewInsets };
   const savedClear = new THREE.Color();
 
   renderer.setSize(viewW, viewH, false);
@@ -176,6 +187,18 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
     const y = director.y + director.shakeY;
     camera.position.set(x, 600, y);
     camera.lookAt(x, 0, y);
+  }
+
+  const pickAt = { x: 0, y: 0 };
+  /** World point under a client (CSS px) point, written into `pickAt`; false off-canvas. */
+  function toWorld(clientX: number, clientY: number): boolean {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const nx = (clientX - rect.left) / rect.width;
+    const ny = (clientY - rect.top) / rect.height;
+    pickAt.x = camera.position.x + camera.left + nx * (camera.right - camera.left);
+    pickAt.y = camera.position.z - camera.top + ny * (camera.top - camera.bottom);
+    return true;
   }
 
   /** Local weight of a blow: hit-stop on both bodies (attacker on its impact pose), squash on the victim. */
@@ -231,6 +254,8 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       const gameDt = dt * timeScale;
       time += gameDt;
       const a = clamp(alpha, 0, 1);
+      lastState = curr;
+      fighters.tickBeat(dt);
 
       glow.begin();
       fire.begin();
@@ -258,7 +283,8 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       tags.update(curr, fighters, director.zoom, gameDt, view.nameTags, view.hpBars, overlays.visibleToViewer);
       light.update(time, gameDt);
       fx.update(gameDt, curr, a);
-      post.punch.value = Math.max(0, post.punch.value - dt * 3.2);
+      punch.update(dt);
+      post.punch.value = punch.value;
       post.render();
     },
 
@@ -274,7 +300,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
             onHit(e);
             break;
           case 'kill':
-            post.punch.value = 1;
+            punch.kick(e.final);
             light.flash(e.pos.x, e.pos.y, 150, 2.2, 0xff6040, 0.35);
             break;
           case 'explosion':
@@ -282,6 +308,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
             break;
           case 'pickup':
           case 'pickup_spawn':
+          case 'heal':
             arena.onEvent(e, state, light);
             break;
           case 'sudden_death':
@@ -334,14 +361,40 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
     },
 
     pick(clientX, clientY) {
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return null;
-      const nx = (clientX - rect.left) / rect.width;
-      const ny = (clientY - rect.top) / rect.height;
-      const wx = camera.position.x + camera.left + nx * (camera.right - camera.left);
-      const wy = camera.position.z - camera.top + ny * (camera.top - camera.bottom);
-      const i = pickIndex(fighters.xs, fighters.ys, fighters.rs, fighters.alive, fighters.count, wx, wy, 8 / director.zoom);
+      if (!toWorld(clientX, clientY)) return null;
+      // A corpse is never picked (no hover card, no click-select from the arena).
+      const i = pickIndex(fighters.xs, fighters.ys, fighters.rs, fighters.alive, fighters.count, pickAt.x, pickAt.y, 8 / director.zoom);
       return i >= 0 ? fighters.ids[i]! : null;
+    },
+
+    pickObject(clientX, clientY) {
+      const id = api.pick(clientX, clientY);
+      if (id !== null) return { kind: 'fighter', id };
+      if (!lastState || !toWorld(clientX, clientY)) return null;
+      return pickMapObject(lastState, pickAt.x, pickAt.y, 6 / director.zoom);
+    },
+
+    setViewInsets(insets) {
+      const ok = (v: number) => (Number.isFinite(v) ? Math.max(0, v) : 0);
+      viewInsets.left = ok(insets.left);
+      viewInsets.right = ok(insets.right);
+      viewInsets.top = ok(insets.top);
+      viewInsets.bottom = ok(insets.bottom);
+    },
+
+    onSignal(signal) {
+      switch (signal.type) {
+        case 'countdown':
+          fighters.beat(0.8);
+          break;
+        case 'fight':
+          fighters.beat(1.6);
+          break;
+        case 'final_kill':
+          director.finalMoment(signal.pos.x, signal.pos.y);
+          punch.kick(true);
+          break;
+      }
     },
 
     setTimeScale(s) {
@@ -367,6 +420,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       fighters.resetHits();
       arena.resetPickups();
       zone.reset();
+      punch.reset();
       post.punch.value = 0;
       needsSnap = true;
     },
@@ -394,5 +448,16 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       renderer.dispose();
     },
   };
+  // Let the page paint the 'renderer' stage before the warm-up blocks the main thread.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  // Warm-up: one frame through the post pipeline builds the render pipeline of every batch (empty
+  // instanced meshes included) and of post-processing, so the first match frame does not hitch.
+  // The walls have no geometry (and so no normals) before a map: they compile with the first map.
+  applyCamera();
+  walls.mesh.visible = false;
+  post.render();
+  walls.mesh.visible = true;
+  options.onProgress?.('shaders');
+  options.onProgress?.('ready');
   return api;
 }

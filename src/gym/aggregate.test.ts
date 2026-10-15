@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { addToHeatmap, createHeatmap, emptyFighterStats } from '../core';
 import type { FighterReport, KillRecord, MatchReport, ReportRosterEntry, WeaponId } from '../core';
 import { aggregateReports } from './aggregate';
 import { RatingBook } from './ratings';
@@ -36,11 +37,12 @@ function match(seed: number, mapId: string, order: number[], killers: Record<num
       exposure: { ticksAlive: alive, ticksSeen: Math.round(alive / 2), ticksInShadow: 0 },
       damageDealtBySource: { weapon: 100 }, damageTakenBySource: { weapon: 50 }, attacks: 4, hitsLanded: 2, skillUses: 1, parries: 0,
       pickupsTaken: {}, killsWhileBuffed: {}, guardTrips: [],
+      stats: emptyFighterStats(), death: null, heatmap: createHeatmap(1360, 860),
     };
   });
   return {
     seed, mapId, format: 'ffa', timeLimitTicks: 5400, suddenDeath: true, friendlyFire: true,
-    ticks: 1800, ending: 'elimination', suddenDeathStart: null, roster, placements: order.map((i) => `f${i}`), kills, fighters, findings: [],
+    ticks: 1800, ending: 'elimination', suddenDeathStart: null, judges: null, roster, placements: order.map((i) => `f${i}`), kills, fighters, findings: [],
   };
 }
 
@@ -126,5 +128,78 @@ describe('aggregateReports', () => {
       seed: 1, mapIds: ['pit'], book: new RatingBook(), mapName, candidateKeys: ['Lurker@v1'], fieldLabel: 'the house stacks',
     });
     expect(agg.findings[0]).toBe('Lurker v1 beats the house stacks 2 of 5 on the Pit.');
+  });
+
+  // Balance work must see matches that stall into sudden death or reach the judges, and who profits:
+  // a camper that wins on the judges' card is a problem a plain win rate hides.
+  it('counts endings, sudden-death starts and judges decisions, per batch and per strategy', () => {
+    const reports = lurkerSeason();
+    // Match 0 (Lurker first) went to the judges after a timed sudden death; match 4 stalled early.
+    reports[0]!.ending = 'judges';
+    reports[0]!.suddenDeathStart = { tick: 5400, reason: 'time' };
+    reports[0]!.judges = [
+      { id: 'f0', hpFraction: 0.4, damageDealt: 100, kills: 1 },
+      { id: 'f1', hpFraction: 0.2, damageDealt: 100, kills: 1 },
+    ];
+    reports[4]!.suddenDeathStart = { tick: 900, reason: 'stalemate' };
+    const agg = aggregateReports(reports, { seed: 1, mapIds: ['pit', 'catacombs'], book: new RatingBook() });
+
+    expect(agg.endings).toEqual({ elimination: 9, judges: 1 });
+    expect(agg.suddenDeath).toEqual({ matches: 2, share: 0.2, byReason: { time: 1, stalemate: 1 }, avgStartTick: 3150 });
+    expect(agg.judges.matches).toBe(1);
+    expect(agg.judges.share).toBe(0.1);
+    expect(agg.judges.decisions).toEqual([
+      {
+        seed: 0,
+        mapId: 'pit',
+        survivors: [
+          { id: 'f0', hpFraction: 0.4, damageDealt: 100, kills: 1, strategyKey: 'Lurker@v1' },
+          { id: 'f1', hpFraction: 0.2, damageDealt: 100, kills: 1, strategyKey: 'Bowman@v1' },
+        ],
+      },
+    ]);
+    const lurker = agg.strategies.find((s) => s.key === 'Lurker@v1')!;
+    expect(lurker.judges).toEqual({ matches: 1, share: 0.1, wins: 1 });
+    expect(lurker.suddenDeath.matches).toBe(2);
+    expect(agg.strategies.find((s) => s.key === 'Bowman@v1')!.judges.wins).toBe(0);
+  });
+
+  // Side-by-side comparisons read these: heatmaps must stay per map (a corner on the Pit is not a
+  // corner in the Catacombs), and rates must weigh real fighting time, not count a match where the
+  // fighter never engaged as "0 damage per second".
+  it('sums heatmaps per map and averages stats with pooled accuracy and engaged-time weighting', () => {
+    const reports = lurkerSeason();
+    reports.forEach((r, m) => {
+      const lurker = r.fighters[0]!;
+      addToHeatmap(lurker.heatmap, 100, 100, 10);
+      lurker.stats = {
+        ...emptyFighterStats(),
+        distanceTravelled: 1000 + m * 100,
+        // Five matches with 10 s of fighting at 20 dps, five with none.
+        ticksEngaged: m < 5 ? 600 : 0,
+        damageDealtPerSecondEngaged: m < 5 ? 20 : 0,
+        ticksToFirstContact: m < 5 ? 300 + m * 100 : null,
+      };
+    });
+    // One match with 40 of 40 attacks landed, the other nine with 2 of 4.
+    reports[0]!.fighters[0]!.attacks = 40;
+    reports[0]!.fighters[0]!.hitsLanded = 40;
+    const agg = aggregateReports(reports, { seed: 1, mapIds: ['pit', 'catacombs'], book: new RatingBook() });
+    const lurker = agg.strategies.find((s) => s.key === 'Lurker@v1')!;
+
+    expect(Object.keys(lurker.heatmaps).sort()).toEqual(['catacombs', 'pit']);
+    expect(lurker.heatmaps.pit!.total).toBe(50);
+    expect(lurker.heatmaps.pit!.counts[1 * lurker.heatmaps.pit!.cols + 1]).toBe(50);
+    expect(lurker.heatmaps.catacombs!.total).toBe(50);
+    // The reports' own heatmaps are untouched by the summing.
+    expect(reports[0]!.fighters[0]!.heatmap.total).toBe(10);
+
+    expect(lurker.stats.distanceTravelled).toBe(1450);
+    expect(lurker.stats.accuracy).toBe(Math.round((58 / 76) * 1000) / 1000);
+    expect(lurker.stats.ticksEngaged).toBe(300);
+    expect(lurker.stats.damageDealtPerSecondEngaged).toBe(20);
+    expect(lurker.stats.ticksToFirstContact).toBe(500);
+    // Nobody in Bowman's seat ever engaged: no contact time at all rather than a fake 0.
+    expect(agg.strategies.find((s) => s.key === 'Bowman@v1')!.stats.ticksToFirstContact).toBeNull();
   });
 });

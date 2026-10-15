@@ -9,6 +9,9 @@
  *   (`eventMoment`). Ordinary hits never move the camera; their weight is local to the fighters.
  * - Manual: wheel zoom toward the cursor and drag pan take the camera from the director (no
  *   framing, no moments) until `release()`. Following still works, at the viewer's zoom.
+ * - View insets: UI panels cover parts of the canvas (inspector, timeline, top bar). Framing,
+ *   follow and moments centre on the uncovered rectangle and fit inside it, and the map limits
+ *   apply to it, so the action never sits under a panel. Manual zoom and pan are not moved by them.
  * - Shake: a "trauma" value fed by kills only (`eventTrauma`, off in the "no shake" view setting),
  *   capped at 1 and decaying; the offset grows with trauma squared, so one kill is a short jolt and
  *   a multi-kill lands harder.
@@ -16,7 +19,7 @@
  */
 
 import { clamp } from '../core';
-import type { GameEvent, ShakeMode } from '../core';
+import type { GameEvent, ShakeMode, ViewInsets } from '../core';
 
 /** Shake added by one kill (trauma is capped at 1, so stacked kills never exceed MAX_SHAKE_PX). */
 export const KILL_TRAUMA = 0.45;
@@ -58,6 +61,18 @@ export const TRAUMA_DECAY = 1.5;
 export const MOMENT_SECONDS = 1.3;
 /** Zoom multiplier at the peak of a full-strength moment. */
 export const MOMENT_ZOOM = 1.22;
+/** How far a full-strength moment pulls the framing centre toward its spot (0..1). */
+export const MOMENT_PULL = 0.45;
+/**
+ * The final kill: the camera eases onto the kill and stays there while the slow motion plays and
+ * the moment is admired, then lets the framing settle on the winner.
+ */
+export const FINAL_MOMENT = { seconds: 3.4, zoom: 1.55, pull: 0.9 } as const;
+/**
+ * Panels may cover at most this fraction of the canvas on each axis; bigger insets are scaled
+ * down (a full-screen overlay must not collapse the arena to nothing).
+ */
+export const MAX_COVERED = 0.7;
 
 export type FrameInput = {
   /** Canvas size in CSS px. */
@@ -71,7 +86,36 @@ export type FrameInput = {
   /** Fighter to follow (its interpolated position), or null for director framing. */
   followX: number | null;
   followY: number | null;
+  /** Canvas edges covered by UI panels (CSS px). */
+  insets: ViewInsets;
 };
+
+/** The uncovered part of the canvas: size and the offset of its centre from the canvas centre (CSS px). */
+export type Uncovered = { w: number; h: number; ox: number; oy: number };
+
+const _u: Uncovered = { w: 1, h: 1, ox: 0, oy: 0 };
+
+/** The rectangle the viewer can actually see (not under a panel), written into `out`. */
+export function uncovered(input: FrameInput, out: Uncovered = _u): Uncovered {
+  const w = Math.max(1, input.viewW);
+  const h = Math.max(1, input.viewH);
+  const ins = input.insets;
+  let l = Math.max(0, ins.left);
+  let r = Math.max(0, ins.right);
+  let t = Math.max(0, ins.top);
+  let b = Math.max(0, ins.bottom);
+  const sx = l + r > w * MAX_COVERED ? (w * MAX_COVERED) / (l + r) : 1;
+  const sy = t + b > h * MAX_COVERED ? (h * MAX_COVERED) / (t + b) : 1;
+  l *= sx;
+  r *= sx;
+  t *= sy;
+  b *= sy;
+  out.w = w - l - r;
+  out.h = h - t - b;
+  out.ox = (l - r) / 2;
+  out.oy = (t - b) / 2;
+  return out;
+}
 
 export class CameraDirector {
   /** Camera centre (world px). */
@@ -89,16 +133,19 @@ export class CameraDirector {
   private momentY = 0;
   private momentLeft = 0;
   private momentStrength = 0;
+  private momentSeconds = MOMENT_SECONDS;
+  private momentZoom = MOMENT_ZOOM;
+  private momentPull = MOMENT_PULL;
+  private momentFinal = false;
   private clock = 0;
   private targetX = 0;
   private targetY = 0;
   private targetZoom = 1;
 
-  /** Zoom that shows the whole map with a margin. */
+  /** Zoom that shows the whole map with a margin inside the uncovered part of the canvas. */
   static fitZoom(input: FrameInput): number {
-    const w = Math.max(1, input.viewW);
-    const h = Math.max(1, input.viewH);
-    return Math.min(w / (input.mapW + MAP_MARGIN * 2), h / (input.mapH + MAP_MARGIN * 2));
+    const u = uncovered(input);
+    return Math.min(u.w / (input.mapW + MAP_MARGIN * 2), u.h / (input.mapH + MAP_MARGIN * 2));
   }
 
   /**
@@ -125,12 +172,27 @@ export class CameraDirector {
   /** Ease toward a big moment at (x, y); `strength` 0..1. A stronger moment replaces a weaker one. */
   addMoment(x: number, y: number, strength: number): void {
     const s = clamp(strength, 0, 1);
-    const current = this.momentLeft > 0 ? this.momentStrength * (this.momentLeft / MOMENT_SECONDS) : 0;
+    const current = this.momentLeft > 0 ? this.momentStrength * (this.momentLeft / this.momentSeconds) : 0;
     if (s < current) return;
+    this.startMoment(x, y, s, MOMENT_SECONDS, MOMENT_ZOOM, MOMENT_PULL, false);
+  }
+
+  /** The match-deciding kill at (x, y): a long, close moment that nothing else replaces. */
+  finalMoment(x: number, y: number): void {
+    this.startMoment(x, y, 1, FINAL_MOMENT.seconds, FINAL_MOMENT.zoom, FINAL_MOMENT.pull, true);
+  }
+
+  private startMoment(x: number, y: number, s: number, seconds: number, zoom: number, pull: number, final: boolean): void {
+    // The final kill's moment holds: a later kill or explosion never cuts it short.
+    if (this.momentLeft > 0 && this.momentFinal && !final) return;
+    this.momentFinal = final;
     this.momentX = x;
     this.momentY = y;
     this.momentStrength = s;
-    this.momentLeft = MOMENT_SECONDS;
+    this.momentSeconds = seconds;
+    this.momentZoom = zoom;
+    this.momentPull = pull;
+    this.momentLeft = seconds;
   }
 
   /**
@@ -190,14 +252,15 @@ export class CameraDirector {
   /** Current moment weight 0..1 (eases in fast, out slowly). */
   momentWeight(): number {
     if (this.momentLeft <= 0) return 0;
-    const age = MOMENT_SECONDS - this.momentLeft;
+    const age = this.momentSeconds - this.momentLeft;
     const rise = Math.min(1, age / 0.18);
-    const fall = this.momentLeft / MOMENT_SECONDS;
+    const fall = this.momentLeft / this.momentSeconds;
     return this.momentStrength * rise * Math.sqrt(fall);
   }
 
   private computeTarget(input: FrameInput): void {
     const fit = CameraDirector.fitZoom(input);
+    const u = uncovered(input);
     let cx = input.mapW / 2;
     let cy = input.mapH / 2;
     let zoom = fit;
@@ -222,37 +285,40 @@ export class CameraDirector {
       const bh = maxY - minY + FRAME_PAD * 2;
       cx = (minX + maxX) / 2;
       cy = (minY + maxY) / 2;
-      zoom = clamp(Math.min(input.viewW / bw, input.viewH / bh), fit, fit * DIRECTOR_MAX_ZOOM);
+      zoom = clamp(Math.min(u.w / bw, u.h / bh), fit, fit * DIRECTOR_MAX_ZOOM);
     }
     const m = this.momentWeight();
     if (m > 0) {
-      cx += (this.momentX - cx) * 0.45 * m;
-      cy += (this.momentY - cy) * 0.45 * m;
-      zoom *= 1 + (MOMENT_ZOOM - 1) * m;
+      cx += (this.momentX - cx) * this.momentPull * m;
+      cy += (this.momentY - cy) * this.momentPull * m;
+      zoom *= 1 + (this.momentZoom - 1) * m;
     }
     this.targetZoom = clamp(zoom, fit, fit * MAX_ZOOM);
-    this.targetX = cx;
-    this.targetY = cy;
-    // Clamp the target with its own zoom so the eased camera never chases an out-of-map centre.
-    const halfW = input.viewW / (2 * this.targetZoom);
-    const halfH = input.viewH / (2 * this.targetZoom);
-    this.targetX = clampAxis(this.targetX, halfW, input.mapW);
-    this.targetY = clampAxis(this.targetY, halfH, input.mapH);
+    // (cx, cy) is what the uncovered rectangle centres on. Clamp it with the target's own zoom so
+    // the eased camera never chases an out-of-map centre, then shift to the canvas centre.
+    const z = this.targetZoom;
+    this.targetX = clampAxis(cx, u.w / (2 * z), input.mapW) - u.ox / z;
+    this.targetY = clampAxis(cy, u.h / (2 * z), input.mapH) - u.oy / z;
   }
 
   /** Manual view: stay put (or on the followed fighter) at the viewer's zoom, kept inside the limits. */
   private manualTarget(input: FrameInput): void {
     const fit = CameraDirector.fitZoom(input);
-    this.targetZoom = clamp(this.zoom, fit * MANUAL_MIN_ZOOM, fit * MANUAL_MAX_ZOOM);
-    this.targetX = input.followX ?? this.x;
-    this.targetY = input.followY ?? this.y;
-    this.targetX = clampAxis(this.targetX, input.viewW / (2 * this.targetZoom), input.mapW);
-    this.targetY = clampAxis(this.targetY, input.viewH / (2 * this.targetZoom), input.mapH);
+    const u = uncovered(input);
+    const z = clamp(this.zoom, fit * MANUAL_MIN_ZOOM, fit * MANUAL_MAX_ZOOM);
+    this.targetZoom = z;
+    // A followed fighter sits in the middle of the uncovered rectangle; otherwise the view stays put.
+    const cx = input.followX ?? this.x + u.ox / z;
+    const cy = input.followY ?? this.y + u.oy / z;
+    this.targetX = clampAxis(cx, u.w / (2 * z), input.mapW) - u.ox / z;
+    this.targetY = clampAxis(cy, u.h / (2 * z), input.mapH) - u.oy / z;
   }
 
+  /** Keep the uncovered part of the view inside the map margin (the covered part may show beyond it). */
   private clampCentre(input: FrameInput, zoom: number): void {
-    this.x = clampAxis(this.x, input.viewW / (2 * zoom), input.mapW);
-    this.y = clampAxis(this.y, input.viewH / (2 * zoom), input.mapH);
+    const u = uncovered(input);
+    this.x = clampAxis(this.x + u.ox / zoom, u.w / (2 * zoom), input.mapW) - u.ox / zoom;
+    this.y = clampAxis(this.y + u.oy / zoom, u.h / (2 * zoom), input.mapH) - u.oy / zoom;
   }
 }
 

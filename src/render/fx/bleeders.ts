@@ -1,20 +1,23 @@
 // Owned by: render-fx
 /**
  * Timed blood emitters: stump spurts after a dismemberment (pulsing like a heartbeat that loses
- * pressure), the blood fountain of a death, and pools that keep spreading under a body or a landed
- * gib for a second or two. Pure timing logic; the caller turns pulses into droplets and stamps.
+ * pressure for several seconds), the trail of a severed limb in flight, the blood fountain of a
+ * death, and pools that keep spreading under a body or a landed gib for a second or two. Pure
+ * timing logic; the caller turns pulses into droplets and stamps.
  */
 
 import type { Limb } from '../../core';
 import type { Pooled } from './pool';
 
 export const SPURT = {
-  /** Seconds a stump keeps spurting. */
-  duration: 1.05,
+  /** Seconds a stump keeps spurting (then it only drips, wherever the fighter walks). */
+  duration: 4.6,
   /** Seconds between the first heartbeats; the beat slows as pressure drops. */
-  interval: 0.2,
+  interval: 0.22,
+  /** How much longer the last beat interval is than the first (x (1 + slowdown)). */
+  slowdown: 1.7,
   /** Strength of the last pulse relative to the first. */
-  minStrength: 0.25,
+  minStrength: 0.12,
 };
 
 export type Spurt = Pooled & { fighterId: string; limb: Limb; t: number; next: number };
@@ -28,16 +31,63 @@ export function startSpurt(s: Spurt, fighterId: string, limb: Limb): void {
 
 /**
  * Advance a spurt by `dt` seconds, calling `pulse(strength)` for every heartbeat inside the step
- * (strength 1 = first pulse, falling to `minStrength`). Returns false once the stump is done.
+ * (strength 1 = first pulse, falling to `minStrength`, fastest at first). Returns false once the
+ * stump is done.
  */
 export function spurtStep(s: Spurt, dt: number, pulse: (strength: number) => void): boolean {
   s.t += dt;
   while (s.next <= s.t && s.next < SPURT.duration) {
     const k = 1 - s.next / SPURT.duration;
-    pulse(SPURT.minStrength + (1 - SPURT.minStrength) * k);
-    s.next += SPURT.interval * (1 + 0.35 * (1 - k));
+    pulse(SPURT.minStrength + (1 - SPURT.minStrength) * k * Math.sqrt(k));
+    s.next += SPURT.interval * (1 + SPURT.slowdown * (1 - k));
   }
   return s.t < SPURT.duration;
+}
+
+/**
+ * A severed limb flying off trails blood from its cut end: drops shed at a rate that starts high and
+ * weakens, until the limb has bled out (then its slide streaks take over).
+ */
+export const LIMB_TRAIL = {
+  /** Seconds a flying limb keeps shedding drops. */
+  duration: 1.3,
+  /** Drops per second when it leaves the body, and at the end. */
+  rate: 46,
+  minRate: 8,
+};
+
+export type Trail = { t: number; carry: number; on: boolean };
+
+export function createTrail(): Trail {
+  return { t: 0, carry: 0, on: false };
+}
+
+export function startTrail(tr: Trail): void {
+  tr.t = 0;
+  tr.carry = 0;
+  tr.on = true;
+}
+
+/**
+ * Advance a limb's blood trail by `dt` seconds, calling `drop(strength)` once per drop shed in the
+ * step (strength 1 at the cut, weakening). Drop count depends only on time, never on frame rate.
+ * Returns false once the limb has stopped bleeding.
+ */
+export function trailStep(tr: Trail, dt: number, drop: (strength: number) => void): boolean {
+  if (!tr.on) return false;
+  const L = LIMB_TRAIL;
+  const t0 = tr.t;
+  const t1 = Math.min(L.duration, t0 + (dt > 0 ? dt : 0));
+  tr.t = t0 + (dt > 0 ? dt : 0);
+  // Integral of the linearly falling rate over [t0, t1].
+  const rateAt = (t: number) => L.rate + (L.minRate - L.rate) * (t / L.duration);
+  tr.carry += t1 > t0 ? ((rateAt(t0) + rateAt(t1)) / 2) * (t1 - t0) : 0;
+  while (tr.carry >= 1) {
+    tr.carry -= 1;
+    drop(1 - t1 / L.duration * 0.75);
+  }
+  if (tr.t >= L.duration) tr.on = false;
+  return tr.on;
 }
 
 /**

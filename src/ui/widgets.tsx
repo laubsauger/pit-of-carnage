@@ -1,11 +1,15 @@
 // Owned by: ui
 // Small presentational pieces shared by several screens.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ATTRIBUTE_DOCS, ATTRIBUTE_KEYS, ATTRIBUTE_MAX } from '../core';
 import type { AttributeKey, Attributes } from '../core';
+import { ATTRIBUTE_COLORS, attrBars } from './attrs';
 import { readInt } from './batch';
 import { hpFraction } from './hud';
+import { ChevronIcon } from './icons';
+import { PANES, dragPaneWidth } from './panes';
+import type { PaneId, PaneState } from './panes';
 
 /**
  * Whole-number field. Keeps its own text so it can be cleared and retyped; the parent only ever
@@ -55,20 +59,32 @@ export const ATTRIBUTE_LABEL: Record<AttributeKey, string> = {
   haste: 'Haste',
 };
 
-/** Six small vertical bars: the build at a glance. */
-export function AttrBars({ attributes }: { attributes: Attributes }) {
+/**
+ * The build's distribution: six bars in the attributes' own colours, measured against the 40-point
+ * maximum (dashed line at the top), so two builds side by side differ at a glance. Each bar keeps
+ * its name and number, readable without colour; hovering shows what the attribute does.
+ */
+export function AttrChart({ attributes, height = 68, compact = false }: { attributes: Attributes; height?: number; compact?: boolean }) {
   return (
-    <div className="attrs">
-      {ATTRIBUTE_KEYS.map((k) => (
-        <div className="attr" key={k} title={`${ATTRIBUTE_LABEL[k]} ${attributes[k]}. ${ATTRIBUTE_DOCS[k]}`}>
-          <div className="attr-bar">
-            <div style={{ height: `${(attributes[k] / ATTRIBUTE_MAX) * 100}%` }} />
+    <div className={`attr-chart${compact ? ' compact' : ''}`} role="img" aria-label={ATTRIBUTE_KEYS.map((k) => `${ATTRIBUTE_LABEL[k]} ${attributes[k]}`).join(', ')}>
+      {attrBars(attributes).map((b) => (
+        <div className="ac-col" key={b.key} title={`${ATTRIBUTE_LABEL[b.key]} ${b.value} of ${ATTRIBUTE_MAX}. ${ATTRIBUTE_DOCS[b.key]}`}>
+          <span className="ac-val num">{b.value}</span>
+          <div className="ac-track" style={{ height }}>
+            <div className="ac-fill" style={{ height: `${b.height * 100}%`, background: b.color }} />
           </div>
-          <span>{ATTRIBUTE_SHORT[k]}</span>
+          <span className="ac-key" style={{ color: b.color }}>
+            {ATTRIBUTE_SHORT[b.key]}
+          </span>
         </div>
       ))}
     </div>
   );
+}
+
+/** Small swatch in an attribute's colour, for legends and inline labels. */
+export function AttrDot({ attr }: { attr: AttributeKey }) {
+  return <i className="attr-dot" style={{ background: ATTRIBUTE_COLORS[attr] }} aria-hidden />;
 }
 
 export function HpBar({ hp, maxHp, color }: { hp: number; maxHp: number; color: string }) {
@@ -79,3 +95,80 @@ export function HpBar({ hp, maxHp, color }: { hp: number; maxHp: number; color: 
     </span>
   );
 }
+
+/**
+ * Drag handle on a side pane's inner edge: drag to resize (clamped to the pane's range), double-click
+ * to reset, arrow keys for 16 px steps. Lives inside the pane, absolutely placed on its edge.
+ */
+export function PaneHandle({ id, setPane, label }: { id: PaneId; setPane: (fn: (p: PaneState) => PaneState) => void; label: string }) {
+  const drag = useRef<{ x: number; w: number } | null>(null);
+  const [width, setWidthShown] = useState<number | null>(null);
+  const spec = PANES[id];
+  return (
+    <div
+      className={`pane-handle ${spec.side}${width !== null ? ' dragging' : ''}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize ${label}`}
+      aria-valuemin={spec.min}
+      aria-valuemax={spec.max}
+      tabIndex={0}
+      title={`Drag to resize ${label.toLowerCase()}, double-click to reset`}
+      // Pointer events alone do not stop the browser from starting a text selection.
+      onMouseDown={(e) => e.preventDefault()}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const w = e.currentTarget.parentElement?.getBoundingClientRect().width ?? spec.initial;
+        drag.current = { x: e.clientX, w };
+        setWidthShown(Math.round(w));
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const next = dragPaneWidth(id, d.w, d.x, e.clientX);
+        setWidthShown(next);
+        setPane((p) => (p.width === next && !p.collapsed ? p : { width: next, collapsed: false }));
+      }}
+      onPointerUp={() => {
+        drag.current = null;
+        setWidthShown(null);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setWidthShown(null);
+      }}
+      onDoubleClick={() => setPane((p) => ({ ...p, width: spec.initial }))}
+      onKeyDown={(e) => {
+        const step = e.key === 'ArrowRight' ? 16 : e.key === 'ArrowLeft' ? -16 : 0;
+        if (!step) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // The handle moves with the arrow, like dragging it: a left pane widens, a right pane narrows.
+        setPane((p) => ({ ...p, width: dragPaneWidth(id, p.width, 0, step) }));
+      }}
+    >
+      {width !== null ? <span className="pane-width num">{width}</span> : null}
+    </div>
+  );
+}
+
+/** Collapse a side pane to a thin rail, or bring it back. */
+export function PaneToggle({ side, collapsed, onToggle, label }: { side: 'left' | 'right'; collapsed: boolean; onToggle: () => void; label: string }) {
+  // A left pane collapses toward the left edge; its chevron points where the pane will go.
+  const dir = (side === 'left') !== collapsed ? 'left' : 'right';
+  return (
+    <button
+      type="button"
+      className="btn btn-sm btn-icon btn-quiet pane-toggle"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      title={collapsed ? `Show ${label.toLowerCase()}` : `Collapse ${label.toLowerCase()}`}
+      aria-label={collapsed ? `Show ${label.toLowerCase()}` : `Collapse ${label.toLowerCase()}`}
+    >
+      <ChevronIcon dir={dir} size={13} />
+    </button>
+  );
+}
+

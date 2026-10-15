@@ -3,10 +3,11 @@
  * Colours for gore and debris, in linear working space (what node materials and the decal target
  * expect). Kept free of three.js so the pure fx logic stays testable in node.
  *
- * The floor decal target stores a *multiply* colour over the floor albedo (white = clean floor), so
- * blood colours here are "how much of the floor's light survives" through one layer of blood:
- * bright arterial red keeps most of the red channel and kills green/blue, clotted blood keeps almost
- * nothing. Thinner or thicker layers raise this to a power (see `decalShade`).
+ * Floor blood is stored as data, not colour (see decals.ts): how much blood lies on a texel, how
+ * much of it is still wet, and its tone. The floor maps that data through one blood gradient
+ * (`bloodAlbedo`, mirrored in TSL by goreFloor.ts): bright arterial red where it is thin and fresh,
+ * deep red where it pools, dark maroon where it has dried. Every stop is clearly red, the darkest
+ * one included, so overlaps can never turn grey or black.
  */
 
 export type Rgb = { r: number; g: number; b: number };
@@ -38,8 +39,8 @@ function stop(t: number, hex: number): { t: number; r: number; g: number; b: num
 const BLOOD_STOPS = [stop(0, 0x2a0407), stop(0.35, 0x5a080c), stop(0.7, 0x931016), stop(1, 0xd0201e)];
 
 /**
- * Blood colour along the maroon-to-arterial ramp. `t` = 0 is old, thick, nearly black blood;
- * `t` = 1 is fresh arterial spray.
+ * Colour of blood in the air (drops, mist, gib sheen) along the maroon-to-arterial ramp. `t` = 0
+ * is dark clotted blood, `t` = 1 fresh arterial spray. Floor blood uses `bloodAlbedo` instead.
  */
 export function bloodColor(out: Rgb, t: number): Rgb {
   const x = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -55,28 +56,118 @@ export function bloodColor(out: Rgb, t: number): Rgb {
 }
 
 /**
- * The darkest the floor's gore multiply colour may get (linear): a deep maroon. Overlapping stamps
- * keep absorbing, and without a floor trampled pools went to pure black; the floor's wet sheen on a
- * black floor read as grey, patchy blotches. Every decal pass clamps the target up to this colour,
- * so old blood ends near-black maroon and stays red in hue.
- */
-export const GORE_FLOOR: Readonly<Rgb> = { r: 0.085, g: 0.0075, b: 0.007 };
-
-/**
- * Drying of floor gore. Colour never fades (blood stays for the whole match); what dries is the
- * wetness the target keeps in alpha, which the floor turns into a sheen. Fresh blood glistens, old
- * blood is matte.
+ * Drying of floor gore. Blood never fades (it stays for the whole match); what dries is the wet
+ * share the target keeps, which the floor turns into colour: wet blood is arterial to deep red with a
+ * faint highlight, dried blood is maroon. Drying shifts the colour, never toward grey.
  */
 export const DRYING = {
-  /** Seconds (game time) for the wet sheen to halve. */
-  wetHalfLife: 9,
-  /** Seconds between drying passes when nothing new was painted. */
-  interval: 0.25,
+  /** Seconds (game time) for the wet share of floor blood to halve. */
+  wetHalfLife: 10,
+  /**
+   * Seconds between drying passes. Not every frame: the target is half float, and a per-frame step
+   * is smaller than its precision near "almost dry", so drying would stall there.
+   */
+  interval: 0.5,
 };
 
 /** Fraction of wetness a drying pass removes after `seconds` of game time. */
 export function dryFraction(seconds: number): number {
   return seconds <= 0 ? 0 : 1 - Math.pow(0.5, seconds / DRYING.wetHalfLife);
+}
+
+/** Wetness left on blood that was spilled `seconds` ago (1 = fresh). */
+export function wetAfter(seconds: number): number {
+  return seconds <= 0 ? 1 : Math.pow(0.5, seconds / DRYING.wetHalfLife);
+}
+
+function lin(hex: number): Rgb {
+  return { r: srgbToLinear((hex >> 16) & 255), g: srgbToLinear((hex >> 8) & 255), b: srgbToLinear(hex & 255) };
+}
+
+/**
+ * The one blood gradient of the floor, by thickness (thin, mid, thick). Wet blood runs from bright
+ * arterial red to a deep wet red; dried blood from brick maroon to dark maroon. The darkest stop is
+ * the darkness floor: still plainly red (red channel several times green and blue), never grey.
+ */
+export const BLOOD_RAMP: Readonly<{ wet: readonly Rgb[]; dry: readonly Rgb[] }> = {
+  wet: [lin(0xd2261d), lin(0x9e1219), lin(0x6c0b13)],
+  dry: [lin(0x7a1c17), lin(0x5c1213), lin(0x480d10)],
+};
+
+/** How floor blood data turns into colour and light (shared by `bloodAlbedo` and goreFloor.ts). */
+export const BLOOD_FLOOR = {
+  /** Coverage of the floor by blood of density D: 1 - exp(-cover x D). Thin edges let the floor through. */
+  cover: 3,
+  /** Position on the gradient: thickness = 1 - exp(-thick x D) (a spray ~0.4, a trampled pool ~0.9). */
+  thick: 0.6,
+  /** Tone a stamp has when nothing says otherwise (1 = arterial spray, 0.4 = pooled). */
+  tone: 0.7,
+  /** How far tone moves a stamp along the gradient (darker tone = thicker look). */
+  toneShift: 0.45,
+  /**
+   * Blood is lit with at least this much light in every channel, so the cool ambient can never tint
+   * it blue-grey and fresh and dried blood stay apart in the dark.
+   */
+  minLight: 0.2,
+  /**
+   * The darkness floor of lit blood (linear, sRGB #2c0809): however dark the spot, blood is never
+   * darker than this, so it reads red on the Catacombs' near-black stone (it read black there).
+   */
+  darkest: { r: srgbToLinear(0x2c), g: srgbToLinear(0x08), b: srgbToLinear(0x09) } as Readonly<Rgb>,
+  /** Wet highlight: share of the light added back as a faint red gloss on fresh blood. */
+  gloss: 0.05,
+  /** The wet layer on top: wet coverage w becomes 1 - (1 - w)^layer of the colour. */
+  layer: 2,
+};
+
+function ramp3(out: Rgb, s: readonly Rgb[], t: number): Rgb {
+  const a = t * 2 < 0 ? 0 : t * 2 > 1 ? 1 : t * 2;
+  const b = t * 2 - 1 < 0 ? 0 : t * 2 - 1 > 1 ? 1 : t * 2 - 1;
+  out.r = s[0].r + (s[1].r - s[0].r) * a + (s[2].r - s[1].r) * b;
+  out.g = s[0].g + (s[1].g - s[0].g) * a + (s[2].g - s[1].g) * b;
+  out.b = s[0].b + (s[1].b - s[0].b) * a + (s[2].b - s[1].b) * b;
+  return out;
+}
+
+const dryTmp: Rgb = { r: 0, g: 0, b: 0 };
+
+/**
+ * Albedo (linear) of floor blood: `density` is how much blood lies there (0 none, ~1 a spray, 4+ a
+ * trampled pool), `wet` the wet share 0..1, `tone` its average tone 0..1. The TSL floor composite
+ * computes exactly this.
+ */
+export function bloodAlbedo(out: Rgb, density: number, wet: number, tone: number): Rgb {
+  const F = BLOOD_FLOOR;
+  const d = density > 0 ? density : 0;
+  const th = 1 - Math.exp(-F.thick * d);
+  const t = Math.min(1, Math.max(0, th + (F.tone - tone) * F.toneShift));
+  const w = Math.min(1, Math.max(0, wet));
+  const layer = 1 - Math.pow(1 - w, F.layer);
+  ramp3(dryTmp, BLOOD_RAMP.dry, t);
+  ramp3(out, BLOOD_RAMP.wet, t);
+  out.r = dryTmp.r + (out.r - dryTmp.r) * layer;
+  out.g = dryTmp.g + (out.g - dryTmp.g) * layer;
+  out.b = dryTmp.b + (out.b - dryTmp.b) * layer;
+  return out;
+}
+
+/** Luminance weights (linear Rec. 709). */
+export const LUMA: Readonly<Rgb> = { r: 0.2126, g: 0.7152, b: 0.0722 };
+
+/**
+ * Lit floor blood (linear): `albedo` under `light` (linear rgb, light field x ambient occlusion),
+ * every channel lit with at least `BLOOD_FLOOR.minLight`, plus the faint red gloss of wet blood, and
+ * never darker than `BLOOD_FLOOR.darkest`. Mirrors goreFloor.ts.
+ */
+export function bloodLit(out: Rgb, albedo: Rgb, light: Rgb, wet: number): Rgb {
+  const F = BLOOD_FLOOR;
+  const lum = light.r * LUMA.r + light.g * LUMA.g + light.b * LUMA.b;
+  const w = Math.min(1, Math.max(0, wet));
+  const gloss = w * w * lum * F.gloss;
+  out.r = Math.max(F.darkest.r, albedo.r * Math.max(light.r, F.minLight) + gloss);
+  out.g = Math.max(F.darkest.g, albedo.g * Math.max(light.g, F.minLight) + gloss * 0.12);
+  out.b = Math.max(F.darkest.b, albedo.b * Math.max(light.b, F.minLight) + gloss * 0.1);
+  return out;
 }
 
 /**

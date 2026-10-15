@@ -1,0 +1,473 @@
+/* Owned by: ui
+ * Strategy editor: word colours, hover cards, the CodeMirror surface and diagnostics.
+ * Colours come from theme.css tokens; the per-kind word tints and the six attribute hues are
+ * defined here (muted, so fighter colours still own saturation). Attribute hues read
+ * --attr-<name> first, so theme.css can take them over as shared tokens.
+ */
+
+/* ------------------------------------------------------------------------------------------ */
+/* Word kinds and attribute hues                                                               */
+/* ------------------------------------------------------------------------------------------ */
+
+:root {
+  --wk-sensor: #86b8aa;
+  --wk-fighter-sensor: #8fb2d8;
+  --wk-memory: #d29bbf;
+  --wk-function: #c9bfae;
+  --wk-keyword: #b3a99c;
+  --wk-policy: #e19385;
+  --wk-fighter: #a3b9ea;
+  --wk-place: #9fca8c;
+  --wk-zone: #b8a0e0;
+  --wk-term: #e2aa62;
+  --wk-gear: #dcc07e;
+  --wk-starter: #d7b98a;
+  --wk-field: #a39a8e;
+
+  --ah-vitality: var(--attr-vitality, #c6655b);
+  --ah-power: var(--attr-power, #d0874a);
+  --ah-agility: var(--attr-agility, #7fae68);
+  --ah-perception: var(--attr-perception, #5fb0c0);
+  --ah-armor: var(--attr-armor, #8d9aab);
+  --ah-haste: var(--attr-haste, #d3ab4c);
+}
+
+[data-kind] {
+  --k: var(--wk-field);
+}
+[data-kind='sensor'] { --k: var(--wk-sensor); }
+[data-kind='fighter-sensor'] { --k: var(--wk-fighter-sensor); }
+[data-kind='memory'] { --k: var(--wk-memory); }
+[data-kind='function'] { --k: var(--wk-function); }
+[data-kind='keyword'] { --k: var(--wk-keyword); }
+[data-kind='policy'] { --k: var(--wk-policy); }
+[data-kind='fighter'],
+[data-kind='enemies'] { --k: var(--wk-fighter); }
+[data-kind='place'] { --k: var(--wk-place); }
+[data-kind='zone'] { --k: var(--wk-zone); }
+[data-kind='term'] { --k: var(--wk-term); }
+[data-kind='weapon'],
+[data-kind='skill'],
+[data-kind='pickup-word'],
+[data-kind='pickup'] { --k: var(--wk-gear); }
+[data-kind='starter'] { --k: var(--wk-starter); }
+[data-kind='stance'],
+[data-kind='direction'],
+[data-kind='bark'] { --k: var(--wk-function); }
+[data-attr='vitality'] { --k: var(--ah-vitality); }
+[data-attr='power'] { --k: var(--ah-power); }
+[data-attr='agility'] { --k: var(--ah-agility); }
+[data-attr='perception'] { --k: var(--ah-perception); }
+[data-attr='armor'] { --k: var(--ah-armor); }
+[data-attr='haste'] { --k: var(--ah-haste); }
+
+/* A word chip: the word in its kind colour on a faint wash of it. */
+.lx-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--k) 14%, transparent);
+  color: var(--k);
+  font-family: var(--font-num);
+  font-size: 11px;
+  font-variant-ligatures: none;
+  white-space: nowrap;
+  cursor: default;
+}
+
+button.lx-chip {
+  cursor: pointer;
+}
+
+button.lx-chip:hover {
+  background: color-mix(in srgb, var(--k) 26%, transparent);
+}
+
+.lx-chip-inline {
+  height: auto;
+  padding: 0 3px;
+  line-height: 1.35;
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Hover card                                                                                  */
+/* ------------------------------------------------------------------------------------------ */
+
+.lx-card {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px 12px;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  border-top: 2px solid var(--k);
+}
+
+.lx-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.lx-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--k);
+  font-family: var(--font-num);
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.lx-title-name {
+  font-family: var(--font-ui);
+  font-size: var(--fs-head);
+  letter-spacing: -0.01em;
+}
+
+.lx-kind {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lx-meta {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-num);
+  font-size: var(--fs-micro);
+}
+
+.lx-doc {
+  margin: 8px 0 0;
+  color: var(--text);
+}
+
+.lx-doc code,
+.lx-facts code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--stone-3);
+  font-family: var(--font-num);
+  font-size: 11px;
+}
+
+.lx-sub {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 4px;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lx-sub span {
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.lx-facts,
+.lx-effect,
+.lx-example,
+.lx-related,
+.lx-values {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--stone-3);
+}
+
+.lx-facts dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 0;
+}
+
+.lx-facts dt {
+  color: var(--text-dim);
+}
+
+.lx-facts dt.mono {
+  font-family: var(--font-num);
+  color: var(--k);
+}
+
+.lx-facts dd {
+  margin: 0;
+}
+
+.lx-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.lx-values code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--stone-3);
+  font-family: var(--font-num);
+  font-size: 11px;
+}
+
+.lx-effect table {
+  border-collapse: collapse;
+}
+
+.lx-effect th {
+  padding: 1px 14px 1px 0;
+  color: var(--text-dim);
+  font-weight: 400;
+  text-align: left;
+}
+
+.lx-effect td {
+  padding: 1px 0;
+  font-size: var(--fs-micro);
+}
+
+.lx-effect .lx-arrow {
+  padding: 0 6px;
+  color: var(--text-faint);
+}
+
+.lx-effect .up {
+  color: #a9d18e;
+}
+
+.lx-effect .down {
+  color: #e39b8e;
+}
+
+.lx-example pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 7px 9px;
+  border-radius: var(--r-ctl);
+  background: var(--stone-0);
+  color: var(--text);
+  font-family: var(--font-num);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lx-related {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.lx-related .lx-sub {
+  margin: 0 4px 0 0;
+}
+
+.lx-foot {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.lx-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--stone-5);
+  text-underline-offset: 3px;
+}
+
+.lx-link:hover {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* CodeMirror surface                                                                          */
+/* ------------------------------------------------------------------------------------------ */
+
+.code-cm {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--stone-0);
+}
+
+.code-cm > .cm-editor {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+/* JSON */
+.cm-j-key { color: #d8cfc2; }
+.cm-j-str { color: #c6b48e; }
+.cm-j-num { color: #e2aa62; }
+.cm-j-lit { color: #d29bbf; }
+.cm-j-punct { color: var(--text-faint); }
+.cm-j-bad { color: var(--blood-hi); }
+
+/* Inside expression strings: everything that is not a recognised word stays quiet. */
+.cm-x-op { color: var(--text-dim); }
+.cm-x-num { color: #e2aa62; }
+.cm-x-paren { color: var(--text-faint); }
+.cm-x-unknown { color: #d7c9b4; }
+
+/* Recognised words: a subtle badge in the word's kind colour. Padding with matching negative
+   margin keeps every character on its column. */
+.cm-w {
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 13%, transparent);
+  border-radius: 3px;
+  padding: 1px 2px;
+  margin: 0 -2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.cm-w-key {
+  background: color-mix(in srgb, var(--k) 11%, transparent);
+}
+
+/* A spot the problem list jumped to. */
+.cm-flash {
+  animation: cm-flash 1.1s ease-out;
+  border-radius: 2px;
+}
+
+@keyframes cm-flash {
+  0%,
+  25% {
+    background: rgba(232, 226, 217, 0.32);
+    box-shadow: 0 0 0 2px rgba(232, 226, 217, 0.32);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+
+.cm-flash-line {
+  animation: cm-flash-line 1.1s ease-out;
+}
+
+@keyframes cm-flash-line {
+  0%,
+  25% {
+    background: rgba(232, 226, 217, 0.07);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* Diagnostics in a tooltip */
+.dx {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 2px 8px;
+  max-width: 440px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.dx-icon {
+  margin-top: 2px;
+}
+
+.dx-msg b {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.dx-error .dx-msg b {
+  color: var(--blood-hi);
+}
+
+.dx-warning .dx-msg b {
+  color: #d9b56a;
+}
+
+.dx-fix {
+  grid-column: 2;
+  color: var(--text-dim);
+}
+
+.dx-path {
+  grid-column: 2;
+  color: var(--text-faint);
+  font-family: var(--font-num);
+  font-size: var(--fs-micro);
+  overflow-wrap: anywhere;
+}
+
+/* Completion list */
+.cx-label {
+  font-family: var(--font-num);
+}
+
+.cx-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 7px 1px 1px;
+  border-radius: 2px;
+  background: var(--k);
+}
+
+/* Editor view switch and problem list additions */
+.editor-mode {
+  margin-left: 2px;
+}
+
+.issue .issue-icon {
+  float: left;
+  margin: 1px 7px 0 0;
+}
+
+.issue.flash {
+  animation: issue-flash 0.9s ease-out;
+}
+
+@keyframes issue-flash {
+  0% {
+    background: var(--stone-3);
+  }
+  100% {
+    background: var(--stone-0);
+  }
+}
+
+.issue-fix {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+
+.code-status .dx-icon {
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+}
+
+.issue code {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}

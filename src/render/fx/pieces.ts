@@ -11,6 +11,8 @@ import { circleRectPush } from '../../core';
 import type { Rect, Vec2 } from '../../core';
 import { MATERIALS, PARTS } from './parts';
 import type { PartId, PartMaterial } from './parts';
+import { createTrail } from './bleeders';
+import type { Trail } from './bleeders';
 import { createStreak, resetStreak, streakStep } from './streaks';
 import type { StreakStamp, StreakState } from './streaks';
 import type { Pooled } from './pool';
@@ -56,13 +58,15 @@ export type Piece = Pooled & {
   settled: boolean;
   age: number;
   streak: StreakState;
+  /** Blood shed in flight (severed limbs); off for everything else. */
+  bleed: Trail;
 };
 
 export function createPiece(): Piece {
   return {
     active: false, serial: 0, part: 'skull', material: 'bone',
     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, rot: 0, spin: 0, tumble: 0, radius: 6, flip: 1,
-    r: 1, g: 1, b: 1, bounces: 0, settled: false, age: 0, streak: createStreak(0, 0),
+    r: 1, g: 1, b: 1, bounces: 0, settled: false, age: 0, streak: createStreak(0, 0), bleed: createTrail(),
   };
 }
 
@@ -89,6 +93,7 @@ export function launchPiece(
   p.settled = false;
   p.age = 0;
   resetStreak(p.streak, def.streakWidth, def.wet);
+  p.bleed.on = false;
   return p;
 }
 

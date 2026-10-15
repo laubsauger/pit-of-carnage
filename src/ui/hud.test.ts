@@ -11,11 +11,14 @@ import {
   clusterAt,
   clusterMarks,
   clusterSeekTick,
+  countdownText,
   cycleFighter,
   deathTick,
   feedOpacity,
+  finaleStamp,
   filterMarks,
   hoverCardPosition,
+  insetsAround,
   isLive,
   laneMarks,
   markForFeed,
@@ -28,6 +31,8 @@ import {
   scrubTarget,
   scrubTick,
   segmentFeedText,
+  skippable,
+  watchInsets,
   sortScoreboard,
   tickAtRatio,
   timelineDomain,
@@ -356,5 +361,79 @@ describe('nextFollow', () => {
   it('releases the camera when nobody is selected, so F never locks onto someone you cannot see in the inspector', () => {
     expect(nextFollow(null, 'a')).toBeNull();
     expect(nextFollow(null, null)).toBeNull();
+  });
+});
+
+describe('watchInsets', () => {
+  const none = { scoreboard: null, inspector: null, endCard: null, timeline: null };
+
+  it('reports the inspector, so the camera frames the action beside it instead of under it', () => {
+    expect(watchInsets({ ...none, inspector: 316 }, 12)).toEqual({ left: 0, right: 340, top: 0, bottom: 0 });
+  });
+
+  it('takes the wider of the inspector and the end card, both hugging the right edge', () => {
+    expect(watchInsets({ ...none, inspector: 316, endCard: 420 }, 12).right).toBe(444);
+  });
+
+  it('covers the scoreboard on the left and the timeline at the bottom', () => {
+    expect(watchInsets({ scoreboard: 252, inspector: null, endCard: null, timeline: 40 }, 12)).toEqual({ left: 276, right: 0, top: 0, bottom: 64 });
+  });
+
+  it('is all zero when no panel is shown (the whole arena is visible)', () => {
+    expect(watchInsets(none, 12)).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
+  });
+});
+
+describe('insetsAround', () => {
+  it('leaves exactly the picture-in-picture window visible, so the followed fighter is framed inside it', () => {
+    const arena = { left: 0, top: 44, right: 1400, bottom: 900 };
+    const hole = { left: 980, top: 120, right: 1380, bottom: 370 };
+    expect(insetsAround(arena, hole)).toEqual({ left: 980, right: 20, top: 76, bottom: 530 });
+  });
+
+  it('never goes negative when the window pokes past the arena', () => {
+    expect(insetsAround({ left: 0, top: 0, right: 100, bottom: 100 }, { left: -5, top: -5, right: 120, bottom: 120 })).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
+  });
+});
+
+describe('countdownText', () => {
+  it('counts 3, 2, 1 and then shouts FIGHT!', () => {
+    expect([3, 2, 1, 0].map(countdownText)).toEqual(['3', '2', '1', 'FIGHT!']);
+  });
+
+  it('shows nothing outside the countdown', () => {
+    expect(countdownText(null)).toBeNull();
+    expect(countdownText(-1)).toBeNull();
+  });
+});
+
+describe('skippable', () => {
+  it('lets Space and a click skip only the countdown and the final moment, never a live match', () => {
+    expect(skippable('countdown')).toBe(true);
+    expect(skippable('final')).toBe(true);
+    expect(skippable('live')).toBe(false);
+    expect(skippable('ended')).toBe(false);
+  });
+});
+
+describe('finaleStamp (SPEC round end: a WINNER stamp in the broadcast voice over the final moment)', () => {
+  const f = (id: string, squad: number, name: string): UiFighter => ({
+    id, name, color: `#${id}`, hp: 10, maxHp: 100, alive: true, kills: 1, weapon: 'GREATSWORD', skill: 'DASH', behaviour: 'brawl', place: null, squad,
+  });
+  const fighters = [f('a1', 0, 'Gary'), f('b2', 1, 'Brenda'), f('c3', 1, 'Pam')];
+
+  it('names the winner in their colour, only during the final moment', () => {
+    expect(finaleStamp({ phase: 'final', ending: 'elimination', placements: ['b2', 'a1', 'c3'], fighters, format: 'ffa' })).toEqual({ title: 'WINNER', name: 'Brenda', color: '#b2' });
+    expect(finaleStamp({ phase: 'ended', ending: 'elimination', placements: ['b2'], fighters, format: 'ffa' })).toBeNull();
+    expect(finaleStamp({ phase: 'live', ending: null, placements: [], fighters, format: 'ffa' })).toBeNull();
+  });
+
+  it("says when the judges decided it, and names the squad in squads", () => {
+    expect(finaleStamp({ phase: 'final', ending: 'judges', placements: ['a1'], fighters, format: 'ffa' })?.title).toBe("JUDGES' DECISION");
+    expect(finaleStamp({ phase: 'final', ending: 'elimination', placements: ['c3', 'b2', 'a1'], fighters, format: 'squads' })).toEqual({ title: 'WINNERS', name: 'Squad B', color: '#c3' });
+  });
+
+  it('never stamps a stranger when nobody is left', () => {
+    expect(finaleStamp({ phase: 'final', ending: 'elimination', placements: [], fighters, format: 'ffa' })).toEqual({ title: 'NOBODY WINS', name: null, color: null });
   });
 });

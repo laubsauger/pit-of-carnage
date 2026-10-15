@@ -1,7 +1,7 @@
 // Owned by: ui
 // Pure HUD logic: scoreboard order, fighter cycling, feed styling, timeline maths, inspector bars.
 import { STEER_COS, STEER_SIN, TICK_HZ, clamp } from '../core';
-import type { FeedItem, MatchFormat, TimelineMark, TimelineMarkKind, UiFighter, UiSnapshot } from '../core';
+import type { FeedItem, MatchFormat, MatchPhase, TimelineMark, TimelineMarkKind, UiFighter, UiSnapshot, ViewInsets } from '../core';
 
 // ---------------------------------------------------------------------------------------------
 // Scoreboard
@@ -332,4 +332,72 @@ export function hoverCardPosition(pointer: Point, card: Size, bounds: Size, gap 
 export function nextFollow(selectedId: string | null, followId: string | null): string | null {
   if (selectedId === null) return null;
   return followId === selectedId ? null : selectedId;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Arena framing and match beats
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Widths (CSS px) of the panels over the arena: null when a panel is not shown. `timeline` is its
+ * height. The scoreboard hugs the left edge, the inspector and the end card the right, the
+ * timeline the bottom; each sits one gutter in from the edge.
+ */
+export type HudCover = { scoreboard: number | null; inspector: number | null; endCard: number | null; timeline: number | null };
+
+/**
+ * What the HUD covers, for `GameController.setViewInsets`: the camera then frames the action in
+ * the part of the arena the viewer can see, instead of behind the inspector or the end card.
+ * A panel's inset is its size plus a gutter on both sides, so the framed action keeps clear of it.
+ */
+export function watchInsets(c: HudCover, gutter: number): ViewInsets {
+  const side = (w: number | null) => (w === null ? 0 : Math.round(w + gutter * 2));
+  return {
+    left: side(c.scoreboard),
+    right: Math.max(side(c.inspector), side(c.endCard)),
+    top: 0,
+    bottom: side(c.timeline),
+  };
+}
+
+export function sameInsets(a: ViewInsets, b: ViewInsets): boolean {
+  return a.left === b.left && a.right === b.right && a.top === b.top && a.bottom === b.bottom;
+}
+
+/** Insets that leave exactly `hole` visible inside `arena` (both client rects), never negative. */
+export function insetsAround(arena: { left: number; top: number; right: number; bottom: number }, hole: { left: number; top: number; right: number; bottom: number }): ViewInsets {
+  return {
+    left: Math.max(0, Math.round(hole.left - arena.left)),
+    right: Math.max(0, Math.round(arena.right - hole.right)),
+    top: Math.max(0, Math.round(hole.top - arena.top)),
+    bottom: Math.max(0, Math.round(arena.bottom - hole.bottom)),
+  };
+}
+
+/** The round-start beat as shown: "3", "2", "1", then "FIGHT!" (countdown 0). */
+export function countdownText(countdown: number | null): string | null {
+  if (countdown === null || !Number.isFinite(countdown) || countdown < 0) return null;
+  return countdown === 0 ? 'FIGHT!' : String(Math.ceil(countdown));
+}
+
+/** Phases where Space and a click skip ahead (countdown to FIGHT, final moment to the end card). */
+export function skippable(phase: MatchPhase): boolean {
+  return phase === 'countdown' || phase === 'final';
+}
+
+/** The stamp over the final moment: the title in the broadcast voice and who it is about. */
+export type FinaleStamp = { title: string; name: string | null; color: string | null };
+
+/**
+ * What the final moment stamps over the arena (SPEC round end): WINNER and the winner's name in
+ * their colour; the judges' decision when the hard cap decided it; the squad for squads. Null
+ * outside the final moment.
+ */
+export function finaleStamp(snap: Pick<UiSnapshot, 'phase' | 'ending' | 'placements' | 'fighters' | 'format'>): FinaleStamp | null {
+  if (snap.phase !== 'final') return null;
+  const winner = snap.fighters.find((f) => f.id === snap.placements[0]) ?? null;
+  if (!winner) return { title: 'NOBODY WINS', name: null, color: null };
+  const judged = snap.ending === 'judges';
+  if (snap.format === 'squads') return { title: judged ? "JUDGES' DECISION" : 'WINNERS', name: `Squad ${String.fromCharCode(65 + winner.squad)}`, color: winner.color };
+  return { title: judged ? "JUDGES' DECISION" : 'WINNER', name: winner.name, color: winner.color };
 }

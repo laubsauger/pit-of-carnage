@@ -76,7 +76,7 @@ export function killStamp(k: StampInput, rng: Rng): string {
   if (k.streak === 2) return 'DOUBLE KILL';
   if (k.self) return 'OWN GOAL';
   if (k.cause === 'friendly') return rng.pick(STAMPS.friendly);
-  if (k.cause === 'sudden_death') return rng.pick(STAMPS.suddenDeath);
+  if (k.cause === 'sudden_death') return k.flags.includes('crushed') ? 'CRUSHED' : rng.pick(STAMPS.suddenDeath);
   if (k.cause === 'hazard' && k.hazard) return rng.pick(HAZARD_STAMPS[k.hazard]);
   if (k.cause === 'keg') return rng.pick(STAMPS.keg);
   const has = (f: KillFlag) => k.flags.includes(f);
@@ -124,6 +124,7 @@ const LINES = {
   kegCredit: ['{k} lit the keg. {v} was standing next to it.', '{k} blew {v} across the pit.'],
   kegSolo: ['{v} found the keg the hard way.'],
   suddenDeath: ['The walls closed on {v}.', '{v} ran out of arena.'],
+  crushed: ['The wall pressed {v} flat against the furniture.', '{v} got caught between a wall and a harder wall.', 'The walls folded {v} like a deckchair.'],
   friendly: ['{k} dropped teammate {v}. Awkward.', '{k} killed {v}. They were on the same side.'],
 } as const;
 
@@ -144,7 +145,7 @@ export function killLine(ev: KillEvent, state: WorldState): string {
   const say = (xs: readonly string[]) => fill(pick(xs), k, v);
   const has = (f: KillFlag) => ev.flags.includes(f);
 
-  if (ev.cause === 'sudden_death') return say(LINES.suddenDeath);
+  if (ev.cause === 'sudden_death') return say(has('crushed') ? LINES.crushed : LINES.suddenDeath);
   if (ev.cause === 'hazard') {
     const lines = HAZARD_LINES[ev.hazard ?? 'spike'];
     return say(ev.killerId ? lines.credit : lines.solo);
@@ -178,6 +179,13 @@ const ANNOUNCE = {
   judges: ['The judges give it to {w}, {hp}% health left.', 'Time. The judges have it for {w}, still on {hp}% health.'],
 } as const;
 
+/** Line for a shrine heal: who, and how much it gave back ({n} name, {a} HP gained). */
+const SHRINE_LINES: readonly string[] = [
+  '{n} patched up at the shrine, {a} health back.',
+  '{n} stopped at the shrine for {a} health.',
+  'The shrine put {a} health back into {n}.',
+];
+
 /** Line for a power-up coming back, per kind ("Berserk is up."). */
 const PICKUP_LINES: Readonly<Record<PickupKind, readonly string[]>> = {
   berserk: ['Berserk is up.', 'Berserk is back on the pedestal.'],
@@ -187,9 +195,9 @@ const PICKUP_LINES: Readonly<Record<PickupKind, readonly string[]>> = {
 /**
  * Broadcast lines for the arena's own moments in one tick's events, in the feed's voice: sudden
  * death (time or stalemate), the wall stopping and the damage reaching everywhere, a judges'
- * decision, and power-ups coming back (several pedestals of one kind in the same tick make one
- * line). Kills have `killLine`. Deterministic like `killLine`: the same events give the same lines.
- * Kinds: 'sudden_death' (sudden death, escalation, judges) and 'pickup'.
+ * decision, power-ups coming back (several pedestals of one kind in the same tick make one
+ * line) and shrine heals. Kills have `killLine`. Deterministic like `killLine`: the same events
+ * give the same lines. Kinds: 'sudden_death' (sudden death, escalation, judges), 'pickup' and 'heal'.
  */
 export function announcements(events: readonly GameEvent[], state: WorldState): FeedItem[] {
   const out: FeedItem[] = [];
@@ -220,6 +228,13 @@ export function announcements(events: readonly GameEvent[], state: WorldState): 
         if (pickupsSaid & bit) break;
         pickupsSaid |= bit;
         out.push({ tick: e.tick, text: pick(PICKUP_LINES[e.kind], e.tick, e.kind), kind: 'pickup', ids: [] });
+        break;
+      }
+      case 'heal': {
+        if (e.shrineId === null) break;
+        const name = state.fighters.find((f) => f.id === e.fighterId)?.name ?? e.fighterId;
+        const text = pick(SHRINE_LINES, e.tick, e.fighterId).replace('{n}', name).replace('{a}', String(Math.round(e.amount)));
+        out.push({ tick: e.tick, text, kind: 'heal', ids: [e.fighterId] });
         break;
       }
       default:

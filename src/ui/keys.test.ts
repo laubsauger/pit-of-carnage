@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { THINK_EVERY_TICKS, TICK_HZ } from '../core';
-import { SPEED_PRESETS, keyToAction } from './keys';
+import { SPEED_PRESETS, WATCH_KEYS, keyToAction } from './keys';
 
 const key = (k: string, extra: Partial<Parameters<typeof keyToAction>[0]> = {}) =>
   keyToAction({ key: k, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, editable: false, ...extra });
@@ -53,5 +53,17 @@ describe('keyToAction', () => {
 
   it('never lets a View shortcut fire while typing a strategy name', () => {
     expect(key('o', { editable: true })).toBeNull();
+  });
+
+  // The spec's key for the full-screen fighter overview; it must not collide with a View shortcut.
+  it('binds I to the full-screen fighter overview', () => {
+    expect(key('i')).toEqual({ type: 'overview' });
+    expect(key('I')).toEqual({ type: 'overview' });
+    expect(key('i', { editable: true })).toBeNull();
+  });
+
+  // The View popover promises these keys; a listed key that does nothing would be a lie on screen.
+  it('binds every key the shortcut list shows', () => {
+    for (const k of WATCH_KEYS) expect(key(k.sample), k.keys).not.toBeNull();
   });
 });

@@ -54,6 +54,7 @@ const INFO: DamageInfo = {
   splash: false,
   reflect: false,
   hazardKind: null,
+  crushed: false,
   cause: 'weapon',
 };
 
@@ -77,6 +78,7 @@ export function blow(attacker: number, source: DamageSource, cause: KillCause, d
   INFO.splash = false;
   INFO.reflect = false;
   INFO.hazardKind = null;
+  INFO.crushed = false;
   return INFO;
 }
 
@@ -223,6 +225,7 @@ function killFighter(ctx: SimCtx, vi: number, info: DamageInfo, amount: number, 
   if (info.ranged) flags.push('ranged');
   if (info.splash) flags.push('splash');
   if (info.reflect) flags.push('reflect');
+  if (info.crushed) flags.push('crushed');
   let streak = 0;
   let avenged = false;
   let clutch = false;
@@ -258,6 +261,8 @@ function killFighter(ctx: SimCtx, vi: number, info: DamageInfo, amount: number, 
     weapon: info.weapon,
     flags,
     hazard: info.hazardKind,
+    // Set by `place` (match.ts) on the kill that ends an elimination match.
+    final: false,
   });
 
   bark(ctx, vrt, 'death');

@@ -176,5 +176,8 @@ describe('balanceMarkdown', () => {
     expect(md).toContain('| LONGBOW | **100%** | **100%** | **100%** | **100%** | - | **100%** | 100% |');
     expect(md).toContain('| GREATSWORD | - | 50% | 50% | 50% | **0%** | 50% | 40% |');
     expect(md).toContain('| COMBAT.backpedalMoveMul |');
+    // The targets' source is the living spec; the retired build spec must not be cited.
+    expect(md).toContain('Targets come from `docs/SPEC.md`, section 6, "Balance: ranged vs melee".');
+    expect(md).not.toMatch(/build spec/);
   });
 });

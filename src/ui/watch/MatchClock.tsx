@@ -27,19 +27,23 @@ export function MatchClock({ controller, snap }: { controller: GameController; s
   else state = `${alive} standing`;
 
   const progress = timeLimitTicks > 0 ? Math.min(1, tick / timeLimitTicks) : 0;
+  // A room's match plays live from its host: nothing here can pause or speed it up.
+  const live = snap.source === 'room';
 
   return (
     <div className="clock">
-      <button
-        type="button"
-        className={`play${paused && !finished ? ' paused' : ''}`}
-        disabled={finished}
-        onClick={() => controller.setPaused(!paused)}
-        aria-label={paused ? 'Play (Space)' : 'Pause (Space)'}
-        title={paused ? 'Play (Space)' : 'Pause (Space)'}
-      >
-        {paused ? <PlayIcon /> : <PauseIcon />}
-      </button>
+      {live ? null : (
+        <button
+          type="button"
+          className={`play${paused && !finished ? ' paused' : ''}`}
+          disabled={finished}
+          onClick={() => controller.setPaused(!paused)}
+          aria-label={paused ? 'Play (Space)' : 'Pause (Space)'}
+          title={paused ? 'Play (Space)' : 'Pause (Space)'}
+        >
+          {paused ? <PlayIcon /> : <PauseIcon />}
+        </button>
+      )}
       <div className="clock-face" aria-live="off">
         <span className="clock-time">{formatClock(tick)}</span>
         <span className={`clock-state${hot ? ' hot' : ''}`}>{state}</span>
@@ -47,19 +51,25 @@ export function MatchClock({ controller, snap }: { controller: GameController; s
           <div style={{ transform: `scaleX(${suddenDeath ? 1 : progress})` }} />
         </div>
       </div>
-      <div className="seg speeds" role="group" aria-label="Playback speed">
-        {SPEED_PRESETS.map((s, i) => (
-          <button
-            key={s}
-            type="button"
-            aria-pressed={speed === s}
-            onClick={() => controller.setSpeed(s)}
-            title={`${s}x speed (${i + 1})`}
-          >
-            {s}x
-          </button>
-        ))}
-      </div>
+      {live ? (
+        <span className="clock-state" title="Streamed live from the room's host">
+          Room, live
+        </span>
+      ) : (
+        <div className="seg speeds" role="group" aria-label="Playback speed">
+          {SPEED_PRESETS.map((s, i) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={speed === s}
+              onClick={() => controller.setSpeed(s)}
+              title={`${s}x speed (${i + 1})`}
+            >
+              {s}x
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

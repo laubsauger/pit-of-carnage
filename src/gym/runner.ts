@@ -8,22 +8,15 @@
 
 import { TICK_HZ, matchHardCapTicks } from '../core';
 import type { BrainFactory, Match, MatchConfig, MatchResult } from '../core';
-import { createBrain } from '../brain';
-import { requireValidStrategy } from '../strategy';
 import type { MatchRunner } from './batch';
 import { MatchRecorder, placementsByStanding } from './recorder';
 
 /** Ticks past the sim's hard cap before the gym stops a match itself (10 s). */
 export const SAFETY_MARGIN_TICKS = 10 * TICK_HZ;
 
-/**
- * The production gate (as `gatedBrainFactory`) with the brain's inspector data switched off:
- * the same choices and guard trips, less work per think. Nobody inspects a gym match live.
- */
-export const headlessBrainFactory: BrainFactory = (strategy) => createBrain(requireValidStrategy(strategy, 'config'), { inspect: false });
-
 export type SimDeps = {
   createMatch: (config: MatchConfig, brainFactory: BrainFactory) => Match;
+  /** The gym passes `headlessBrainFactory` (src/strategy): the gate, without the inspector's data. */
   brainFactory: BrainFactory;
   mapName?: (mapId: string) => string;
 };
@@ -33,7 +26,8 @@ export function createSimRunner(deps: SimDeps): MatchRunner {
     const match = deps.createMatch(config, deps.brainFactory);
     const recorder = new MatchRecorder(config, match.state, { mapName: deps.mapName });
     const cap = matchHardCapTicks(config.timeLimitTicks) + SAFETY_MARGIN_TICKS;
-    while (!match.isOver && match.state.tick < cap) recorder.observe(match.step(), match.state);
+    const decisionOf = (id: string) => match.lastDecision(id);
+    while (!match.isOver && match.state.tick < cap) recorder.observe(match.step(), match.state, decisionOf);
     if (match.isOver) return recorder.finish(match.result());
 
     const placements = placementsByStanding(match.state.fighters);

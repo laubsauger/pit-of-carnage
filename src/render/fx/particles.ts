@@ -13,16 +13,19 @@
 import * as THREE from 'three/webgpu';
 import type { Node } from 'three/webgpu';
 import {
-  Discard, Fn, If, abs, atan, clamp, exp, float, instanceIndex, instancedArray, length, max, mix, positionLocal,
+  Discard, Fn, If, abs, clamp, exp, float, instanceIndex, instancedArray, length, max, mix, positionLocal,
   pow, select, step, uniform, uv, varying, vec2, vec3,
 } from 'three/tsl';
 import { LAYER_HEIGHT } from '../../core';
-import { useDecalBlend } from './decals';
+import { useBloodBlend } from './decals';
 import { DECAL, decalShade } from './masks';
 import { DRAG, GRAVITY, GROWTH, PK } from './particleRules';
 import type { ParticleKind } from './particleRules';
 import { RingSlots } from './pool';
 import { floorQuad, setEmissive, usePremultipliedBlend, sstep } from './quads';
+
+/** Tone of landed drops on the floor gradient: fresh arterial spray. */
+const LANDED_TONE = 0.85;
 
 const KINDS: readonly ParticleKind[] = [PK.blood, PK.mist, PK.spark, PK.dust, PK.debris, PK.ember];
 
@@ -186,16 +189,16 @@ export class GpuParticles {
     const dmat = new THREE.MeshBasicNodeMaterial();
     dmat.lights = false;
     dmat.side = THREE.DoubleSide;
-    useDecalBlend(dmat);
+    useBloodBlend(dmat);
     dmat.positionNode = vec3(p.x.add(loff.x), p.y.add(loff.y), 0);
+    // Drops land fresh and bright; their alpha is how much blood each carries.
     dmat.fragmentNode = decalShade({
       q: uv().mul(2).sub(1),
       kind: float(DECAL.drop),
       seed: varying(m.w),
       wet: float(1),
-      angle: varying(atan(ldir.y, ldir.x)),
-      color: varying(vec3(c.x, c.y, c.z)),
-      alpha: varying(c.w),
+      tone: float(LANDED_TONE),
+      density: varying(c.w),
     });
     this.decalMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), dmat);
     this.decalMesh.count = capacity;

@@ -151,7 +151,7 @@ describe('rulebook', () => {
 });
 
 describe('buildLlmPrompt', () => {
-  it('bundles rulebook, task, strategy, report and answer rules, and asks for the next version', () => {
+  it('bundles rulebook, goal, strategy, report and answer rules', () => {
     const s = HOUSE_STACKS[2]!;
     const p = buildLlmPrompt({ strategy: s, reportText: 'Doug placed 7th. Killed most by Distant Cousin Pam.', goal: 'Beat archers.' });
     expect(p).toContain('<rulebook>');
@@ -159,14 +159,41 @@ describe('buildLlmPrompt', () => {
     expect(p).toContain(formatJson(s));
     expect(JSON.parse(formatJson(s))).toEqual(s);
     expect(p).toContain('Killed most by Distant Cousin Pam');
-    expect(p).toContain(`set "version" to ${(s.version ?? 1) + 1}`);
     expect(p).toContain('"schema": "pit-strategy/2"');
   });
 
-  it('asks for a fresh strategy when there is none', () => {
+  // The library owns version numbers; a prompt that asks for "version N+1" made saved versions
+  // look renumbered behind the player's back.
+  it('leaves version numbering to the game', () => {
+    const p = buildLlmPrompt({ strategy: HOUSE_STACKS[2]! });
+    expect(p).toContain('Leave out "version"');
+    expect(p).not.toMatch(/set "version" to/);
+  });
+
+  // Without an interview, models hand back the starter sample from the editor, lightly edited.
+  it('makes the model interview the player before designing a new fighter', () => {
     const p = buildLlmPrompt({});
-    expect(p).toMatch(/Write a new strategy/);
-    expect(p).not.toContain('## Current strategy');
+    expect(p).toMatch(/Design a brand-new fighter/);
+    expect(p).toMatch(/interview the player/);
+    expect(p).toMatch(/Name and personality/);
+    expect(p).toMatch(/must never be copied/);
+    expect(p).not.toContain('## Strategy open in the editor');
     expect(p).not.toContain('## Last battle report');
+  });
+
+  // The editor always has some strategy open, often an untouched sample: ask before improving it.
+  it('asks whether to start fresh or improve when a strategy is open and no goal is given', () => {
+    const s = HOUSE_STACKS[2]!;
+    const p = buildLlmPrompt({ strategy: s });
+    expect(p).toMatch(/starter sample/);
+    expect(p).toMatch(/a brand-new fighter/);
+    expect(p).toMatch(/Wait for the answer before writing JSON/);
+    expect(p).toContain(`keep "name": ${JSON.stringify(s.name)}`);
+  });
+
+  it('designs from scratch in new mode even with a strategy open', () => {
+    const p = buildLlmPrompt({ strategy: HOUSE_STACKS[2]!, mode: 'new' });
+    expect(p).toMatch(/Design a brand-new fighter/);
+    expect(p).not.toMatch(/starter sample/);
   });
 });

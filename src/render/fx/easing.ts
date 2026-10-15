@@ -28,22 +28,54 @@ export function cubicOut(x: number): number {
 }
 
 /**
- * Kill stamp envelope at `t` seconds: slams in with an elastic overshoot, holds, then fades.
- * Returns scale and opacity through `out`.
+ * Kill stamp timing: a quick elastic pop, a short hold, then within about 0.6 s of the kill it
+ * shrinks and floats up while fading, gone by about 1.2 s. Readable, then out of the way.
  */
-export const STAMP_TIMING = { popIn: 0.55, hold: 1.25, fadeOut: 0.35 };
+export const STAMP_TIMING = { popIn: 0.26, hold: 0.34, out: 0.6 };
 
+/** Scale a stamp shrinks to by the end of its out phase. */
+const STAMP_END_SCALE = 0.55;
+
+/**
+ * Kill stamp envelope at `t` seconds: scale, opacity and rise (0..1, how far it has floated up).
+ */
 export function stampEnvelope(out: { scale: number; alpha: number; rise: number }, t: number): { scale: number; alpha: number; rise: number } {
-  const { popIn, hold, fadeOut } = STAMP_TIMING;
-  out.scale = elasticOut(t / popIn);
-  const fadeT = (t - popIn - hold) / fadeOut;
-  out.alpha = fadeT <= 0 ? Math.min(1, t / 0.06) : Math.max(0, 1 - fadeT);
-  out.rise = fadeT <= 0 ? 0 : cubicOut(fadeT);
+  const { popIn, hold, out: outT } = STAMP_TIMING;
+  const k = (t - popIn - hold) / outT;
+  if (k <= 0) {
+    out.scale = elasticOut(t / popIn);
+    out.alpha = Math.min(1, Math.max(0, t / 0.05));
+    out.rise = 0;
+    return out;
+  }
+  const e = cubicOut(k);
+  out.scale = 1 - (1 - STAMP_END_SCALE) * e;
+  out.alpha = k >= 1 ? 0 : 1 - k * k;
+  out.rise = e;
   return out;
 }
 
 export function stampDuration(): number {
-  return STAMP_TIMING.popIn + STAMP_TIMING.hold + STAMP_TIMING.fadeOut;
+  return STAMP_TIMING.popIn + STAMP_TIMING.hold + STAMP_TIMING.out;
+}
+
+/**
+ * Move `current` toward `target` by an exponential ease at `rate` per second, the same at any frame
+ * rate. Used so placed popups glide aside instead of jumping.
+ */
+export function easeToward(current: number, target: number, dt: number, rate: number): number {
+  if (dt <= 0) return current;
+  return target + (current - target) * Math.exp(-rate * dt);
+}
+
+/**
+ * Lift of a placed popup that dodges something (>= 0, up). A new popup (`lift` < 0) takes the
+ * `needed` lift at once; after that it only glides up when it must and otherwise stays put, so a
+ * bubble or stamp never jumps or bobs as things move around it.
+ */
+export function glideUp(lift: number, needed: number, dt: number, rate: number): number {
+  if (lift < 0) return needed;
+  return needed > lift ? easeToward(lift, needed, dt, rate) : lift;
 }
 
 /**

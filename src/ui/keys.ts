@@ -22,6 +22,8 @@ export type KeyAction =
   | { type: 'live' }
   /** C: give the camera back to the director after wheel zoom or drag pan. */
   | { type: 'camera' }
+  /** I: open (or close) the full-screen overview of the selected fighter. */
+  | { type: 'overview' }
   /** A View setting's shortcut (see VIEW_GROUPS). */
   | { type: 'view'; key: ViewKey };
 
@@ -61,6 +63,9 @@ export function keyToAction(e: KeyInput): KeyAction | null {
     case 'c':
     case 'C':
       return { type: 'camera' };
+    case 'i':
+    case 'I':
+      return { type: 'overview' };
   }
   const digit = e.key.length === 1 ? e.key.charCodeAt(0) - 48 : -1;
   if (digit >= 1 && digit <= SPEED_PRESETS.length) return { type: 'speed', speed: SPEED_PRESETS[digit - 1] };
@@ -68,6 +73,22 @@ export function keyToAction(e: KeyInput): KeyAction | null {
   if (view) return { type: 'view', key: view };
   return null;
 }
+
+/**
+ * The Watch keys that are not View settings, for the shortcut list in the View popover (the View
+ * rows show their own letters). `sample` is the key event value one of them sends.
+ */
+export const WATCH_KEYS: readonly { keys: string; label: string; sample: string }[] = [
+  { keys: 'Space', label: 'Pause, play, skip the countdown', sample: ' ' },
+  { keys: 'Tab', label: 'Next fighter (Shift: previous)', sample: 'Tab' },
+  { keys: 'F', label: 'Follow the selected fighter', sample: 'f' },
+  { keys: 'I', label: 'Full view of the selected fighter', sample: 'i' },
+  { keys: '← →', label: 'Step one think (Shift: a second)', sample: 'ArrowRight' },
+  { keys: '1-5', label: 'Speed 0.25x to 4x', sample: '1' },
+  { keys: 'End', label: 'Back to live', sample: 'End' },
+  { keys: 'C', label: 'Reset camera', sample: 'c' },
+  { keys: 'Esc', label: 'Close, deselect, unfollow', sample: 'Escape' },
+];
 
 /** Whether a DOM event target is somewhere the user is typing. */
 export function isEditableTarget(target: EventTarget | null): boolean {

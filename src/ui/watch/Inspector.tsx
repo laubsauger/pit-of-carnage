@@ -8,16 +8,46 @@ import { buildLine, formatPercent, formatPlace, formatStat, formatValue } from '
 const INSPECTOR_STATS: readonly (keyof DerivedStats)[] = ['visionRange', 'hearingRadius', 'moveSpeed', 'armorMitigation', 'parryChance'];
 import { usePolled } from '../hooks';
 import { scoreBars } from '../hud';
-import { CloseIcon, FollowIcon } from '../icons';
-import { AttrBars, HpBar } from '../widgets';
+import { CloseIcon, ExpandIcon, FollowIcon } from '../icons';
+import type { PaneState } from '../panes';
+import { AttrChart, HpBar, PaneHandle, PaneToggle } from '../widgets';
 import { SteeringRing } from './SteeringRing';
 import { guardTripSummary, knowledgeRows, powerupLines, readLive, statusChips, zoneLines } from './fighterData';
 import type { InfoLine } from './fighterData';
 
-type Props = { controller: GameController; snap: UiSnapshot; fighter: UiFighter };
+type Props = {
+  controller: GameController;
+  snap: UiSnapshot;
+  fighter: UiFighter;
+  pane: PaneState;
+  setPane: (fn: (p: PaneState) => PaneState) => void;
+  /** Open the full-screen overview of this fighter (key I). */
+  onExpand: () => void;
+};
 
 /** Pinned panel for the selected fighter: what it thinks, where it wants to go, what it has done. */
-export function Inspector({ controller, snap, fighter }: Props) {
+export function Inspector({ controller, snap, fighter, pane, setPane, onExpand }: Props) {
+  if (pane.collapsed) {
+    return (
+      <aside className="hud-panel inspector rail" aria-label={`Inspector: ${fighter.name}, collapsed`}>
+        <PaneToggle side="right" collapsed label="Inspector" onToggle={() => setPane((p) => ({ ...p, collapsed: false }))} />
+        <span className="rail-stripe" style={{ background: fighter.color }} />
+        <span className="rail-name" style={{ color: fighter.color }}>
+          {fighter.name}
+        </span>
+        <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={onExpand} title="Full view (I)" aria-label="Full view">
+          <ExpandIcon size={13} />
+        </button>
+        <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={() => controller.select(null)} title="Close (Esc)" aria-label="Close">
+          <CloseIcon size={13} />
+        </button>
+      </aside>
+    );
+  }
+  return <InspectorPanel controller={controller} snap={snap} fighter={fighter} pane={pane} setPane={setPane} onExpand={onExpand} />;
+}
+
+function InspectorPanel({ controller, snap, fighter, setPane, onExpand }: Props) {
   const id = fighter.id;
   const { f, d, known } = usePolled(controller, () => readLive(controller, id), [id]);
   const [termFocus, setTermFocus] = useState<number | null>(null);
@@ -33,6 +63,7 @@ export function Inspector({ controller, snap, fighter }: Props) {
 
   return (
     <aside className="hud-panel inspector" aria-label={`Inspector: ${fighter.name}`}>
+      <PaneHandle id="watch.inspector" setPane={setPane} label="Inspector" />
       <div className="ins-head">
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="hc-name" style={{ color: fighter.color }}>
@@ -50,6 +81,9 @@ export function Inspector({ controller, snap, fighter }: Props) {
             </button>
           ) : null}
         </div>
+        <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={onExpand} title="Full view: every behaviour, sensor and term (I)" aria-label="Full view">
+          <ExpandIcon />
+        </button>
         <button
           type="button"
           className="btn btn-sm btn-icon btn-quiet"
@@ -60,7 +94,8 @@ export function Inspector({ controller, snap, fighter }: Props) {
         >
           <FollowIcon />
         </button>
-        <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={() => controller.select(null)} title="Close (Esc)">
+        <PaneToggle side="right" collapsed={false} label="Inspector" onToggle={() => setPane((p) => ({ ...p, collapsed: true }))} />
+        <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={() => controller.select(null)} title="Close (Esc)" aria-label="Close">
           <CloseIcon />
         </button>
       </div>
@@ -260,7 +295,7 @@ export function Inspector({ controller, snap, fighter }: Props) {
             <div className="ins-title">
               <span>Build</span>
             </div>
-            <AttrBars attributes={f.attributes} />
+            <AttrChart attributes={f.attributes} />
             <dl className="kv" style={{ marginTop: 10 }}>
               {INSPECTOR_STATS.map((k) => (
                 <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} />
@@ -273,13 +308,13 @@ export function Inspector({ controller, snap, fighter }: Props) {
   );
 }
 
-function knowsSummary(rows: { state: string }[]): string {
+export function knowsSummary(rows: { state: string }[]): string {
   const n = (s: string) => rows.filter((r) => r.state === s).length;
   const parts = [n('seen') && `sees ${n('seen')}`, n('heard') && `hears ${n('heard')}`, n('remembered') && `remembers ${n('remembered')}`].filter(Boolean);
   return parts.length ? parts.join(', ') : 'nothing';
 }
 
-function InfoList({ lines }: { lines: InfoLine[] }) {
+export function InfoList({ lines }: { lines: InfoLine[] }) {
   return (
     <dl className="kv">
       {lines.map((l) => (
@@ -292,7 +327,7 @@ function InfoList({ lines }: { lines: InfoLine[] }) {
   );
 }
 
-function Kv({ k, v }: { k: string; v: string }) {
+export function Kv({ k, v }: { k: string; v: string }) {
   return (
     <>
       <dt title={k}>{k}</dt>

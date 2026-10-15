@@ -1,5 +1,5 @@
 // Owned by: ui
-import { Fragment, useMemo, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
 import {
   ATTRIBUTE_BUDGET,
   ATTRIBUTE_DOCS,
@@ -14,17 +14,29 @@ import {
 import type { DerivedStats, GameController, LoadReport, MatchConfig, SavedStrategy, SkillId, Strategy, ValidationIssue } from '../../core';
 import { reportToText } from '../../gym';
 import { buildLlmPrompt, encodeStrategyCode } from '../../strategy';
-import { budget, completeAttributes, issueAtCaret, lineCol, placeIssues, prettyJson, readAttributes, readWeapon } from '../editor';
+import { budget, completeAttributes, issueAtCaret, lineCol, parseJson, placeIssues, prettyJson, readAttributes, readWeapon } from '../editor';
 import type { IssueSpan, JsonParse } from '../editor';
+import { Builder } from '../editor/Builder';
+import type { BuilderApi } from '../editor/Builder';
+import { SEVERITY_SVG, fixText, suggestionLine } from '../editor/issues';
+import { setAt } from '../editor/edit';
+import type { PathSeg } from '../editor/jsontext';
+import type { CardBuild } from '../editor/WordCard';
 import { buildLine, formatAgo, formatStat, strategyLabel } from '../format';
+import { useStoredState } from '../hooks';
 import { CloseIcon, ImportIcon } from '../icons';
 import { issueSpot } from '../importer';
 import { RANDOM_SLOT, buildMatchConfig, buildPool, defaultSetup, randomSeed } from '../setup';
 import { copyAndToast, toast } from '../toast';
 import { ATTRIBUTE_LABEL } from '../widgets';
-import { CodeArea } from './CodeArea';
+import type { CodeAreaApi } from './CodeArea';
 import type { BatchOutcome } from './GymScreen';
 import { ImportDialog } from './ImportDialog';
+import '../editor/editor.css';
+
+// CodeMirror and the Codex are big: each gets its own chunk, loaded when first shown.
+const CodeArea = lazy(() => import('./CodeArea').then((m) => ({ default: m.CodeArea })));
+const CodexDialog = lazy(() => import('../codex/Codex').then((m) => ({ default: m.CodexDialog })));
 
 type Props = {
   controller: GameController;
@@ -49,19 +61,35 @@ type Props = {
   onWatch: (config: MatchConfig) => void;
 };
 
-/** Line height of `.code` in px, for scrolling an issue into view. */
-const CODE_LINE_PX = 20;
+type ViewMode = 'visual' | 'split' | 'code';
+const VIEW_MODES: { id: ViewMode; label: string; title: string }[] = [
+  { id: 'visual', label: 'Visual', title: 'Edit with cards, sliders and pickers' },
+  { id: 'split', label: 'Split', title: 'Visual and code side by side; a change in either shows in both' },
+  { id: 'code', label: 'Code', title: 'The strategy JSON' },
+];
+const asMode = (v: unknown, fallback: ViewMode): ViewMode => (v === 'visual' || v === 'split' || v === 'code' ? v : fallback);
+
 const DRAFT_REF = 'draft';
 const STAT_KEYS = Object.keys(STAT_DOCS) as (keyof DerivedStats)[];
 
 export function StrategyEditor(props: Props) {
   const { controller, draft, setDraft, markSaved, onLoad, parsed, checked, report, strategy, houseStacks, saved, refreshSaved, lastBatch } = props;
-  const area = useRef<HTMLTextAreaElement>(null);
+  const code = useRef<CodeAreaApi | null>(null);
+  const builderApi = useRef<BuilderApi | null>(null);
   // Null: closed. Otherwise the files that opened it (none from the button).
   const [importing, setImporting] = useState<File[] | null>(null);
   const [caret, setCaret] = useState(0);
+  const [mode, setMode] = useStoredState<ViewMode>('poc.editor.view', () => 'split', asMode);
+  // Null: closed. '' opens the Codex on its contents, an entry id on that entry.
+  const [codexAt, setCodexAt] = useState<string | null>(null);
 
-  const value = parsed.ok ? parsed.value : null;
+  // The builder edits the live draft, not the deferred copy, so a slider never lags its own value.
+  // While the JSON is broken it shows the last draft that parsed, read-only.
+  const live = useMemo(() => parseJson(draft), [draft]);
+  const lastGood = useRef<unknown>(null);
+  if (live.ok) lastGood.current = live.value;
+  const value = live.ok ? live.value : lastGood.current;
+
   const name = strategy?.name ?? readName(value);
   const issues = useMemo<ValidationIssue[]>(
     () =>
@@ -80,20 +108,45 @@ export function StrategyEditor(props: Props) {
   const caretAt = lineCol(draft, caret);
   const versions = saved.filter((s) => s.name === name).sort((a, b) => b.version - a.version);
   const shadowsHouse = name !== null && houseStacks.some((h) => h.name === name);
+  const showCode = mode !== 'visual';
+  const showBuilder = mode !== 'code';
 
-  const jumpTo = (offset: number, length = 0) => {
-    const el = area.current;
-    if (!el || offset < 0) return;
-    el.focus();
-    el.setSelectionRange(offset, offset + length);
-    el.scrollTop = Math.max(0, (lineCol(draft, offset).line - 4) * CODE_LINE_PX);
-    setCaret(offset);
+  const cardBuild = useMemo<CardBuild>(() => {
+    const attributes = completeAttributes(readAttributes(value));
+    const weapon = readWeapon(value);
+    return attributes && weapon ? { attributes, weapon } : null;
+  }, [value]);
+
+  const openCodex = useCallback((id: string) => setCodexAt(id), []);
+
+  /** Show an issue: in the code (selected, centred, flashed) and on the builder card it belongs to. */
+  const reveal = (sp: IssueSpan | null, issue: ValidationIssue) => {
+    if (showCode && sp) {
+      // Validation trails typing by a keystroke at most: place the issue in the text as it is now.
+      const now = code.current?.text() ?? draft;
+      const at = now === checked ? sp : (placeIssues(now, [issue])[0] ?? null);
+      if (at) code.current?.reveal(at.start, at.end);
+    }
+    if (showBuilder) builderApi.current?.reveal(issue.path);
   };
-  const jumpToSpan = (sp: IssueSpan) => jumpTo(sp.start, sp.end - sp.start);
+
+  const applyFix = (sp: IssueSpan) => {
+    const fix = fixText(checked, sp, sp.issue.suggestion);
+    if (!fix || checked !== draft) return;
+    setDraft(draft.slice(0, sp.start) + fix + draft.slice(sp.end));
+  };
+
+  const edit = useCallback(
+    (path: readonly PathSeg[], v: unknown) => {
+      if (!live.ok) return;
+      setDraft(setAt(draft, path, v));
+    },
+    [draft, live.ok, setDraft],
+  );
 
   const save = () => {
     if (!strategy) return;
-    const entry = controller.strategies.save(strategy);
+    const entry = controller.strategies.save(strategy, { origin: { kind: 'editor' } });
     refreshSaved();
     const text = prettyJson({ ...entry.strategy, version: entry.version });
     setDraft(text);
@@ -119,7 +172,7 @@ export function StrategyEditor(props: Props) {
   };
 
   const saveImported = (s: Strategy): string => {
-    const entry = controller.strategies.save(s);
+    const entry = controller.strategies.save(s, { origin: { kind: 'import' } });
     refreshSaved();
     const label = strategyLabel(entry.name, entry.version);
     toast(`Saved ${label}.`);
@@ -139,7 +192,14 @@ export function StrategyEditor(props: Props) {
 
   return (
     <div
-      className="editor"
+      className={`editor editor-${mode}`}
+      onKeyDown={(e) => {
+        // Save from anywhere in the editor; the code view handles its own (and marks it handled).
+        if (e.key === 's' && (e.metaKey || e.ctrlKey) && !e.defaultPrevented) {
+          e.preventDefault();
+          save();
+        }
+      }}
       onDragOver={(e) => {
         // A file dropped anywhere on the editor goes to the import dialog, not into the browser tab.
         if (e.dataTransfer.types.includes('Files')) e.preventDefault();
@@ -155,9 +215,11 @@ export function StrategyEditor(props: Props) {
           <button type="button" className="btn btn-primary btn-sm" disabled={!strategy} onClick={save} title="Save as the next version (Cmd/Ctrl+S)">
             Save version
           </button>
-          <button type="button" className="btn btn-sm" disabled={!parsed.ok} onClick={() => parsed.ok && setDraft(prettyJson(parsed.value))}>
-            Format
-          </button>
+          {showCode ? (
+            <button type="button" className="btn btn-sm" disabled={!parsed.ok} onClick={() => parsed.ok && setDraft(prettyJson(parsed.value))} title="Lay the JSON out the editor's way">
+              Format
+            </button>
+          ) : null}
           <span className="bar-sep" />
           <button type="button" className="btn btn-sm" onClick={copyPrompt} title="Rulebook, this strategy and the latest report, ready to paste into an LLM">
             Copy LLM prompt
@@ -174,7 +236,18 @@ export function StrategyEditor(props: Props) {
           <button type="button" className="btn btn-sm" onClick={() => setImporting([])} title="Open .json files, pasted JSON or a strategy code (you can also drop files on the editor)">
             <ImportIcon /> Import
           </button>
+          <button type="button" className="btn btn-sm" onClick={() => setCodexAt('')} title="Everything a strategy can say: sensors, places, zones, builds, rules and worked examples">
+            Codex
+          </button>
           <span className="spacer" />
+          <div className="seg editor-mode" role="group" aria-label="Editor view">
+            {VIEW_MODES.map((m) => (
+              <button key={m.id} type="button" aria-pressed={mode === m.id} title={m.title} onClick={() => setMode(m.id)}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <span className="bar-sep" />
           <button type="button" className="btn btn-sm" disabled={!strategy} onClick={props.onTest}>
             Test in gym
           </button>
@@ -183,36 +256,49 @@ export function StrategyEditor(props: Props) {
           </button>
         </div>
 
-        <CodeArea
-          areaRef={area}
-          text={draft}
-          checked={checked}
-          spans={spans}
-          onChange={setDraft}
-          onCaret={setCaret}
-          onJump={jumpToSpan}
-          onKeyDown={(e) => {
-            if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              save();
-            } else if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
-              e.preventDefault();
-              e.currentTarget.setRangeText('  ', e.currentTarget.selectionStart, e.currentTarget.selectionEnd, 'end');
-              setDraft(e.currentTarget.value);
-            }
-          }}
-        />
-        <div className={`code-status${atCaret ? ` ${atCaret.severity}` : ''}`} aria-live="polite">
-          <span className="num">
-            Ln {caretAt.line}, Col {caretAt.col}
-          </span>
-          {atCaret ? (
-            <span className="code-status-msg" title={atCaret.issue.message}>
-              <b>{atCaret.severity === 'error' ? 'Error' : 'Warning'}</b> {atCaret.issue.message}
-            </span>
-          ) : (
-            <span className="faint">{issues.length ? 'Click a problem, or a marked line number, to jump to it.' : ''}</span>
-          )}
+        <div className="editor-panes">
+          {showBuilder ? (
+            <Builder
+              apiRef={builderApi}
+              value={value}
+              editable={live.ok}
+              issues={issues}
+              build={cardBuild}
+              onEdit={edit}
+              onText={setDraft}
+              text={draft}
+              onOpenCodex={openCodex}
+            />
+          ) : null}
+          {/* Kept mounted while hidden, so undo history, caret and scroll survive switching views. */}
+          <div className="editor-code" hidden={!showCode}>
+            <Suspense fallback={<div className="code-cm" />}>
+              <CodeArea
+                apiRef={code}
+                text={draft}
+                onChange={setDraft}
+                checked={checked}
+                spans={spans}
+                onCaret={setCaret}
+                onSave={save}
+                build={cardBuild}
+                onOpenCodex={openCodex}
+              />
+            </Suspense>
+            <div className={`code-status${atCaret ? ` ${atCaret.severity}` : ''}`} aria-live="polite">
+              <span className="num">
+                Ln {caretAt.line}, Col {caretAt.col}
+              </span>
+              {atCaret ? (
+                <span className="code-status-msg" title={atCaret.issue.message}>
+                  <span className="dx-icon" dangerouslySetInnerHTML={{ __html: SEVERITY_SVG[atCaret.severity] }} />
+                  <b>{atCaret.severity === 'error' ? 'Error' : 'Warning'}</b> {atCaret.issue.message}
+                </span>
+              ) : (
+                <span className="faint">{issues.length ? 'Hover a marked word for the fix, or click a problem to jump to it.' : 'Hover any word for what it means. Ctrl+Space completes.'}</span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -234,14 +320,23 @@ export function StrategyEditor(props: Props) {
             <ul className="issues">
               {[...spans.map((sp) => ({ iss: sp.issue, placed: sp as IssueSpan | null })), ...unplaced.map((iss) => ({ iss, placed: null }))].map(({ iss, placed }, i) => {
                 const spot = placed ? issueSpot({ line: placed.line, column: placed.column }) : null;
+                const fix = placed && checked === draft ? fixText(checked, placed, iss.suggestion) : null;
                 return (
                   <li key={`${iss.path}:${i}`}>
-                    <button
-                      type="button"
+                    <div
+                      role="button"
+                      tabIndex={0}
                       className={`issue ${iss.severity}`}
-                      onClick={() => placed && jumpToSpan(placed)}
-                      title={placed ? 'Show in the editor' : undefined}
+                      onClick={() => reveal(placed, iss)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          reveal(placed, iss);
+                        }
+                      }}
+                      title="Show it"
                     >
+                      <span className="issue-icon" aria-label={iss.severity} dangerouslySetInnerHTML={{ __html: SEVERITY_SVG[iss.severity] }} />
                       {spot || iss.path ? (
                         <code>
                           {spot}
@@ -250,8 +345,22 @@ export function StrategyEditor(props: Props) {
                         </code>
                       ) : null}
                       {iss.message}
-                      {iss.suggestion ? <div className="hint">{suggestionText(iss.suggestion)}</div> : null}
-                    </button>
+                      {iss.suggestion ? <div className="hint">{suggestionLine(iss.suggestion)}</div> : null}
+                      {fix && placed ? (
+                        <div className="issue-fix">
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              applyFix(placed);
+                            }}
+                          >
+                            Use {iss.suggestion}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </li>
                 );
               })}
@@ -267,7 +376,7 @@ export function StrategyEditor(props: Props) {
           ) : null}
         </section>
 
-        <BudgetSection value={value} />
+        {showBuilder ? null : <BudgetSection value={value} />}
         <StatsSection value={value} />
 
         {name ? (
@@ -321,6 +430,12 @@ export function StrategyEditor(props: Props) {
           onClose={() => setImporting(null)}
         />
       ) : null}
+
+      {codexAt !== null ? (
+        <Suspense fallback={null}>
+          <CodexDialog initial={codexAt} build={cardBuild} onClose={() => setCodexAt(null)} />
+        </Suspense>
+      ) : null}
     </div>
   );
 }
@@ -340,17 +455,17 @@ function BudgetSection({ value }: { value: unknown }) {
         </span>
       </div>
       <div className="budget-meter" aria-hidden>
-        {b.rows.map((r, i) => (r.value ? <div key={r.key} style={{ width: `${(r.value / scale) * 100}%`, background: SEGMENT_SHADES[i] }} /> : null))}
+        {b.rows.map((r) => (r.value ? <div key={r.key} data-attr={r.key} className="budget-seg" style={{ width: `${(r.value / scale) * 100}%` }} /> : null))}
         {b.over ? <i className="budget-cap" style={{ left: `${(ATTRIBUTE_BUDGET / scale) * 100}%` }} /> : null}
       </div>
       <div className="dim budget-left">
         {b.over ? <span className="error-line">{-b.left} over budget.</span> : b.left > 0 ? `${b.left} points unspent.` : 'Every point spent.'}
       </div>
       {b.rows.map((r) => (
-        <div key={r.key} className={`budget-row${r.outOfRange ? ' bad' : ''}`} title={ATTRIBUTE_DOCS[r.key]}>
+        <div key={r.key} className={`budget-row${r.outOfRange ? ' bad' : ''}`} title={ATTRIBUTE_DOCS[r.key]} data-attr={r.key}>
           <span>{ATTRIBUTE_LABEL[r.key]}</span>
           <span className="budget-bar">
-            <div style={{ width: `${Math.min(1, Math.max(0, (r.value ?? 0) / ATTRIBUTE_MAX)) * 100}%` }} />
+            <div className="budget-fill" style={{ width: `${Math.min(1, Math.max(0, (r.value ?? 0) / ATTRIBUTE_MAX)) * 100}%` }} />
             <i style={{ left: `${(ATTRIBUTE_MIN / ATTRIBUTE_MAX) * 100}%` }} />
           </span>
           <span className="num">{r.value ?? '?'}</span>
@@ -362,9 +477,6 @@ function BudgetSection({ value }: { value: unknown }) {
     </section>
   );
 }
-
-/** Greys for the stacked budget meter: colour stays reserved for fighters. */
-const SEGMENT_SHADES = ['#c9c1b5', '#a39a8e', '#857c71', '#6b635a', '#564f47', '#463f38'];
 
 function StatsSection({ value }: { value: unknown }) {
   const attrs = completeAttributes(readAttributes(value));
@@ -400,8 +512,4 @@ function readName(value: unknown): string | null {
 function readSkill(value: unknown): SkillId | null {
   const s = (value as { build?: { skill?: unknown } } | null)?.build?.skill;
   return typeof s === 'string' && (SKILL_IDS as readonly string[]).includes(s) ? (s as SkillId) : null;
-}
-
-function suggestionText(s: string): string {
-  return /^did you mean/i.test(s) ? s : `Did you mean "${s}"?`;
 }

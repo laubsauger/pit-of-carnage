@@ -2,7 +2,10 @@
  * Post-processing: one RenderPipeline built from TSL nodes.
  * - The scene pass writes colour and emissive (MRT); bloom runs on emissive only, so fire, orbs,
  *   weapon telegraphs and sparks glow while the floor and bodies stay crisp.
- * - Kill punch: a short radial chromatic split, contrast kick and red edge grade on every kill.
+ * - Kill punch: a short radial chromatic split, contrast kick and red edge grade on a kill. Its
+ *   strength comes from `KillPunch` (punch.ts, real time), which keeps a fast kill stream from
+ *   stacking into a red screen. The edge grade multiplies (it shifts existing colour toward red and
+ *   never adds light), so even a full punch leaves dark areas dark.
  * - Vignette and a faint film grain (hides banding in the dark gradients).
  * - MSAA on standard displays; on high-DPI displays MSAA is skipped for fill rate and FXAA
  *   smooths the final image instead.
@@ -41,10 +44,11 @@ export class Post {
       const g = colorTex.sample(uv).y;
       const b = colorTex.sample(uv.sub(split)).z;
       const col = vec3(r, g, b).add(glow.xyz).toVar();
-      // Punch grade: contrast kick and a red bleed from the edges.
+      // Punch grade: contrast kick and a red grade from the edges (multiplied, never added).
       const contrast = col.sub(0.18).mul(float(1).add(punch.mul(0.25))).add(0.18).max(0);
       col.assign(mix(col, contrast, punch));
-      col.addAssign(vec3(0.22, 0.0, 0.0).mul(punch).mul(smoothstep(0.25, 0.75, dist)));
+      const edge = smoothstep(0.3, 0.8, dist).mul(punch).mul(0.55);
+      col.mulAssign(mix(vec3(1), vec3(1.18, 0.72, 0.68), edge));
       // Vignette.
       const vig = smoothstep(0.3, 0.95, dist).oneMinus();
       col.mulAssign(mix(float(0.42), float(1), vig));

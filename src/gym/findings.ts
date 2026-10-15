@@ -9,6 +9,7 @@
 import { JUDGES_ORDER, MATCH_RULES, PICKUP_RULES, TICK_HZ } from '../core';
 import type { FighterReport, GuardTrip, GuardTripKind, JudgeCriterion, JudgedFighter, KillCause, KillRecord, MatchReport, PickupKind, ReportRosterEntry, StrategyAggregate } from '../core';
 import { clock, listing, mostFrequent, ordinalPlace, pct, plural, round } from './format';
+import { HOTSPOT_CELLS, regionAreas, summarizeHeatmap } from './heatmap';
 
 export type FindingContext = {
   /** Display name of a map id ("pit" -> "The Pit"); defaults to the id. */
@@ -39,6 +40,19 @@ const TRIP: Record<GuardTripKind, string> = {
 };
 
 const JUDGED_BY: Record<JudgeCriterion, string> = { hp_fraction: 'HP left', damage_dealt: 'damage dealt', kills: 'kills' };
+
+/** Strategy findings from `FighterStats` and heatmaps speak up past these shares of the time alive. */
+const HABITS = {
+  /** Standing still by choice: a camper. */
+  idleShare: 0.3,
+  /** Standing still while its moves push into something: a steering problem. */
+  stuckShare: 0.05,
+  /** Time in its busiest 240 px square on one map. */
+  hotspotShare: 0.4,
+  /** Time in one region, when that is also at least `regionOverArea` times the region's area. */
+  regionShare: 0.6,
+  regionOverArea: 2,
+} as const;
 
 /** Seconds of no fighter-on-fighter damage that start sudden death early. */
 const STALEMATE_SECONDS = MATCH_RULES.stalemateTicks / TICK_HZ;
@@ -238,6 +252,29 @@ export function strategyFindings(agg: StrategyAggregate, apps: readonly Appearan
   if (attacks === 0 && n >= 2) out.push(`Never attacked in ${n} matches; check the attack policy.`);
   else if (attacks >= 10) out.push(`Landed ${landed} of ${attacks} attacks (${pct(landed, attacks)}).`);
   if (n >= 2 && sum(apps, (a) => a.fighter.skillUses) === 0) out.push(`Never used ${apps[0]!.entry.skill} in ${n} matches.`);
+
+  // Habits: camping, steering into walls, never fighting, and where it spends its time.
+  const idle = sum(apps, (a) => a.fighter.stats.ticksIdle);
+  const stuck = sum(apps, (a) => a.fighter.stats.ticksStuck);
+  if (alive > 0 && idle / alive >= HABITS.idleShare) out.push(`Stood idle ${pct(idle, alive)} of its time alive.`);
+  if (alive > 0 && stuck / alive >= HABITS.stuckShare) {
+    out.push(`Stuck ${pct(stuck, alive)} of its time alive: it kept moving into walls, pillars, props or other fighters without getting anywhere.`);
+  }
+  const loners = apps.filter((a) => a.fighter.stats.ticksToFirstContact === null).length;
+  if (loners >= 2) out.push(`Never fought anyone in ${loners} of ${n} matches.`);
+  for (const [mapId, h] of Object.entries(agg.heatmaps)) {
+    if (apps.filter((a) => a.report.mapId === mapId).length < 2) continue;
+    const where = summarizeHeatmap(h);
+    if (!where) continue;
+    const on = mapLabel(ctx, mapId);
+    if (where.hotspot.share >= HABITS.hotspotShare) {
+      out.push(`On ${on} it spent ${Math.round(where.hotspot.share * 100)}% of its time in one ${HOTSPOT_CELLS * h.cell} px square, in ${where.hotspot.label}.`);
+      continue;
+    }
+    const areas = regionAreas(h);
+    const region = (['corners', 'sides', 'centre'] as const).find((r) => where.regions[r] >= HABITS.regionShare && where.regions[r] >= HABITS.regionOverArea * areas[r]);
+    if (region) out.push(`On ${on} it spent ${Math.round(where.regions[region] * 100)}% of its time in the ${region}.`);
+  }
 
   // Power-ups: what they bought, or that it never went for one while one was there to take.
   const bought = powerUpPhrase(agg.pickupsTaken, agg.killsWhileBuffed);

@@ -1,14 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import type { GameEvent } from '../core';
-import { CameraDirector, DIRECTOR_MAX_ZOOM, MANUAL_MAX_ZOOM, MAP_MARGIN, MAX_SHAKE_PX, eventMoment, eventTrauma } from './camera';
+import type { ViewInsets } from '../core';
+import { CameraDirector, DIRECTOR_MAX_ZOOM, MANUAL_MAX_ZOOM, MAP_MARGIN, MAX_COVERED, MAX_SHAKE_PX, eventMoment, eventTrauma, uncovered } from './camera';
 import type { FrameInput } from './camera';
 
-function input(points: number[], follow: [number, number] | null = null): FrameInput {
+const NONE: ViewInsets = { left: 0, right: 0, top: 0, bottom: 0 };
+/** The Watch screen with the inspector open: panel on the right, top bar, timeline at the bottom. */
+const INSPECTOR: ViewInsets = { left: 0, right: 420, top: 48, bottom: 96 };
+
+function input(points: number[], follow: [number, number] | null = null, insets: ViewInsets = NONE): FrameInput {
   return {
     viewW: 1600, viewH: 900, mapW: 1360, mapH: 860,
     points: new Float32Array(points), count: points.length / 2,
     followX: follow ? follow[0] : null, followY: follow ? follow[1] : null,
+    insets: { ...insets },
   };
+}
+
+/** World rectangle the viewer can see: the canvas minus the panels. */
+function seen(cam: CameraDirector, inp: FrameInput): { x0: number; x1: number; y0: number; y1: number } {
+  const ins = inp.insets;
+  const x0 = cam.x + (ins.left - inp.viewW / 2) / cam.zoom;
+  const x1 = cam.x + (inp.viewW - ins.right - inp.viewW / 2) / cam.zoom;
+  const y0 = cam.y + (ins.top - inp.viewH / 2) / cam.zoom;
+  const y1 = cam.y + (inp.viewH - ins.bottom - inp.viewH / 2) / cam.zoom;
+  return { x0, x1, y0, y1 };
 }
 
 /** Run the director long enough to settle. */
@@ -104,7 +120,7 @@ describe('CameraDirector', () => {
       { type: 'sudden_death', tick: 1, reason: 'time' },
     ];
     for (const e of calm) expect(eventTrauma(e), e.type).toBe(0);
-    const kill = { type: 'kill', tick: 1, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos, dir: 0, title: 'BONK', killerBehaviour: null, victimBehaviour: 'x', weapon: 'WARHAMMER', flags: [], hazard: null } as GameEvent;
+    const kill = { type: 'kill', tick: 1, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos, dir: 0, title: 'BONK', killerBehaviour: null, victimBehaviour: 'x', weapon: 'WARHAMMER', flags: [], hazard: null, final: false } as GameEvent;
     expect(eventTrauma(kill)).toBeGreaterThan(0);
     // The viewer's "no shake" setting (motion-sensitive viewers) silences kills too.
     expect(eventTrauma(kill, 'off')).toBe(0);
@@ -117,7 +133,7 @@ describe('CameraDirector', () => {
     const crit: GameEvent = { type: 'hit', tick: 1, attackerId: 'f0', victimId: 'f1', amount: 60, pos, dir: 0, crit: true, backstab: false, weapon: 'GREATSWORD', knockback: 9, source: 'weapon' };
     expect(eventMoment(crit)).toBe(0);
     expect(eventMoment({ type: 'explosion', tick: 1, pos, radius: 106 })).toBeGreaterThan(0);
-    const kill = { type: 'kill', tick: 1, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos, dir: 0, title: 'BONK', killerBehaviour: null, victimBehaviour: 'x', weapon: 'WARHAMMER', flags: [], hazard: null } as GameEvent;
+    const kill = { type: 'kill', tick: 1, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos, dir: 0, title: 'BONK', killerBehaviour: null, victimBehaviour: 'x', weapon: 'WARHAMMER', flags: [], hazard: null, final: false } as GameEvent;
     expect(eventMoment(kill)).toBe(1);
   });
 
@@ -173,6 +189,99 @@ describe('CameraDirector', () => {
     expect(cam.manual).toBe(false);
     expect(cam.zoom).toBeCloseTo(director.zoom, 2);
     expect(cam.x).toBeCloseTo(director.x, 0);
+  });
+
+  // User feedback: the inspector covered the right side of the arena and the fight went on under
+  // it. Framing must fit every living fighter into what is left of the canvas.
+  it('keeps every living fighter out from under the inspector, top bar and timeline', () => {
+    const pts = [120, 90, 1300, 820, 1340, 120, 680, 430, 60, 800];
+    const inp = input(pts, null, INSPECTOR);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    settle(cam, inp);
+    const r = seen(cam, inp);
+    for (let i = 0; i < pts.length; i += 2) {
+      expect(pts[i]!, `fighter ${i / 2} x`).toBeGreaterThanOrEqual(r.x0);
+      expect(pts[i]!, `fighter ${i / 2} x`).toBeLessThanOrEqual(r.x1);
+      expect(pts[i + 1]!, `fighter ${i / 2} y`).toBeGreaterThanOrEqual(r.y0);
+      expect(pts[i + 1]!, `fighter ${i / 2} y`).toBeLessThanOrEqual(r.y1);
+    }
+  });
+
+  it('centres a tight fight in the uncovered part, not in the middle of the canvas', () => {
+    const inp = input([660, 420, 700, 440], null, INSPECTOR);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    settle(cam, inp);
+    const r = seen(cam, inp);
+    expect((r.x0 + r.x1) / 2).toBeCloseTo(680, 0);
+    expect((r.y0 + r.y1) / 2).toBeCloseTo(430, 0);
+  });
+
+  it('follow puts the followed fighter in the middle of what the viewer can see', () => {
+    const inp = input([100, 100, 1200, 700], [700, 400], INSPECTOR);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    settle(cam, inp);
+    const r = seen(cam, inp);
+    expect((r.x0 + r.x1) / 2).toBeCloseTo(700, 0);
+    expect((r.y0 + r.y1) / 2).toBeCloseTo(400, 0);
+  });
+
+  it('eases to the new framing when a panel opens instead of jumping', () => {
+    const pts = [200, 200, 1250, 700];
+    const cam = new CameraDirector();
+    cam.snap(input(pts));
+    settle(cam, input(pts));
+    const before = cam.x;
+    const withPanel = input(pts, null, INSPECTOR);
+    cam.update(1 / 60, withPanel);
+    // One frame moves only a little toward the new framing...
+    expect(Math.abs(cam.x - before)).toBeLessThan(20);
+    settle(cam, withPanel);
+    // ...and the settled view has moved right so the right-hand fighter clears the panel.
+    expect(seen(cam, withPanel).x1).toBeGreaterThanOrEqual(1250);
+  });
+
+  it('leaves a manual view alone when panels open or close (only the viewer moves it)', () => {
+    const inp = input([200, 200, 1100, 650]);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    cam.zoomAt(800, 450, 2.2, inp);
+    cam.panBy(60, -30, inp);
+    const held = { x: cam.x, y: cam.y, zoom: cam.zoom };
+    settle(cam, input([200, 200, 1100, 650], null, INSPECTOR), 2);
+    expect(cam.x).toBeCloseTo(held.x, 6);
+    expect(cam.y).toBeCloseTo(held.y, 6);
+    expect(cam.zoom).toBeCloseTo(held.zoom, 6);
+  });
+
+  it('caps insets so a huge overlay never collapses the arena to nothing', () => {
+    const inp = input([680, 430], null, { left: 0, right: 5000, top: 0, bottom: 5000 });
+    const u = uncovered(inp);
+    expect(u.w).toBeCloseTo(inp.viewW * (1 - MAX_COVERED), 6);
+    expect(u.h).toBeCloseTo(inp.viewH * (1 - MAX_COVERED), 6);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    settle(cam, inp, 1);
+    expect(Number.isFinite(cam.x) && Number.isFinite(cam.zoom) && cam.zoom > 0).toBe(true);
+  });
+
+  // The final kill is the moment of the match: the camera eases onto it and stays while it plays in
+  // slow motion; a kill of the same frame must not steal it, and afterwards it lets go.
+  it('eases close onto the final kill, holds it against other moments, then lets go', () => {
+    const inp = input([200, 200, 1100, 650]);
+    const cam = new CameraDirector();
+    cam.snap(inp);
+    settle(cam, inp, 2);
+    const base = { x: cam.x, y: cam.y, zoom: cam.zoom };
+    cam.finalMoment(1100, 650);
+    cam.addMoment(200, 200, 1);
+    settle(cam, inp, 1.2);
+    expect(cam.zoom).toBeGreaterThan(base.zoom * 1.3);
+    expect(Math.hypot(cam.x - 1100, cam.y - 650)).toBeLessThan(Math.hypot(base.x - 1100, base.y - 650) * 0.5);
+    settle(cam, inp, 8);
+    expect(cam.zoom).toBeCloseTo(base.zoom, 3);
   });
 
   it('drag pan moves the world with the pointer and never leaves the map margin', () => {

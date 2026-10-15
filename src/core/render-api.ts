@@ -25,7 +25,44 @@
 // Render code imports three from 'three/webgpu' (WebGPU only, no WebGL fallback) and
 // TSL from 'three/tsl'. Never mix in the plain 'three' entry: two three.js copies break node materials.
 import type * as THREE from 'three/webgpu';
-import type { Decision, GameEvent, KnownFighter, MapDef, Vec2, WorldState } from './types';
+import type { Decision, GameEvent, KnownFighter, MapDef, MatchSignal, Vec2, WorldState } from './types';
+
+/**
+ * How much of the canvas the UI covers on each side, in CSS px (inspector on the right, timeline
+ * at the bottom, scoreboard and clock at the top, ...). The camera frames the action inside the
+ * uncovered rectangle: framing, follow, moments and "Reset camera" centre on what the viewer can
+ * actually see. All zero = the whole canvas is visible. Never negative.
+ */
+export type ViewInsets = { left: number; right: number; top: number; bottom: number };
+
+export const NO_VIEW_INSETS: Readonly<ViewInsets> = { left: 0, right: 0, top: 0, bottom: 0 };
+
+/** Map objects that have a hover card (see `GameController.objectInfo`). */
+export type MapObjectKind = 'shrine' | 'pickup' | 'hazard' | 'prop';
+
+/** Everything the pointer can pick in the arena. */
+export type PickKind = 'fighter' | MapObjectKind;
+
+/**
+ * What is under the pointer. `id` is the live object's id: `FighterState.id`,
+ * `WorldState.shrines[].id`, `PickupState.id` (the pedestal, whether or not its power-up is there),
+ * `HazardState.id` (spilled acid included) or `PropState.id`.
+ */
+export type PickedObject = { kind: PickKind; id: string };
+
+/**
+ * Stages `createRenderer` reports through `RendererOptions.onProgress`, in this order, each once:
+ * `renderer` = WebGPU device and three.js renderer initialised; `shaders` = node materials and
+ * pipelines compiled (warm-up, so the first match frame does not hitch); `ready` = the renderer is
+ * returned and can draw. A failure rejects the promise instead (no stage after it).
+ */
+export type RenderInitStage = 'renderer' | 'shaders' | 'ready';
+
+/** Options for `createRenderer(canvas, fx, options)` in src/render. */
+export type RendererOptions = {
+  /** Called as each init stage completes (for the splash's progress bar). */
+  onProgress?: (stage: RenderInitStage) => void;
+};
 
 export type ConeMode = 'off' | 'selected' | 'all';
 /** `key` = only `BARK_RULES.keyKinds` (spawn, kill, low HP, skill, death). */
@@ -112,8 +149,23 @@ export interface GameRenderer {
    * estimate) and aim lines (to the record's `pos`, never the live fighter).
    */
   setKnowledgeProvider(fn: (fighterId: string) => readonly KnownFighter[]): void;
-  /** Fighter id under the given client (CSS pixel) coordinates, or null. */
+  /** Living fighter id under the given client (CSS pixel) coordinates, or null. Dead fighters are never picked. */
   pick(clientX: number, clientY: number): string | null;
+  /**
+   * What is under the given client (CSS pixel) coordinates, for hover cards and clicks, or null.
+   * A living fighter wins over a map object under it (someone standing on the shrine is picked, not
+   * the shrine); among objects the nearest wins. Dead fighters, broken props and empty floor are
+   * never returned (a corpse shows nothing).
+   */
+  pickObject(clientX: number, clientY: number): PickedObject | null;
+  /**
+   * Parts of the canvas covered by UI panels (CSS px). The camera frames the living fighters,
+   * follow targets and moments inside the uncovered rectangle; manual zoom and pan are unaffected.
+   * May arrive at any time (panels open, close, resize); the camera eases to the new framing.
+   */
+  setViewInsets(insets: ViewInsets): void;
+  /** Match-flow beats from the controller (countdown, FIGHT, final kill); see `MatchSignal`. */
+  onSignal(signal: MatchSignal): void;
   /** Combined game-time factor from the app loop (speed x slow-mo; 0 when paused). */
   setTimeScale(s: number): void;
   /** CSS pixel size of the canvas; the renderer applies devicePixelRatio itself. */
@@ -131,8 +183,12 @@ export interface RenderContext {
   camera: THREE.Camera;
   map: MapDef;
   /**
-   * Floor-sized render target that the floor's TSL node material multiplies over the floor. FX draw
-   * persistent gore (splats, streaks, footprints, scorch) into it. It spans the map with
+   * Floor-sized render target holding persistent gore as data, not colour. FX draw it (splats,
+   * streaks, footprints, scorch; src/render/fx/decals.ts); the floor's TSL material turns it into
+   * lit colour with `goreFloor` (src/render/fx/goreFloor.ts), one blood gradient for every floor.
+   * Per texel: r = exp(-blood density), g = exp(-wet density) (wet coverage = 1 - g), b =
+   * exp(-tone-weighted density), a = soot 0..1. Cleared to (1, 1, 1, 0) = no blood, no soot (never
+   * to black, which would read as blood everywhere). It spans the map with
    * texel (0, 0) at world (0, 0) and `floorSize` world px across; the floor samples it at
    * `uv = world / floorSize`. Under WebGPU three.js does not flip render-target UVs, so uv.y = 0
    * (texel row 0) is the TOP edge of the target: a decal camera must put world y = 0 at NDC y = +1.
@@ -167,7 +223,7 @@ export const LIVE_EVENT_TICKS = 90;
 
 /** Height (three.js Y) of each draw layer. Keep effects inside their band. */
 export const LAYER_HEIGHT = {
-  /** Floor plane with the gore decal target multiplied on top. */
+  /** Floor plane with the gore decal target composited in (blood replaces the floor by coverage). */
   floor: 0,
   /** Floor-hugging transient effects: blood pools growing, dust, footprint fade-ins. */
   floorFx: 0.5,

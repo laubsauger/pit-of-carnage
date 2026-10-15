@@ -6,7 +6,7 @@ import type { StampInput } from './copy';
 
 const CAUSES: KillCause[] = ['weapon', 'skill', 'hazard', 'keg', 'friendly', 'sudden_death'];
 const HAZARDS: HazardKind[] = ['spike', 'saw', 'acid', 'fire'];
-const FLAGS: KillFlag[] = ['backstab', 'crit', 'unseen', 'ranged', 'splash', 'reflect', 'multi', 'revenge', 'overkill'];
+const FLAGS: KillFlag[] = ['backstab', 'crit', 'unseen', 'ranged', 'splash', 'reflect', 'multi', 'revenge', 'overkill', 'crushed'];
 
 function stamp(over: Partial<StampInput>, seed = 1): string {
   return killStamp({ cause: 'weapon', weapon: 'GREATSWORD', skill: null, hazard: null, flags: [], self: false, streak: 1, avenged: false, clutch: false, ...over }, new Rng(seed));
@@ -36,6 +36,15 @@ describe('kill stamps', () => {
     expect(['SPLIT', 'HALVED', 'CLEAVED']).toContain(stamp({}));
     expect(['KNOCKOUT', 'BARE HANDS']).toContain(stamp({ weapon: null }));
   });
+
+  // Pinned by the closing wall against a pillar is its own spectacle: always CRUSHED, while a plain
+  // wall death keeps the generic sudden-death stamps.
+  it('stamps a wall pin CRUSHED', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      expect(stamp({ cause: 'sudden_death', weapon: null, flags: ['crushed'] }, seed)).toBe('CRUSHED');
+      expect(stamp({ cause: 'sudden_death', weapon: null, flags: [] }, seed)).not.toBe('CRUSHED');
+    }
+  });
 });
 
 describe('kill lines', () => {
@@ -62,6 +71,7 @@ describe('kill lines', () => {
     weapon: 'GREATSWORD',
     flags: [],
     hazard: null,
+    final: false,
     ...over,
   });
 
@@ -96,6 +106,15 @@ describe('kill lines', () => {
     const line = killLine(kill({ cause: 'keg', killerId: 'f2', victimId: 'f2', weapon: null }), state);
     expect(line.startsWith('Doug')).toBe(true);
     expect(line).toMatch(/own keg|lit the keg/);
+  });
+
+  it('says the wall crushed someone, not just that it closed', () => {
+    const crushed = killLine(kill({ cause: 'sudden_death', killerId: null, weapon: null, flags: ['crushed'] }), state);
+    const closed = killLine(kill({ cause: 'sudden_death', killerId: null, weapon: null }), state);
+    expect(crushed).toContain('Brenda');
+    expect(crushed).toMatch(/wall/i);
+    expect(crushed).toMatch(/\.$/);
+    expect(crushed).not.toBe(closed);
   });
 
   it('describes skill kills by the killer\'s skill', () => {
@@ -145,5 +164,18 @@ describe('announcer', () => {
     expect(lines[1]!.text).toMatch(/^Haste is/);
     expect(lines.every((l) => l.kind === 'pickup')).toBe(true);
     expect(announcements([{ type: 'match_end', tick: 1, placements: [], ending: 'elimination' }], state)).toEqual([]);
+  });
+
+  // The shrine is not a capture point: players must see it heal. "Gary patched up at the shrine"
+  // names who and how much, once per heal.
+  it('announces a shrine heal with who and how much', () => {
+    const [line, ...rest] = announcements([{ type: 'heal', tick: 700, fighterId: 'f0', amount: 86, pos: { x: 680, y: 430 }, shrineId: 'shrine' }], state);
+    expect(rest).toEqual([]);
+    expect(line).toMatchObject({ tick: 700, kind: 'heal', ids: ['f0'] });
+    expect(line!.text).toContain('Gary');
+    expect(line!.text).toContain('86');
+    expect(line!.text).toMatch(/shrine/);
+    expect(line!.text).toMatch(/\.$/);
+    expect(announcements([{ type: 'heal', tick: 700, fighterId: 'f0', amount: 20, pos: { x: 0, y: 0 }, shrineId: null }], state)).toEqual([]);
   });
 });

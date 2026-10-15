@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { FighterState } from '../core';
-import { DOT, GHOST_HOLD, ghostHit, pickIndex, secondsDigits, stepGhost } from './hud';
+import { DOT, GHOST_HOLD, ghostHit, pickIndex, pickMapObject, secondsDigits, stepGhost } from './hud';
 import type { HpGhost } from './hud';
 import { animProgress, isTeleport, lerpAngleShort, prevFighter } from './interp';
 import { offsetPoly, rect, signedArea } from './poly';
 import { castFan, castVisibility, easeAngle, fanContains, rayExit } from './vision';
+import { flownAt } from './projectiles';
 
 function fighter(id: string, x: number, y: number, anim: FighterState['anim'] = { phase: 'idle', t: 0, dur: 0 }): FighterState {
   return { id, pos: { x, y }, anim } as FighterState;
@@ -65,6 +66,46 @@ describe('picking', () => {
     const x2 = new Float32Array([100, 102]);
     const y2 = new Float32Array([100, 100]);
     expect(pickIndex(x2, y2, rs, new Uint8Array([0, 1]), 2, 100, 100, 4)).toBe(1);
+  });
+
+  // Spec "Dead fighters": no hover card and no arena pick for a corpse, even with nobody else near.
+  it('never picks a corpse, even alone under the cursor', () => {
+    expect(pickIndex(xs, ys, rs, new Uint8Array([1, 1, 0]), 3, 400, 400, 4)).toBe(-1);
+    expect(pickIndex(xs, ys, rs, new Uint8Array([1, 1, 1]), 3, 400, 400, 4)).toBe(2);
+  });
+});
+
+describe('map object picking (hover cards)', () => {
+  type Objs = Parameters<typeof pickMapObject>[0];
+  const world = (): Objs => ({
+    shrines: [{ id: 'shrine', pos: { x: 680, y: 430 }, cooldown: 0 }],
+    pickups: [{ id: 'berserk-l', kind: 'berserk', pos: { x: 150, y: 430 }, cooldown: 120 }],
+    hazards: [
+      { id: 'spike-l', kind: 'spike', pos: { x: 150, y: 430 }, radius: 42, phase: 0, active: false, ttl: null },
+      { id: 'acid-1', kind: 'acid', pos: { x: 400, y: 200 }, radius: 62, phase: 0, active: true, ttl: 300 },
+    ],
+    props: [
+      { id: 'keg-1', kind: 'keg', pos: { x: 900, y: 600 }, radius: 17, alive: true, hp: 32 },
+      { id: 'crate-1', kind: 'crate', pos: { x: 1000, y: 600 }, radius: 21, alive: false, hp: 0 },
+    ],
+  });
+
+  it('finds the shrine, spilled acid and a keg under the pointer', () => {
+    expect(pickMapObject(world(), 690, 440, 4)).toEqual({ kind: 'shrine', id: 'shrine' });
+    expect(pickMapObject(world(), 430, 230, 4)).toEqual({ kind: 'hazard', id: 'acid-1' });
+    expect(pickMapObject(world(), 905, 600, 4)).toEqual({ kind: 'prop', id: 'keg-1' });
+  });
+
+  // On the pit each berserk pedestal sits on a spike trap: hovering the pedestal must name the
+  // pedestal (drawn on top), while the trap's outer ring still names the trap.
+  it('picks the pedestal on top of a spike trap, and the trap around it', () => {
+    expect(pickMapObject(world(), 155, 430, 4)).toEqual({ kind: 'pickup', id: 'berserk-l' });
+    expect(pickMapObject(world(), 150, 468, 4)).toEqual({ kind: 'hazard', id: 'spike-l' });
+  });
+
+  it('never returns a broken prop or empty floor', () => {
+    expect(pickMapObject(world(), 1000, 600, 4)).toBeNull();
+    expect(pickMapObject(world(), 680, 800, 4)).toBeNull();
   });
 });
 
@@ -179,5 +220,24 @@ describe('lost-sight label digits', () => {
     expect(Array.from(out.subarray(0, secondsDigits(12.6, out)))).toEqual([1, 3]);
     expect(Array.from(out.subarray(0, secondsDigits(9.97, out)))).toEqual([1, 0]);
     expect(Array.from(out.subarray(0, secondsDigits(500, out)))).toEqual([9, 9]);
+  });
+});
+
+// Spec: every projectile spawns from its weapon's muzzle. Interpolating back from the first tick's
+// position would draw a fresh shot behind the muzzle, inside the shooter's body.
+describe('projectiles leave the muzzle', () => {
+  const origin = { x: 100, y: 100 };
+  const vel = { x: 8, y: 0 };
+
+  it('draws a shot on its first tick at the muzzle, never behind it', () => {
+    const fresh = { origin, vel, pos: { x: 108, y: 100 } };
+    expect(flownAt(fresh, 1, 0, 0)).toBe(0);
+    expect(flownAt(fresh, 1, 0, 0.5)).toBe(4);
+    expect(flownAt(fresh, 1, 0, 1)).toBe(8);
+  });
+
+  it('follows the flight normally once it is clear of the muzzle', () => {
+    const later = { origin, vel, pos: { x: 180, y: 100 } };
+    expect(flownAt(later, 1, 0, 0.25)).toBeCloseTo(74, 6);
   });
 });

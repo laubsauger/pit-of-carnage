@@ -122,6 +122,8 @@ export type DamageInfo = {
   reflect: boolean;
   /** Set for hazard damage, so kill stamps can name it. */
   hazardKind: HazardKind | null;
+  /** The closing wall pinned the victim against a wall, pillar or prop (kill flag `crushed`). */
+  crushed: boolean;
   /** Kill cause if this blow is fatal (friendly fire is detected on top). */
   cause: KillCause;
 };

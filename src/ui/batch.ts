@@ -45,6 +45,23 @@ export function evolveProblem(p: EvolvePlan): string | null {
   return null;
 }
 
+export type ComparePlan = { a: boolean; b: boolean; same: boolean; field: number; maps: number; matches: number; fighters: number };
+
+/**
+ * Why a comparison cannot run, or null. Both sides play the same seeds against the field without
+ * meeting, so the field must hold someone besides the two, and each match needs one seat for the
+ * strategy plus at least one opponent.
+ */
+export function compareProblem(p: ComparePlan): string | null {
+  if (!p.a || !p.b) return 'Pick the two strategies to compare.';
+  if (p.same) return 'Pick two different strategies, or two versions of one.';
+  if (p.field === 0) return 'Pick opponents besides the two being compared.';
+  if (p.maps === 0) return 'Pick at least one map.';
+  if (p.matches < 1) return 'Run at least one match.';
+  if (p.fighters < MIN_FIGHTERS || p.fighters > MAX_FIGHTERS) return `Matches take ${MIN_FIGHTERS} to ${MAX_FIGHTERS} fighters.`;
+  return null;
+}
+
 /** Gym batch form, persisted per browser. Strategy picks are slot refs (see setup.ts) plus `draft`. */
 export type BatchForm = { candidates: string[]; field: string[]; maps: string[]; matches: number; fighters: number; seed: number };
 export type EvolveForm = { field: string[]; maps: string[]; generations: number; population: number; matches: number; fighters: number; seed: number };

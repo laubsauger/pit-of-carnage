@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { strategyKey } from '../core';
 import type { Strategy } from '../core';
-import { batchLineup, batchProblem, evolveProblem, readInt, sanitizeForm } from './batch';
+import { batchLineup, batchProblem, compareProblem, evolveProblem, readInt, sanitizeForm } from './batch';
 import type { BatchForm } from './batch';
 
 function strat(name: string, version = 1): Strategy {
@@ -97,3 +97,24 @@ describe('readInt', () => {
     expect(readInt('-', 2, 16, 8)).toBe(8);
   });
 });
+
+describe('compareProblem', () => {
+  const ok = { a: true, b: true, same: false, field: 3, maps: 1, matches: 10, fighters: 8 };
+
+  it('lets a well-formed comparison run', () => {
+    expect(compareProblem(ok)).toBeNull();
+  });
+
+  it('refuses to compare a strategy with itself: the gap would be pure noise', () => {
+    expect(compareProblem({ ...ok, same: true })).toMatch(/two different/);
+  });
+
+  it('needs opponents besides the two, because the two never meet', () => {
+    expect(compareProblem({ ...ok, field: 0 })).toMatch(/opponents/);
+  });
+
+  it('asks for both sides before anything else', () => {
+    expect(compareProblem({ ...ok, b: false, field: 0 })).toMatch(/two strategies/);
+  });
+});
+

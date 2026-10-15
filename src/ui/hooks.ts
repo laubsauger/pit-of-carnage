@@ -2,6 +2,8 @@
 // Subscriptions to the controller (about 10 Hz, never per frame) and small persistence helpers.
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import type { GameController, SavedStrategy, UiSnapshot } from '../core';
+import { initialPane, paneStorageKey, sanitizePane } from './panes';
+import type { PaneId, PaneState } from './panes';
 
 /** The controller snapshot. Re-renders only when the controller notifies (about 10 Hz). */
 export function useSnapshot(controller: GameController): UiSnapshot {
@@ -92,24 +94,31 @@ export function useStoredState<T>(
   return [value, setValue];
 }
 
+/** A resizable side pane's width and collapsed state, persisted per pane (and so per screen). */
+export function usePane(id: PaneId): [PaneState, (v: PaneState | ((prev: PaneState) => PaneState)) => void] {
+  return useStoredState(paneStorageKey(id), () => initialPane(id), sanitizePane(id));
+}
+
 export type Screen = 'watch' | 'gym' | 'room';
 const SCREENS: readonly Screen[] = ['watch', 'gym', 'room'];
 
-function screenFromHash(): Screen {
+/** The screen a hash names. A Codex link (`#codex/...`) opens over the screen already showing (`current`). */
+function screenFromHash(current: Screen = 'watch'): Screen {
   const h = window.location.hash.replace(/^#\/?/, '');
+  if (h === 'codex' || h.startsWith('codex/')) return current;
   return (SCREENS as readonly string[]).includes(h) ? (h as Screen) : 'watch';
 }
 
 /** Current screen in the URL hash, so reloads and the back button keep your place. */
 export function useHashScreen(): [Screen, (s: Screen) => void] {
-  const [screen, setScreen] = useState<Screen>(screenFromHash);
+  const [screen, setScreen] = useState<Screen>(() => screenFromHash());
   useEffect(() => {
-    const onHash = () => setScreen(screenFromHash());
+    const onHash = () => setScreen((cur) => screenFromHash(cur));
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const go = useCallback((s: Screen) => {
-    if (screenFromHash() !== s) window.location.hash = s;
+    if (screenFromHash(s) !== s) window.location.hash = s;
     setScreen(s);
   }, []);
   return [screen, go];

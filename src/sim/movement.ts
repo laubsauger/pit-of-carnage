@@ -15,7 +15,7 @@
  */
 
 import { COMBAT, MAX_FIGHTERS, PERCEPTION, STANCES, WEAPONS, angleDiff, circleRectPush, clamp, clamp01, facingMoveMul, stepAngle } from '../core';
-import type { Vec2 } from '../core';
+import type { FighterState, Rect, Vec2 } from '../core';
 import { aimPoint, decisionTarget } from './combat';
 import type { FighterRt, SimCtx } from './context';
 import { GORE_SPOTS } from './damage';
@@ -171,12 +171,17 @@ export function steer(ctx: SimCtx): void {
   }
 }
 
-/** Push fighter rt out of walls, pillars and live props; cancels velocity into the surface. */
+/**
+ * Push fighter rt out of walls, pillars and live props, and keep its body inside the playable
+ * rectangle (the map, or the closing sudden-death wall); cancels velocity into each surface. The
+ * rectangle wins: a body the wall shoves into a pillar stays overlapping it (pinned, see
+ * `grindWall` in world.ts) rather than leave the arena.
+ */
 function collideStatic(ctx: SimCtx, rt: FighterRt): void {
   const f = rt.f;
   const bs = ctx.geo.blockers;
   for (let pass = 0; pass < SOLVER_PASSES; pass++) {
-    let moved = false;
+    let moved = clampInside(ctx.bounds, f);
     for (let i = 0; i < bs.length; i++) {
       const r = bs[i]!;
       if (f.pos.x + f.radius < r.x || f.pos.x - f.radius > r.x + r.w || f.pos.y + f.radius < r.y || f.pos.y - f.radius > r.y + r.h) continue;
@@ -203,9 +208,33 @@ function collideStatic(ctx: SimCtx, rt: FighterRt): void {
     }
     if (!moved) break;
   }
-  const m = ctx.map;
-  f.pos.x = clamp(f.pos.x, f.radius, m.width - f.radius);
-  f.pos.y = clamp(f.pos.y, f.radius, m.height - f.radius);
+  // The hard backstop: nothing ends a move outside the rectangle.
+  clampInside(ctx.bounds, f);
+}
+
+/** Keep the body inside rectangle b, cancelling velocity into the face it meets. True if it moved. */
+function clampInside(b: Rect, f: FighterState): boolean {
+  const r = f.radius;
+  let moved = false;
+  if (f.pos.x < b.x + r) {
+    f.pos.x = b.x + r;
+    if (f.vel.x < 0) f.vel.x = 0;
+    moved = true;
+  } else if (f.pos.x > b.x + b.w - r) {
+    f.pos.x = b.x + b.w - r;
+    if (f.vel.x > 0) f.vel.x = 0;
+    moved = true;
+  }
+  if (f.pos.y < b.y + r) {
+    f.pos.y = b.y + r;
+    if (f.vel.y < 0) f.vel.y = 0;
+    moved = true;
+  } else if (f.pos.y > b.y + b.h - r) {
+    f.pos.y = b.y + b.h - r;
+    if (f.vel.y > 0) f.vel.y = 0;
+    moved = true;
+  }
+  return moved;
 }
 
 /** Remove the velocity component pointing against normal (nx, ny). */

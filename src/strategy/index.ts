@@ -9,6 +9,7 @@ export { HOUSE_NOTES, HOUSE_STACKS } from './house';
 export { STARTER_DOCS, STARTER_LIBRARY, STARTER_NAMES, mergeBehaviours } from './library';
 export { InvalidStrategyError, MAX_STRATEGY_TEXT, gatedBrainFactory, headlessBrainFactory, loadStrategy, requireValidStrategy } from './load';
 export { buildLlmPrompt } from './prompt';
+export type { PromptMode } from './prompt';
 export { generateRulebook } from './rulebook';
 export { SCHEMA_PATH, generateJsonSchema } from './schema';
 export { BARK_KINDS, LIMITS, priceBuild, validateStrategy } from './validate';

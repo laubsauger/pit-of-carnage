@@ -1,10 +1,16 @@
 // Owned by: render-fx
 /**
  * Damage numbers as pure layout (numbers.ts draws them). Small and short-lived, coloured by the
- * attacker, crits bigger, backstabs labelled. They sit beside the victim's body (right flank) and
- * stack downward, never upward into the HP bar and name tag above the body, so a flurry of hits
- * stays readable and the tag is never covered. Sizes are CSS px: constant on screen at any zoom.
+ * attacker, crits bigger, backstabs labelled; heals are green "+N". They sit beside the victim's
+ * body (right flank) and stack downward, never upward into the HP bar and name tag above the body,
+ * so a flurry of hits stays readable and the tag is never covered. Numbers of victims standing
+ * close together never overlap: a number that would cover another takes its victim's left flank,
+ * or steps down below what it covers (`placeNumber`). Sizes are CSS px: constant on screen at any
+ * zoom.
  */
+
+import { overlaps } from './barks';
+import type { Box } from './barks';
 
 export const DAMAGE_NUMBERS = {
   /** Seconds a number lives (game time). */
@@ -34,10 +40,10 @@ export function mergesInto(newest: { attackerId: string; t: number } | null, att
   return newest !== null && newest.attackerId === attackerId && newest.t < DAMAGE_NUMBERS.mergeSeconds;
 }
 
-/** Text for a hit: whole damage, at least 1 (a hit always shows). */
-export function damageText(amount: number): string {
+/** Text for a hit: whole damage, at least 1 (a hit always shows). Heals read "+N". */
+export function damageText(amount: number, heal = false): string {
   const n = Math.round(amount);
-  return String(n < 1 ? 1 : n);
+  return (heal ? '+' : '') + String(n < 1 ? 1 : n);
 }
 
 /** Scale and opacity at `t` seconds: a quick pop, a hold, then a fade. */
@@ -64,4 +70,49 @@ export function numberOffsetY(slot: number, rise: number, h: number, radiusPx: n
   const head = -radiusPx * 0.35 - rise * d.rise * drift;
   const top = -radiusPx + h / 2;
   return (head < top ? top : head) + slot * d.line;
+}
+
+/**
+ * Move `box` straight down until it overlaps none of the first `count` obstacles (with `pad`
+ * between). Each move puts it below an obstacle it can then never reach again, so this ends after
+ * at most `count` moves. Returns the number of moves.
+ */
+export function dropClear(box: Box, obstacles: readonly Box[], count: number, pad: number): number {
+  let moves = 0;
+  for (let guard = 0; guard < count + 1; guard++) {
+    let hit = -1;
+    for (let i = 0; i < count; i++) {
+      if (!overlaps(box, obstacles[i], pad)) continue;
+      if (hit < 0 || obstacles[i].cy + obstacles[i].hh > obstacles[hit].cy + obstacles[hit].hh) hit = i;
+    }
+    if (hit < 0) return moves;
+    const o = obstacles[hit];
+    box.cy = o.cy + o.hh + pad + box.hh;
+    moves++;
+  }
+  return moves;
+}
+
+/** Where `placeNumber` put a number. */
+export const NUMBER_SPOT = { right: 0, left: 1, below: 2 } as const;
+
+/**
+ * Keep a number clear of the first `count` obstacles (numbers already placed, fighters' tags):
+ * its spot on the victim's right flank (`box`, as given) if free, else the left flank (`leftCx`),
+ * else straight down from the right flank below whatever it covers. Never up, so it never climbs
+ * into its victim's HP bar or tag. Returns which spot it took (`NUMBER_SPOT`).
+ */
+export function placeNumber(box: Box, leftCx: number, obstacles: readonly Box[], count: number, pad: number): number {
+  if (!hitsAny(box, obstacles, count, pad)) return NUMBER_SPOT.right;
+  const rightCx = box.cx;
+  box.cx = leftCx;
+  if (!hitsAny(box, obstacles, count, pad)) return NUMBER_SPOT.left;
+  box.cx = rightCx;
+  dropClear(box, obstacles, count, pad);
+  return NUMBER_SPOT.below;
+}
+
+function hitsAny(box: Box, obstacles: readonly Box[], count: number, pad: number): boolean {
+  for (let i = 0; i < count; i++) if (overlaps(box, obstacles[i], pad)) return true;
+  return false;
 }

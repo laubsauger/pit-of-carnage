@@ -1,8 +1,9 @@
 /**
  * Arena floor: one plane with a procedural TSL material per floor type (sand, flagstone, flesh),
- * the shared gore decal target multiplied on top (alpha = wetness, adds a sheen near lights),
- * wall contact shadows, the light field and a cool tint over gameplay shadow. The sudden-death wall
- * is its own layer (zone.ts).
+ * wall contact shadows, the light field and a cool tint over gameplay shadow on the bare floor.
+ * Gore comes from the shared decal target, which holds blood as data (density, wetness, tone,
+ * soot); render-fx's `goreFloor` turns it into colour over the floor, so blood reads the same red
+ * on every floor and never turns grey. The sudden-death wall is its own layer (zone.ts).
  */
 
 import * as THREE from 'three/webgpu';
@@ -13,6 +14,7 @@ import {
 import { LAYER_HEIGHT, PERCEPTION } from '../core';
 import type { MapDef } from '../core';
 import { basicMaterial } from './cutout';
+import { goreFloor } from './fx/goreFloor';
 import type { LightField } from './lightfield';
 
 type FloorKind = MapDef['floor'];
@@ -74,7 +76,7 @@ export class Floor {
   private readonly renderer: THREE.WebGPURenderer;
   private readonly light: LightField;
   private readonly decal: THREE.Texture;
-  /** Static procedural albedo (rgb) + wet-sheen breakup noise (a), baked once per map. */
+  /** Static procedural albedo (rgb), baked once per map. */
   private readonly albedo: THREE.StorageTexture;
   private kind: FloorKind | null = null;
   private bakedFor = '';
@@ -126,8 +128,7 @@ export class Floor {
       const albedo = kind === 'stone' ? stoneAlbedo(p) : kind === 'flesh' ? fleshAlbedo(p) : sandAlbedo(p);
       // Faint arena circle around the centre: a broadcast court marking worn into the floor.
       const ring = smoothstep(0.5, 2.5, abs(length(p.sub(centre)).sub(132))).oneMinus().mul(0.16);
-      const sheen = mx_noise_float(vec3(p.mul(0.2), 7.0)).mul(0.5).add(0.5);
-      textureStore(tex, ivec2(ix, iy), vec4(albedo.mul(float(1).sub(ring)), sheen));
+      textureStore(tex, ivec2(ix, iy), vec4(albedo.mul(float(1).sub(ring)), 1));
     });
     this.renderer.compute(fn().compute(aw * ah));
   }
@@ -147,14 +148,11 @@ export class Floor {
       const ao = light.sampleAo(wp).x;
       // Flesh breathes.
       const pulse = kind === 'flesh' ? sin(time.mul(1.6).add(wp.x.mul(0.01))).mul(0.04).add(1) : float(1);
-      const base = baked.xyz.mul(pulse).mul(decal.xyz);
-      const lit = base.mul(l.xyz).mul(ao);
-      // Wet gore catches the light.
-      const sheen = decal.w.mul(l.xyz).mul(baked.w.mul(0.18).add(0.04));
-      // Gameplay shadow (below the sim's shadow threshold) reads cool and a touch darker.
+      // Gameplay shadow (below the sim's shadow threshold) reads cool and a touch darker, on the
+      // bare floor only: blood keeps its red in the shadows.
       const shadowAmt = smoothstep(PERCEPTION.shadowLight - 0.04, PERCEPTION.shadowLight + 0.04, l.w).oneMinus();
-      const tinted = mix(lit, lit.mul(vec3(0.7, 0.78, 1.05)), shadowAmt.mul(0.65));
-      return tinted.add(sheen);
+      const groundTint = mix(vec3(1), vec3(0.7, 0.78, 1.05), shadowAmt.mul(0.65));
+      return goreFloor(baked.xyz.mul(pulse), decal, l.xyz, ao, groundTint);
     })();
     m.colorNode = shade;
     return m;

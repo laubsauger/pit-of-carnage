@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { JUDGES_ORDER, MATCH_RULES, PICKUP_RULES, TICK_HZ, matchHardCapTicks, zoneBoundsAfter } from '../core';
-import type { GameEvent, Match, Rect } from '../core';
+import { JUDGES_ORDER, MATCH_RULES, PICKUP_RULES, SKILL_IDS, STEER_DIRS, TICK_HZ, matchHardCapTicks, zoneBoundsAfter } from '../core';
+import type { BrainFactory, FighterState, GameEvent, Match, Rect } from '../core';
 import { MAPS } from './maps';
 import { createMatch } from './match';
-import { scriptedBrains, stage, testConfig } from './testkit';
+import { scriptedBrains, seekerBrain, stage, testConfig } from './testkit';
 
 type Ev<T extends GameEvent['type']> = Extract<GameEvent, { type: T }>;
 const of = <T extends GameEvent['type']>(events: GameEvent[], type: T) => events.filter((e): e is Ev<T> => e.type === type);
@@ -13,12 +13,15 @@ function runToEnd(m: Match, events: GameEvent[] = [], cap = 20000): GameEvent[] 
   return events;
 }
 
-/** Four still fighters inside the zone's final square, clear of the shrine (which would heal them). */
+/**
+ * Four still fighters whose bodies sit wholly inside the zone's final square (590-770 x 340-520 on
+ * the pit), so the solid wall never touches them, clear of the shrine (which would heal them).
+ */
 const ZONE_SQUAD = [
-  { name: 'A', weapon: 'GREATSWORD' as const, pos: [610, 360] as [number, number], facing: 0 },
-  { name: 'B', weapon: 'GREATSWORD' as const, pos: [750, 360] as [number, number], facing: 0 },
-  { name: 'C', weapon: 'GREATSWORD' as const, pos: [610, 500] as [number, number], facing: 0 },
-  { name: 'D', weapon: 'GREATSWORD' as const, pos: [750, 500] as [number, number], facing: 0 },
+  { name: 'A', weapon: 'GREATSWORD' as const, pos: [620, 370] as [number, number], facing: 0 },
+  { name: 'B', weapon: 'GREATSWORD' as const, pos: [740, 370] as [number, number], facing: 0 },
+  { name: 'C', weapon: 'GREATSWORD' as const, pos: [620, 490] as [number, number], facing: 0 },
+  { name: 'D', weapon: 'GREATSWORD' as const, pos: [740, 490] as [number, number], facing: 0 },
 ];
 
 describe('sudden death', () => {
@@ -137,6 +140,152 @@ describe('sudden death', () => {
     m.step();
     expect(m.state.ending).toBeNull();
     expect(m.result().ending).toBe('capped');
+  });
+});
+
+/** Brains that walk straight away from the centre forever: they lean on the wall as hard as anyone can. */
+const wallHuggers: BrainFactory = () => ({
+  memory: {},
+  think: (view) => ({
+    behaviour: 'hug',
+    scores: {},
+    targetId: null,
+    heading: Math.atan2(view.self.pos.y - view.world.map.height / 2, view.self.pos.x - view.world.map.width / 2),
+    speed: 1,
+    ring: new Array<number>(STEER_DIRS).fill(0),
+    terms: [],
+    attack: false,
+    parry: false,
+    useSkill: false,
+    stance: 'normal',
+    sensors: {},
+    guardTrips: [],
+  }),
+});
+
+/** Does any part of the body stick out past the face of rectangle b? */
+function bodyOutside(f: FighterState, b: Rect): boolean {
+  const eps = 1e-6;
+  return f.pos.x - f.radius < b.x - eps || f.pos.x + f.radius > b.x + b.w + eps || f.pos.y - f.radius < b.y - eps || f.pos.y + f.radius > b.y + b.h + eps;
+}
+
+describe('the closing wall is solid', () => {
+  // SPEC: nobody can ever end up outside the wall. Whole matches on every map, with fighters who
+  // brawl (knockback, kegs, skills incl. dashes and shadowsteps) and fighters who lean on the wall.
+  // Spent ammo the wall reaches is swept along, never buried behind it.
+  it('after sudden death starts, no living fighter is outside the bounds for more than one tick', () => {
+    let contacts = 0;
+    let checkedTicks = 0;
+    for (const mapId of Object.keys(MAPS)) {
+      const runs: [string, Match][] = [];
+      for (const seed of [1, 2]) {
+        const config = testConfig({ seed, mapId, fighters: 8, timeLimitTicks: 400 });
+        config.entrants.forEach((e, i) => (e.strategy.build.skill = SKILL_IDS[i % SKILL_IDS.length]!));
+        runs.push([`brawl ${mapId} seed ${seed}`, createMatch(config, seekerBrain)]);
+      }
+      runs.push([`huggers ${mapId}`, createMatch(testConfig({ seed: 7, mapId, fighters: 8, timeLimitTicks: 300 }), wallHuggers)]);
+      for (const [label, m] of runs) {
+        const outsideFor = new Map<string, number>();
+        while (!m.isOver && m.state.tick < 20000) {
+          for (const e of m.step()) if (e.type === 'wall_contact') contacts++;
+          const z = m.state.suddenDeath;
+          if (!z.active) continue;
+          checkedTicks++;
+          for (const f of m.state.fighters) {
+            if (!f.alive) continue;
+            const n = bodyOutside(f, z.bounds) ? (outsideFor.get(f.id) ?? 0) + 1 : 0;
+            outsideFor.set(f.id, n);
+            expect(n, `${label}: ${f.name} outside the wall for ${n} ticks at tick ${m.state.tick}`).toBeLessThanOrEqual(1);
+          }
+          for (const it of m.state.floor) {
+            const inside = it.pos.x >= z.bounds.x && it.pos.x <= z.bounds.x + z.bounds.w && it.pos.y >= z.bounds.y && it.pos.y <= z.bounds.y + z.bounds.h;
+            expect(inside, `${label}: floor item ${it.id} left behind the wall at tick ${m.state.tick}`).toBe(true);
+          }
+        }
+        expect(m.isOver, `${label} did not finish within the tick cap`).toBe(true);
+      }
+    }
+    expect(checkedTicks).toBeGreaterThan(10000);
+    expect(contacts).toBeGreaterThan(1000);
+  });
+
+  // Impenetrable: push, push, push. A fighter who just stands there is shoved back in every time
+  // the advancing wall reaches it, and the spikes bite on every tick of contact. The contact is
+  // reported at the wall's face (where the sparks fly), and the same damage arrives as a hit from
+  // nobody, so HP, reports and the feed see it.
+  it('shoves a fighter standing still back in on every tick of contact, and the spikes bite', () => {
+    const s = stage([
+      { name: 'Still', weapon: 'GREATSWORD', pos: [500, 60], facing: 0 },
+      { name: 'Parked', weapon: 'GREATSWORD', pos: [620, 370], facing: 0 },
+    ], { timeLimitTicks: 30 });
+    const still = s.f('Still');
+    s.run(400);
+    const z = s.match.state.suddenDeath;
+    const contacts = of(s.events, 'wall_contact');
+    expect(contacts.length).toBeGreaterThanOrEqual(3);
+    for (const c of contacts) {
+      expect(c.fighterId).toBe(still.id);
+      // On the top wall's face as it stood that tick, straight above the fighter.
+      expect(c.pos.y).toBeCloseTo(24 + (c.tick - z.startedAtTick) * MATCH_RULES.suddenDeathInsetPerTick, 6);
+      expect(c.pos.x).toBeCloseTo(500, 0);
+      expect(c.damage).toBe(MATCH_RULES.wallContactDamage);
+      const hit = of(s.events, 'hit').find((h) => h.tick === c.tick && h.victimId === still.id)!;
+      expect(hit).toMatchObject({ attackerId: null, source: 'sudden_death', amount: c.damage, knockback: MATCH_RULES.wallPushKnockback });
+      expect(hit.dir).toBeCloseTo(Math.PI / 2, 6); // straight back in (down, away from the top wall)
+    }
+    // Pushed, then caught again: separate contacts, not one long grind.
+    const gaps = contacts.slice(1).map((c, i) => c.tick - contacts[i]!.tick);
+    expect(gaps.filter((g) => g > 5).length).toBeGreaterThanOrEqual(2);
+    // Driven ahead of the wall without ever being inside it, and never crushed in the open.
+    expect(still.pos.y).toBeGreaterThan(60 + 50);
+    expect(bodyOutside(still, z.bounds)).toBe(false);
+    expect(still.damageTaken).toBe(contacts.length * MATCH_RULES.wallContactDamage);
+    expect(s.f('Parked').damageTaken).toBe(0);
+  });
+
+  // A fighter who walks into the wall gets bounced back in, again and again, and pays for each touch.
+  it('bounces a fighter who keeps walking into it', () => {
+    const s = stage([
+      { name: 'Walker', weapon: 'TWIN_DAGGERS', pos: [500, 120], facing: -Math.PI / 2, script: { heading: -Math.PI / 2, speed: 1 } },
+      { name: 'Parked', weapon: 'GREATSWORD', pos: [620, 370], facing: 0 },
+    ], { timeLimitTicks: 30 });
+    const walker = s.f('Walker');
+    let deepest = 0;
+    for (let i = 0; i < 300; i++) {
+      s.run(1);
+      deepest = Math.min(deepest, walker.pos.y - walker.radius - s.match.state.suddenDeath.bounds.y);
+    }
+    expect(deepest).toBeGreaterThanOrEqual(-1e-6);
+    const contacts = of(s.events, 'wall_contact').filter((c) => c.fighterId === walker.id);
+    expect(contacts.length).toBeGreaterThanOrEqual(10);
+    expect(walker.damageTaken).toBe(contacts.length * MATCH_RULES.wallContactDamage);
+  });
+
+  // Caught between the wall and a pillar there is nowhere to go: CRUSHED. Big damage every tick it
+  // holds, a kill by nobody with cause sudden_death, the `crushed` flag and the CRUSHED stamp.
+  it('crushes a fighter it pins against a pillar', () => {
+    // The pit's east pillar spans x 888-934, y 471-517; the right wall comes in from x 1336.
+    const s = stage([
+      { name: 'Pinned', weapon: 'GREATSWORD', pos: [956, 494], facing: 0 },
+      { name: 'Parked', weapon: 'GREATSWORD', pos: [620, 370], facing: 0 },
+    ], { timeLimitTicks: 30 });
+    const pinned = s.f('Pinned');
+    while (pinned.alive && s.match.state.tick < 3000) {
+      s.run(1);
+      // Pinned into the pillar, but never through the wall.
+      if (pinned.alive) expect(bodyOutside(pinned, s.match.state.suddenDeath.bounds), `outside at tick ${s.match.state.tick}`).toBe(false);
+    }
+    expect(pinned.alive, 'the wall never crushed the pinned fighter within 3000 ticks').toBe(false);
+    const kill = of(s.events, 'kill').find((k) => k.victimId === pinned.id)!;
+    expect(kill).toMatchObject({ killerId: null, cause: 'sudden_death', title: 'CRUSHED' });
+    expect(kill.flags).toContain('crushed');
+    const crushes = of(s.events, 'wall_contact').filter((c) => c.damage > MATCH_RULES.wallContactDamage);
+    expect(crushes.length).toBeGreaterThan(0);
+    expect(crushes[0]!.damage).toBe(MATCH_RULES.wallContactDamage + MATCH_RULES.wallCrushDamage);
+    // Pinned means pinned: it died against the pillar's face, not somewhere it slid off to.
+    expect(pinned.pos.x).toBeGreaterThan(934);
+    expect(pinned.pos.x).toBeLessThan(934 + pinned.radius);
+    expect(s.f('Parked').damageTaken).toBe(0);
   });
 });
 

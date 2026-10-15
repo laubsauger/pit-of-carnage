@@ -16,7 +16,7 @@ export const GROUP_CAPS: Readonly<Record<VoiceGroup, number>> = {
   swing: 6,
   impact: 10,
   big: 6,
-  crowd: 2,
+  crowd: 4,
   signal: 3,
   misc: 8,
 };
@@ -180,16 +180,28 @@ export const PAUSE_AFTER_SECONDS = 0.2;
 export class PauseDetector {
   paused = false;
   private zeroFor = 0;
+  private holdFor = 0;
 
   update(dt: number, timeScale: number): boolean {
+    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0;
+    this.holdFor = Math.max(0, this.holdFor - step);
     if (timeScale > 0) {
       this.zeroFor = 0;
       this.paused = false;
     } else {
-      this.zeroFor += Number.isFinite(dt) ? Math.max(0, dt) : 0;
-      this.paused = this.zeroFor >= PAUSE_AFTER_SECONDS;
+      this.zeroFor += step;
+      this.paused = this.zeroFor >= PAUSE_AFTER_SECONDS && this.holdFor <= 0;
     }
     return this.paused;
+  }
+
+  /**
+   * Keep sound running for `seconds` even while time stands still: a match signal (a countdown
+   * beat while the sim holds at tick 0) must be heard.
+   */
+  hold(seconds: number): void {
+    if (seconds > 0) this.holdFor = Math.max(this.holdFor, seconds);
+    this.paused = false;
   }
 }
 

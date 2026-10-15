@@ -38,6 +38,7 @@ import type {
   MoveTerm,
   Strategy,
   StrategyAggregate,
+  StrategySource,
   ValidationResult,
 } from '../core';
 import { keyNames, strategyAggregate } from './aggregate';
@@ -49,7 +50,8 @@ import { RatingBook } from './ratings';
 
 export type EvolveDeps = {
   runMatch: MatchRunner;
-  validate: (input: unknown) => ValidationResult;
+  /** The gate. `source` labels where the strategy came from (`config` for the parent, `evolution` for children). */
+  validate: (input: unknown, source?: StrategySource) => ValidationResult;
   /** Starter behaviours: imported behaviours are copied in so they can evolve too. */
   library?: Readonly<Record<string, Behaviour>>;
   /** Extra move terms the term swap may draw from (starter library, house stacks). */
@@ -183,7 +185,7 @@ export function evolve(
 ): EvolveResult {
   checkRequest(req);
   const library = deps.library ?? {};
-  const checked = deps.validate(req.parent);
+  const checked = deps.validate(req.parent, 'config');
   if (!checked.ok) {
     const first = checked.issues.find((i) => i.severity === 'error');
     throw new Error(`The strategy to evolve is invalid${first ? ` (${first.path}: ${first.message})` : ''}.`);
@@ -285,7 +287,7 @@ export function evolve(
         if (tried.has(fp)) continue;
         tried.add(fp);
         const named = { ...s, name: root.name, version: nextVersion };
-        const result = deps.validate(named);
+        const result = deps.validate(named, 'evolution');
         if (!result.ok) {
           rejected++;
           continue;

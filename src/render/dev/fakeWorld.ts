@@ -10,7 +10,7 @@
  */
 
 import {
-  FIGHTER_COLORS, MATCH_RULES, PERCEPTION, PICKUP_RULES, PROP_RULES, SKILL_IDS, WEAPONS, WEAPON_IDS, attackCooldown, circleHitsRect,
+  FIGHTER_COLORS, HAZARD_RULES, MATCH_RULES, PERCEPTION, PICKUP_RULES, PROP_RULES, SKILL_IDS, WEAPONS, WEAPON_IDS, attackCooldown, circleHitsRect,
   fighterRadius, hearingRadius, initialSuddenDeathState, maxHp, moveSpeed, projectileSpeed, projectileTtl, segmentHitsRect, turnPerTick,
   visionFov, visionRange, wrapAngle, zoneBoundsAfter,
 } from '../../core';
@@ -133,6 +133,7 @@ export class FakeWorld {
       this.stepFighter(f, i, ev);
     });
     this.stepProjectiles(ev);
+    this.acidBurn(ev);
 
     const alive = s.fighters.filter((f) => f.alive).length;
     if (alive <= 1 && this.roundOverAt < 0) this.roundOverAt = tick + 180;
@@ -163,6 +164,28 @@ export class FakeWorld {
         h.active = true;
       } else {
         h.active = true;
+      }
+    }
+    // Spilled acid dries up.
+    for (const h of s.hazards) if (h.ttl !== null) h.ttl--;
+    s.hazards = s.hazards.filter((h) => h.ttl === null || h.ttl > 0);
+  }
+
+  /** Acid hurts whoever stands in it (like the sim: radius + 30% of the body, every 24 ticks). */
+  private acidBurn(ev: GameEvent[]): void {
+    const s = this.state;
+    const rule = HAZARD_RULES.acid;
+    if (s.tick % rule.intervalTicks !== 0) return;
+    for (const h of s.hazards) {
+      if (h.kind !== 'acid') continue;
+      for (const f of s.fighters) {
+        if (!f.alive) continue;
+        const d = Math.hypot(f.pos.x - h.pos.x, f.pos.y - h.pos.y);
+        if (d < h.radius + f.radius * 0.3) {
+          this.damage(f, null, rule.damage, Math.atan2(f.pos.y - h.pos.y, f.pos.x - h.pos.x), false, 1, ev);
+          ev.push({ tick: s.tick, type: 'hazard', hazardId: h.id, victimId: f.id, pos: { ...f.pos } });
+          f.buffs.slow = Math.max(f.buffs.slow, 40);
+        }
       }
     }
   }
@@ -298,7 +321,7 @@ export class FakeWorld {
         const amount = Math.round(f.maxHp * 0.42);
         f.hp = Math.min(f.maxHp, f.hp + amount);
         sh.cooldown = 320;
-        ev.push({ tick: this.state.tick, type: 'heal', fighterId: f.id, amount, pos: { ...sh.pos } });
+        ev.push({ tick: this.state.tick, type: 'heal', fighterId: f.id, amount, pos: { ...sh.pos }, shrineId: sh.id });
       }
     }
     for (const p of s.pickups) {
@@ -331,6 +354,7 @@ export class FakeWorld {
         id: `p${this.nextId++}`, ownerId: f.id, weapon: f.weapon,
         pos: { x: f.pos.x + Math.cos(dir) * (f.radius + 8), y: f.pos.y + Math.sin(dir) * (f.radius + 8) },
         vel: { x: Math.cos(dir) * sp, y: Math.sin(dir) * sp }, ttl: projectileTtl(f.weapon),
+        origin: { x: f.pos.x + Math.cos(dir) * (f.radius + 8), y: f.pos.y + Math.sin(dir) * (f.radius + 8) },
       };
       this.state.projectiles.push(p);
       ev.push({ tick: this.state.tick, type: 'projectile', projectileId: p.id, ownerId: f.id, weapon: f.weapon, pos: { ...p.pos }, dir });
@@ -389,6 +413,7 @@ export class FakeWorld {
         tick: this.state.tick, type: 'kill', killerId: by?.id ?? null, victimId: v.id, cause: by ? 'weapon' : 'hazard', pos: { ...v.pos }, dir,
         title: titles[Math.floor(Math.random() * titles.length)]!, killerBehaviour: by?.behaviour ?? null, victimBehaviour: v.behaviour,
         weapon: by?.weapon ?? null, flags: crit ? ['crit'] : [], hazard: by ? null : 'spike',
+        final: this.state.fighters.filter((x) => x.alive).length === 1,
       });
       this.state.floor.push({ id: `i${this.nextId++}`, kind: 'weapon', pos: { x: v.pos.x + 12, y: v.pos.y + 6 }, ownerId: v.id });
     }
@@ -499,6 +524,50 @@ export class FakeWorld {
     }
     for (const e of ev) e.tick = this.state.tick;
     return ev;
+  }
+
+  /** Shatter a random amphora into an acid pool (or pour one at a random fighter when none are left). */
+  spillAcid(): GameEvent[] {
+    const s = this.state;
+    const amphoras = s.props.filter((p) => p.alive && p.kind === 'amphora');
+    const a = amphoras[Math.floor(Math.random() * amphoras.length)];
+    const living = s.fighters.filter((f) => f.alive);
+    const at = a ? { ...a.pos } : living.length ? { ...living[Math.floor(Math.random() * living.length)]!.pos } : { x: 680, y: 430 };
+    const ev: GameEvent[] = [];
+    if (a) {
+      a.alive = false;
+      ev.push({ tick: s.tick, type: 'prop_break', propId: a.id, kind: 'amphora', pos: { ...a.pos } });
+    }
+    const rule = HAZARD_RULES.acid;
+    s.hazards.push({ id: `acid-${this.nextId++}`, kind: 'acid', pos: at, radius: rule.radius, phase: 0, active: true, ttl: rule.durationTicks });
+    return ev;
+  }
+
+  /** Shove up to `n` living fighters into the newest acid pool (to judge the soaked look). */
+  dunk(n = 2): void {
+    const pool = [...this.state.hazards].reverse().find((h) => h.kind === 'acid');
+    if (!pool) return;
+    const living = this.state.fighters.filter((f) => f.alive).slice(0, n);
+    living.forEach((f, k) => {
+      const a = (k / Math.max(1, living.length)) * Math.PI * 2;
+      f.pos.x = pool.pos.x + Math.cos(a) * pool.radius * 0.35;
+      f.pos.y = pool.pos.y + Math.sin(a) * pool.radius * 0.35;
+      f.vel.x = 0;
+      f.vel.y = 0;
+    });
+  }
+
+  /** The fighter nearest the shrine drinks from it (heal event with the shrine's id, cooldown starts). */
+  shrineHeal(): GameEvent[] {
+    const s = this.state;
+    const sh = s.shrines[0];
+    const living = s.fighters.filter((f) => f.alive);
+    if (!sh || living.length === 0) return [];
+    const f = living.reduce((a, b) => (Math.hypot(a.pos.x - sh.pos.x, a.pos.y - sh.pos.y) < Math.hypot(b.pos.x - sh.pos.x, b.pos.y - sh.pos.y) ? a : b));
+    const amount = Math.round(f.maxHp * 0.42);
+    f.hp = Math.min(f.maxHp, f.hp + amount);
+    sh.cooldown = PICKUP_RULES.shrine.cooldownTicks;
+    return [{ tick: s.tick, type: 'heal', fighterId: f.id, amount, pos: { ...sh.pos }, shrineId: sh.id }];
   }
 
   /** The wall closes like the sim's: inset per tick, clamped per axis at `final`, then escalation. */

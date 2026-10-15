@@ -4,7 +4,41 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0e0d0c" />
     <title>Pit of Carnage</title>
+    <meta
+      name="description"
+      content="An autoplaying gladiator arena. Write strategies, breed them in the gym, send them into the pit and watch the carnage."
+    />
+
+    <!-- Brand assets live in public/brand; Vite prefixes these paths with BASE_PATH at build time. -->
+    <link rel="icon" type="image/png" sizes="16x16" href="/brand/favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/brand/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/brand/apple-touch-icon.png" />
+    <link rel="manifest" href="/brand/site.webmanifest" />
+
+    <!-- Share cards need absolute URLs; the live site is the GitHub Pages deploy. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Pit of Carnage" />
+    <meta property="og:title" content="Pit of Carnage" />
+    <meta
+      property="og:description"
+      content="An autoplaying gladiator arena. Write strategies, breed them in the gym, send them into the pit and watch the carnage."
+    />
+    <meta property="og:url" content="https://laubsauger.github.io/pit-of-carnage/" />
+    <meta property="og:image" content="https://laubsauger.github.io/pit-of-carnage/brand/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="628" />
+    <meta property="og:image:alt" content="Cartoon gladiators brawling in a blood-spattered arena under the Pit of Carnage logo." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Pit of Carnage" />
+    <meta name="twitter:description" content="An autoplaying gladiator arena. Write strategies, breed them in the gym, send them into the pit." />
+    <meta name="twitter:image" content="https://laubsauger.github.io/pit-of-carnage/brand/og-image.jpg" />
+    <meta name="twitter:image:alt" content="Cartoon gladiators brawling in a blood-spattered arena under the Pit of Carnage logo." />
+
+    <link rel="preload" as="image" href="/brand/splash.webp" fetchpriority="high" />
+    <link rel="preload" as="image" href="/brand/wordmark.webp" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -14,9 +48,169 @@
     <style>
       html, body, #root { height: 100%; margin: 0; }
       body { background: #0e0d0c; color: #e8e2d9; font-family: Inter, system-ui, sans-serif; }
+
+      /* Splash: painted before any script runs. src/ui/SplashScreen.tsx drives the bar, the stage and the
+         button once the bundle is in; the status quips below rotate on their own. */
+      .splash {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: #0e0d0c;
+        color: #e8e2d9;
+        font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        transition: opacity 650ms ease, visibility 0s linear 650ms;
+      }
+      .splash.splash-out { opacity: 0; visibility: hidden; pointer-events: none; }
+      .splash.splash-out .splash-art { transform: scale(1.12); }
+      .splash-art {
+        position: absolute;
+        inset: -2%;
+        background: #0e0d0c url('/brand/splash.webp') center / cover no-repeat;
+        filter: saturate(0.85) brightness(0.62);
+        animation: splash-drift 14s ease-out both;
+        transition: transform 650ms ease-in;
+      }
+      .splash-vignette {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse 46% 40% at 50% 44%, rgba(14, 13, 12, 0.82), rgba(14, 13, 12, 0.35) 70%, transparent),
+          radial-gradient(ellipse at center, transparent 35%, rgba(14, 13, 12, 0.92) 100%),
+          linear-gradient(to bottom, rgba(14, 13, 12, 0.55), transparent 22%, transparent 70%, rgba(14, 13, 12, 0.95));
+      }
+      .splash-center {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: min(620px, calc(100vw - 32px));
+        text-align: center;
+      }
+      .splash-wordmark {
+        width: min(560px, 86vw);
+        height: auto;
+        aspect-ratio: 3 / 2;
+        margin: -6vh 0 -3vh;
+        mix-blend-mode: lighten;
+        filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.6));
+        animation: splash-rise 900ms cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
+        user-select: none;
+        -webkit-user-drag: none;
+      }
+      .splash-action { min-height: 64px; display: grid; place-items: center; }
+      .splash-stage, .splash-quip, .splash-foot { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 12px rgba(0, 0, 0, 0.8); }
+      .splash-progress { width: min(320px, 80vw); margin-top: 18px; }
+      .splash[data-mode='ready'] .splash-progress,
+      .splash[data-mode='nogpu'] .splash-progress,
+      .splash[data-mode='failed'] .splash-progress { opacity: 0; transition: opacity 300ms ease; }
+      .splash[data-mode='nogpu'] .splash-foot,
+      .splash[data-mode='failed'] .splash-foot { display: none; }
+      .splash-bar {
+        height: 3px;
+        border-radius: 3px;
+        background: rgba(232, 226, 217, 0.12);
+        overflow: hidden;
+      }
+      .splash-bar i {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, #7a1d1a, #c4302b 70%, #da4a42);
+        box-shadow: 0 0 12px rgba(196, 48, 43, 0.7);
+        transform: scaleX(0.04);
+        transform-origin: left center;
+        transition: transform 420ms cubic-bezier(0.3, 0.8, 0.3, 1);
+      }
+      .splash-stage {
+        margin-top: 10px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #a39a8e;
+      }
+      .splash-quip {
+        min-height: 20px;
+        margin-top: 6px;
+        font-size: 13px;
+        font-style: italic;
+        color: #a39a8e;
+        transition: opacity 260ms ease;
+      }
+      .splash-quip.swap { opacity: 0; }
+      .splash-foot {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 18px;
+        font-size: 11px;
+        color: #a39a8e;
+        text-align: center;
+        letter-spacing: 0.04em;
+      }
+      @keyframes splash-drift { from { transform: scale(1.08); } to { transform: scale(1); } }
+      @keyframes splash-rise { from { opacity: 0; transform: translateY(14px) scale(0.96); } }
+      @media (prefers-reduced-motion: reduce) {
+        .splash-art, .splash-wordmark { animation: none; }
+        .splash, .splash-art, .splash-bar i, .splash-quip { transition: none; }
+      }
     </style>
   </head>
   <body>
+    <div id="splash" class="splash" data-mode="loading" role="dialog" aria-modal="true" aria-label="Pit of Carnage is loading">
+      <div class="splash-art" aria-hidden="true"></div>
+      <div class="splash-vignette" aria-hidden="true"></div>
+      <div class="splash-center">
+        <img class="splash-wordmark" src="/brand/wordmark.webp" width="1536" height="1024" alt="Pit of Carnage" draggable="false" />
+        <div id="splash-action" class="splash-action"></div>
+        <div class="splash-progress" aria-live="polite">
+          <div class="splash-bar" role="progressbar" aria-label="Loading"><i id="splash-fill"></i></div>
+          <div id="splash-stage" class="splash-stage">Loading the game</div>
+          <div id="splash-quip" class="splash-quip">Sharpening blades...</div>
+        </div>
+      </div>
+      <div class="splash-foot">Sound starts when you enter.</div>
+      <noscript><div class="splash-foot" style="bottom: 40px; color: #da4a42">The Pit needs JavaScript to open its gates.</div></noscript>
+    </div>
+    <script>
+      // Comedic status lines while the real stages load (cosmetic; stops once the splash is gone).
+      (function () {
+        var lines = [
+          'Sharpening blades...',
+          "Mopping yesterday's floor...",
+          'Counting fingers. Twice...',
+          'Hosing down the front row...',
+          'Polishing the spikes...',
+          "Reattaching Doug's arm...",
+          'Loosening the saw blades a little...',
+          'Filling the kegs. Mostly with powder...',
+          'Teaching the crowd new insults...',
+          'Signing the waivers nobody reads...',
+          'Restocking the shrine...',
+          'Warming up the announcer...',
+          'Hiring a braver referee...',
+          'Losing the rulebook again...',
+          'Oiling the gate hinges...',
+          'Sweeping up the teeth...',
+        ];
+        var el = document.getElementById('splash-quip');
+        var splash = document.getElementById('splash');
+        var i = Math.floor(Math.random() * lines.length);
+        if (el) el.textContent = lines[i];
+        var timer = setInterval(function () {
+          if (!el || !splash || splash.hidden) return clearInterval(timer);
+          el.classList.add('swap');
+          setTimeout(function () {
+            i = (i + 1) % lines.length;
+            el.textContent = lines[i];
+            el.classList.remove('swap');
+          }, 260);
+        }, 1900);
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/app/main.tsx"></script>
   </body>

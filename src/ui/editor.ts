@@ -38,30 +38,41 @@ export type JsonParse =
  * whole behaviour fits on screen and diffs between versions stay readable.
  */
 export function prettyJson(value: unknown, width = 96): string {
-  const entries = (v: object) => Object.entries(v).filter(([, x]) => x !== undefined);
-  const inline = (v: unknown): string => {
-    if (Array.isArray(v)) return `[${v.map(inline).join(', ')}]`;
-    if (v !== null && typeof v === 'object') {
-      const e = entries(v);
-      return e.length ? `{ ${e.map(([k, x]) => `${JSON.stringify(k)}: ${inline(x)}`).join(', ')} }` : '{}';
-    }
-    return JSON.stringify(v) ?? 'null';
-  };
+  // The top level always breaks: a strategy is a document, not a value.
+  return prettyJsonAt(value, '', 0, width);
+}
+
+const jsonEntries = (v: object) => Object.entries(v).filter(([, x]) => x !== undefined);
+
+/** A value on one line the way the editor writes it: `{ "seek": "target", "weight": 1 }`. */
+export function inlineJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(inlineJson).join(', ')}]`;
+  if (v !== null && typeof v === 'object') {
+    const e = jsonEntries(v);
+    return e.length ? `{ ${e.map(([k, x]) => `${JSON.stringify(k)}: ${inlineJson(x)}`).join(', ')} }` : '{}';
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+/**
+ * `prettyJson` for a value that starts inside a document: `indent` is the indentation of its line
+ * and `room` the columns left on that line, so a replaced value lines up with its neighbours.
+ */
+export function prettyJsonAt(value: unknown, indent: string, room: number, width = 96): string {
   const walk = (v: unknown, indent: string, room: number): string => {
-    const flat = inline(v);
+    const flat = inlineJson(v);
     if (v === null || typeof v !== 'object' || flat.length <= room || flat === '{}' || flat === '[]') return flat;
     const inner = `${indent}  `;
     if (Array.isArray(v)) {
       return `[\n${v.map((x) => inner + walk(x, inner, width - inner.length - 1)).join(',\n')}\n${indent}]`;
     }
-    const lines = entries(v).map(([k, x]) => {
+    const lines = jsonEntries(v).map(([k, x]) => {
       const key = `${JSON.stringify(k)}: `;
       return inner + key + walk(x, inner, width - inner.length - key.length - 1);
     });
     return `{\n${lines.join(',\n')}\n${indent}}`;
   };
-  // The top level always breaks: a strategy is a document, not a value.
-  return walk(value, '', 0);
+  return walk(value, indent, room);
 }
 
 /** Line and column (both 1-based) of a character offset. */
@@ -190,7 +201,7 @@ export function issueOffset(text: string, issue: Pick<ValidationIssue, 'path' | 
 
 /**
  * End of the token starting at `start`, for the underline: a whole JSON string (escapes included),
- * a number or bare word, or one character. Never runs past the end of the line.
+ * a number, a name, or one character. Never runs past the end of the line.
  */
 export function tokenEnd(text: string, start: number): number {
   const nl = text.indexOf('\n', start);
@@ -204,7 +215,9 @@ export function tokenEnd(text: string, start: number): number {
     return lineEnd;
   }
   let i = start;
-  while (i < lineEnd && /[\w.+-]/.test(text[i])) i++;
+  // A name inside an expression stops at operators (`hp+1` underlines only `hp`); a number may hold "+-" in its exponent.
+  const word = /[A-Za-z_]/.test(text[start]) ? /[\w.]/ : /[\w.+-]/;
+  while (i < lineEnd && word.test(text[i])) i++;
   return Math.max(i, start + 1);
 }
 

@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { LIVE_EVENT_TICKS, TICK_HZ, WEAPONS, WEAPON_IDS, initialSuddenDeathState } from '../core';
 import type { FighterState, GameEvent, WeaponId, WorldState } from '../core';
-import { PAN_WIDTH, SOUND_SPECS, createCueMemory, cuesForEvent, excitementBump, finalKillIndex, killDrama, panForX } from './cues';
+import {
+  FinalGate,
+  PAN_WIDTH,
+  SOUND_SPECS,
+  createCueMemory,
+  cuesForEvent,
+  cuesForSignal,
+  excitementBump,
+  finalKillIndex,
+  killDrama,
+  panForX,
+  rememberContacts,
+  wallContact,
+} from './cues';
 import type { Cue, SoundId } from './cues';
 import { RECIPES } from './synth';
 
@@ -56,7 +69,7 @@ function hit(weapon: WeaponId | null, amount = 25, extra: Partial<Extract<GameEv
 function kill(flags: Extract<GameEvent, { type: 'kill' }>['flags'] = []): Extract<GameEvent, { type: 'kill' }> {
   return {
     type: 'kill', tick: 600, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos: { x: 680, y: 430 }, dir: 0,
-    title: 'SPLIT', killerBehaviour: 'brawl', victimBehaviour: 'lurk', weapon: 'GREATSWORD', flags, hazard: null,
+    title: 'SPLIT', killerBehaviour: 'brawl', victimBehaviour: 'lurk', weapon: 'GREATSWORD', flags, hazard: null, final: false,
   };
 }
 
@@ -151,8 +164,18 @@ describe('cuesForEvent', () => {
     expect(sounds(hit('TWIN_DAGGERS', 30, { backstab: true }))).toEqual(['hit_dagger', 'backstab_shink']);
   });
 
+  // Wall damage is spikes or the floor biting, never a weapon's splat. Contact arrives as a
+  // `wall_contact` plus a `hit` in the same tick, in either order.
   it('grinds instead of splatting when the sudden-death wall does the damage', () => {
-    expect(sounds(hit(null, 4, { source: 'sudden_death', attackerId: null }))).toEqual(['wall_grind']);
+    const wallHit = hit(null, 4, { source: 'sudden_death', attackerId: null });
+    const contact: GameEvent = { type: 'wall_contact', tick: 600, fighterId: 'f1', damage: 4, pos: { x: 120, y: 430 } };
+    const memory = createCueMemory();
+    rememberContacts([wallHit, contact], memory);
+    expect(cues(wallHit, world(EIGHT), memory).map((c) => c.sound)).toEqual(['wall_grind']);
+    // No contact: the escalated damage hitting everyone inside the zone.
+    expect(sounds(wallHit)).toEqual(['zone_burn']);
+    // The contact event itself is the engine's grind loop, not a retriggered sound.
+    expect(sounds(contact)).toEqual([]);
   });
 
   // A death is an event: splat, broadcast sting and the crowd.
@@ -246,5 +269,75 @@ describe('excitementBump', () => {
     expect(k).toBeGreaterThan(h);
     expect(h).toBeGreaterThan(0);
     expect(excitementBump({ type: 'footstep', tick: 600, fighterId: 'f0', pos: { x: 0, y: 0 }, bloody: false })).toBe(0);
+  });
+});
+
+describe('round end and match signals', () => {
+  // The kill that decides the match gets its own fanfare, not a louder copy of every other kill.
+  it('gives the final kill the final sting and the loudest roar, from the event alone', () => {
+    const final = cues({ ...kill(), final: true });
+    expect(final.map((c) => c.sound)).toEqual(['death_splat', 'final_sting', 'crowd_roar']);
+    expect(final.find((c) => c.sound === 'crowd_roar')!.intensity).toBe(1);
+    expect(sounds(kill())).not.toContain('final_sting');
+  });
+
+  // CRUSHED is the wall's own kill: iron and bones on top of the usual death.
+  it('adds a crush for a fighter pinned by the closing wall', () => {
+    expect(sounds({ ...kill(['crushed']), cause: 'sudden_death', killerId: null, weapon: null })).toEqual(['crush', 'death_splat', 'kill_sting', 'crowd_roar']);
+  });
+
+  it('counts down with a climbing beat, then hits FIGHT with the crowd', () => {
+    const beat = (value: number) => {
+      const out: Cue[] = [];
+      cuesForSignal({ type: 'countdown', value }, out);
+      return out[0]!;
+    };
+    expect(beat(3).sound).toBe('countdown');
+    expect(beat(2).pitch).toBeGreaterThan(beat(3).pitch);
+    expect(beat(1).pitch).toBeGreaterThan(beat(2).pitch);
+    const fight: Cue[] = [];
+    cuesForSignal({ type: 'fight' }, fight);
+    expect(fight.map((c) => c.sound)).toEqual(['fight', 'crowd_roar']);
+    const fin: Cue[] = [];
+    cuesForSignal({ type: 'final_kill', killerId: 'f0', victimId: 'f1', pos: { x: 0, y: 0 } }, fin);
+    expect(fin.map((c) => c.sound)).toEqual(['final_sting']);
+  });
+
+  // Announcer beats are real time: slow motion must never bend the countdown or the final sting.
+  it('keeps the countdown, FIGHT and the final sting on the unbent signal bus', () => {
+    for (const s of ['countdown', 'fight', 'final_sting'] as const) expect(SOUND_SPECS[s].group).toBe('signal');
+  });
+
+  // The kill event and the final_kill signal arrive in the same frame in either order: one sting.
+  it('plays the final sting once per final kill, whichever source comes first', () => {
+    const gate = new FinalGate(5);
+    expect(gate.take('f1', 10)).toBe(true);
+    expect(gate.take('f1', 10.01)).toBe(false);
+    expect(gate.take('f2', 10.02)).toBe(true);
+    // A replay of the same match later rings it again.
+    expect(gate.take('f2', 20)).toBe(true);
+    gate.reset();
+    expect(gate.take('f2', 20.5)).toBe(true);
+  });
+});
+
+describe('wall contact and heals', () => {
+  it('counts each fighter on the spikes once per batch and pans the grind toward them', () => {
+    const s = world(EIGHT, 600);
+    const touch = (id: string, x: number, tick = 600): GameEvent => ({ type: 'wall_contact', tick, fighterId: id, damage: 2, pos: { x, y: 430 } });
+    expect(wallContact([], s)).toEqual({ fighters: 0, pan: 0 });
+    const left = wallContact([touch('f0', 40), touch('f0', 40), touch('f1', 60)], s);
+    expect(left.fighters).toBe(2);
+    expect(left.pan).toBeLessThan(-0.5);
+    // Catch-up from a seek grinds nothing.
+    expect(wallContact([touch('f0', 40, 600 - LIVE_EVENT_TICKS - 1)], s).fighters).toBe(0);
+  });
+
+  // A shrine's blessing is a moment; it should sound fuller than any other heal.
+  it('makes a shrine heal fuller than another heal', () => {
+    const shrine = cues({ type: 'heal', tick: 600, fighterId: 'f0', amount: 40, pos: { x: 680, y: 430 }, shrineId: 's1' })[0]!;
+    const other = cues({ type: 'heal', tick: 600, fighterId: 'f0', amount: 40, pos: { x: 680, y: 430 }, shrineId: null })[0]!;
+    expect(shrine.sound).toBe('heal');
+    expect(shrine.intensity).toBeGreaterThan(other.intensity);
   });
 });

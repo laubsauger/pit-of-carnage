@@ -3,18 +3,27 @@
  * Procedural sound recipes. No sample files: every sound is layered from shared noise textures,
  * oscillators, filters, saturation and envelopes, built fresh per voice:
  *
- * - impacts = a transient (short filtered noise) + a body (pitch-dropping sine) + a texture
- *   (wet squelch, metal partials, crackle), so they read as punchy rather than beepy;
- * - whooshes = band-passed noise whose band and level swell together;
- * - metal (parry, clang, bells, gong) = inharmonic sine partials with their own decays;
- * - crowd = a pre-rendered babble of formant-filtered voices plus a swelling "ohh" choir.
+ * - impacts = a click (a few ms of bright noise that makes the blow land) + a body (a
+ *   pitch-dropping tone, a smack of shaped noise) + a tail (a short dark rumble), so they read as
+ *   punchy rather than beepy;
+ * - metal (parry, clangs, plates) = an FM strike whose index falls fast, modal partials for the
+ *   ring and noise through narrow resonant filters for the shimmer;
+ * - whooshes and splats = noise through filters whose band, level and wobble are shaped over time;
+ * - crowd = a pre-rendered babble (seeded per round) plus choirs of saws through vowel formants:
+ *   roars, gasps, boos, chants.
  *
- * A `VoiceBuilder` applies the voice's rate: frequencies x rate and durations / rate, so slow
- * motion lowers pitch and stretches tempo together, like tape.
+ * Every helper varies its layer a little per trigger (pitch, level, decay, a few ms of timing), so
+ * the hundredth sword hit is not the first one again. A `VoiceBuilder` applies the voice's rate:
+ * frequencies x rate and durations / rate, so slow motion lowers pitch and stretches tempo
+ * together, like tape.
  */
 
+import { Rng } from '../core';
 import type { Cue, SoundId } from './cues';
+import { chantStyle, chantTempo } from './crowd';
 import { crossfadeLoop } from './mix';
+
+type Rand = () => number;
 
 export type NoiseKind = 'white' | 'pink' | 'brown' | 'crackle' | 'applause';
 
@@ -37,9 +46,9 @@ function normalize<T extends Float32Array>(d: T, peak: number): T {
   return d;
 }
 
-function whiteNoise(n: number): Float32Array<ArrayBuffer> {
+function whiteNoise(n: number, rand: Rand = Math.random): Float32Array<ArrayBuffer> {
   const d = new Float32Array(n);
-  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  for (let i = 0; i < n; i++) d[i] = rand() * 2 - 1;
   return d;
 }
 
@@ -125,26 +134,29 @@ export function makeBanks(ctx: BaseAudioContext): Banks {
 }
 
 /**
- * Impulse response of a stone pit: a few early reflections off the walls, then a dense tail that
- * darkens as it decays (stone swallows the highs first).
+ * Impulse response of the stone pit, generated: a diffuse onset, a cluster of early reflections off
+ * the pit walls (different in each ear), then a dense tail that darkens as it decays (stone
+ * swallows the highs first). `rt60` = seconds for the tail to fall 60 dB.
  */
-export function makeImpulse(ctx: BaseAudioContext, seconds = 1.9): AudioBuffer {
+export function makeImpulse(ctx: BaseAudioContext, seconds = 2.2, rt60 = 1.7): AudioBuffer {
   const sr = ctx.sampleRate;
   const n = Math.floor(sr * seconds);
-  const pre = Math.floor(sr * 0.012);
+  const pre = Math.floor(sr * 0.014);
+  const taps = [11, 17, 23, 31, 37, 46, 53, 64, 79];
   const b = ctx.createBuffer(2, n, sr);
   for (let ch = 0; ch < 2; ch++) {
     const d = new Float32Array(n);
     let lp = 0;
     for (let i = pre; i < n; i++) {
-      const t = (i - pre) / (n - pre);
-      const k = 0.65 - 0.57 * t;
-      lp += k * ((Math.random() * 2 - 1) - lp);
-      d[i] = lp * Math.exp(-6.2 * t) * (0.6 + 0.4 * Math.random());
+      const sec = (i - pre) / sr;
+      const k = 0.7 - 0.62 * Math.min(1, sec / rt60);
+      lp += k * (Math.random() * 2 - 1 - lp);
+      d[i] = lp * Math.pow(10, (-3 * sec) / rt60) * Math.min(1, sec / 0.035);
     }
-    for (const [ms, g] of [[19, 0.5], [31, 0.35], [47, 0.3], [63, 0.22]] as const) {
-      const j = pre + Math.floor((sr * (ms + ch * 3)) / 1000);
-      if (j < n) d[j]! += g * (ch === 0 ? 1 : -1);
+    for (let k = 0; k < taps.length; k++) {
+      const j = pre + Math.floor((sr * (taps[k]! * (ch === 0 ? 1 : 1.07) + ch * 1.5)) / 1000);
+      const g = 0.5 * Math.pow(0.8, k) * ((k + ch) % 2 === 0 ? 1 : -1);
+      for (let m = 0; m < 6 && j + m < n; m++) d[j + m]! += g * Math.exp(-m / 2);
     }
     b.copyToChannel(normalize(d, 0.6), ch);
   }
@@ -154,22 +166,28 @@ export function makeImpulse(ctx: BaseAudioContext, seconds = 1.9): AudioBuffer {
 /** Vowel formants (F1, F2) in Hz: a, e, i, o, u, schwa. */
 const VOWELS: readonly (readonly [number, number])[] = [[800, 1200], [480, 1950], [320, 2300], [520, 900], [360, 800], [560, 1500]];
 
+/** What shapes a round's babble (see `CrowdProfile`). */
+export type BabbleSpec = { seed: number; voices: number; lowShare: number; pace: number };
+
 /**
- * Render a loopable crowd babble offline: two dozen formant-filtered voices saying nothing in
- * particular at their own pace, with consonant hiss, spread across the stereo field. Used for the
- * murmur bed and as the body of every crowd roar.
+ * Render a loopable crowd babble offline: formant-filtered voices saying nothing in particular at
+ * their own pace, with consonant hiss, spread across the stereo field. Used for the murmur bed and
+ * as the body of every crowd roar. Seeded: the same round gets the same crowd, every round another.
  */
-export async function renderBabble(sampleRate: number, seconds = 8, voices = 26): Promise<AudioBuffer> {
+export async function renderBabble(sampleRate: number, spec: BabbleSpec, seconds = 8): Promise<AudioBuffer> {
+  const rng = new Rng(spec.seed).fork('babble');
+  const rand = () => rng.next();
+  const voices = Math.max(1, Math.round(spec.voices));
   const off = new OfflineAudioContext(2, Math.floor(sampleRate * seconds), sampleRate);
-  const banks = { white: monoBuffer(off, whiteNoise(sampleRate)) };
+  const white = monoBuffer(off, whiteNoise(sampleRate, rand));
   const bus = off.createGain();
   bus.gain.value = 1 / Math.sqrt(voices);
   bus.connect(off.destination);
   for (let v = 0; v < voices; v++) {
-    const low = Math.random() < 0.6;
-    const f0 = low ? 95 + Math.random() * 55 : 170 + Math.random() * 90;
+    const low = rand() < spec.lowShare;
+    const f0 = low ? 95 + rand() * 55 : 170 + rand() * 90;
     const pan = off.createStereoPanner();
-    pan.pan.value = Math.random() * 1.6 - 0.8;
+    pan.pan.value = rand() * 1.6 - 0.8;
     pan.connect(bus);
     const amp = off.createGain();
     amp.gain.value = 0;
@@ -188,7 +206,7 @@ export async function renderBabble(sampleRate: number, seconds = 8, voices = 26)
     osc.connect(f1).connect(amp);
     osc.connect(f2).connect(f2g).connect(amp);
     const hiss = off.createBufferSource();
-    hiss.buffer = banks.white;
+    hiss.buffer = white;
     hiss.loop = true;
     const hissHp = off.createBiquadFilter();
     hissHp.type = 'highpass';
@@ -196,25 +214,25 @@ export async function renderBabble(sampleRate: number, seconds = 8, voices = 26)
     const hissG = off.createGain();
     hissG.gain.value = 0;
     hiss.connect(hissHp).connect(hissG).connect(pan);
-    const level = 0.35 + 0.65 * Math.random();
-    let t = Math.random() * 0.6;
+    const level = 0.35 + 0.65 * rand();
+    let t = rand() * 0.6;
     while (t < seconds - 0.1) {
-      const syl = 0.08 + Math.random() * 0.2;
-      const [a, b] = VOWELS[Math.floor(Math.random() * VOWELS.length)]!;
-      f1.frequency.setTargetAtTime(a * (0.9 + Math.random() * 0.2), t, 0.025);
-      f2.frequency.setTargetAtTime(b * (0.9 + Math.random() * 0.2), t, 0.025);
-      osc.frequency.setTargetAtTime(f0 * (0.85 + Math.random() * 0.35), t, 0.06);
+      const syl = (0.08 + rand() * 0.2) / spec.pace;
+      const [a, b] = VOWELS[Math.floor(rand() * VOWELS.length)]!;
+      f1.frequency.setTargetAtTime(a * (0.9 + rand() * 0.2), t, 0.025);
+      f2.frequency.setTargetAtTime(b * (0.9 + rand() * 0.2), t, 0.025);
+      osc.frequency.setTargetAtTime(f0 * (0.85 + rand() * 0.35), t, 0.06);
       amp.gain.setTargetAtTime(level, t, 0.018);
       amp.gain.setTargetAtTime(0, t + syl, 0.03);
-      if (Math.random() < 0.4) {
+      if (rand() < 0.4) {
         hissG.gain.setTargetAtTime(level * 0.12, Math.max(0, t - 0.03), 0.005);
         hissG.gain.setTargetAtTime(0, t + 0.01, 0.012);
       }
       // Words, then the odd breath between sentences.
-      t += syl + (Math.random() < 0.22 ? 0.25 + Math.random() * 0.7 : 0.02 + Math.random() * 0.07);
+      t += syl + (rand() < 0.22 ? 0.25 + rand() * 0.7 : 0.02 + rand() * 0.07) / spec.pace;
     }
     osc.start(0);
-    hiss.start(0, Math.random());
+    hiss.start(0, rand());
   }
   const rendered = await off.startRendering();
   const fade = Math.floor(sampleRate * 0.4);
@@ -257,8 +275,22 @@ export class VoiceBuilder {
     readonly t0: number,
     /** Pitch and tempo factor. */
     readonly rate: number,
+    /** Cosmetic randomness for this voice. */
+    readonly rand: Rand = Math.random,
+    /** Scale of the per-trigger variation (0 = every trigger identical, for checks). */
+    readonly jitter = 1,
   ) {
     this.stopAt = t0;
+  }
+
+  /** Per-trigger variation: 1 +- `spread`, scaled by `jitter`. */
+  vary(spread: number): number {
+    return 1 + (this.rand() * 2 - 1) * spread * this.jitter;
+  }
+
+  /** A layer that starts after the onset drifts late by up to `max` seconds: loose, human timing. */
+  nudge(sec: number, max: number): number {
+    return sec > 0 ? sec + this.rand() * max * this.jitter : sec;
   }
 
   at(sec: number): number {
@@ -282,7 +314,7 @@ export class VoiceBuilder {
     src.loop = true;
     src.playbackRate.value = speed * this.rate;
     connect(src, dest);
-    src.start(this.at(sec), Math.random() * buf.duration);
+    src.start(this.at(sec), this.rand() * buf.duration);
     this.stop(src, sec + dur);
     this.buffers.push({ node: src, speed });
     return src;
@@ -356,6 +388,7 @@ export class VoiceBuilder {
   }
 }
 
+
 // ---------------------------------------------------------------------------------------------
 // Layers
 // ---------------------------------------------------------------------------------------------
@@ -375,46 +408,54 @@ type BurstOpts = {
   dest?: Dest;
 };
 
-/** Filtered noise burst: transients, splats, hiss, crunch. */
+/** Filtered noise burst: transients, splats, hiss, crunch. Varies band, level, decay and timing per trigger. */
 function burst(v: VoiceBuilder, o: BurstOpts): void {
-  const at = o.at ?? 0;
+  const at = v.nudge(o.at ?? 0, 0.004);
   const attack = o.attack ?? 0.002;
+  const k = v.vary(0.06);
+  const decay = o.decay * v.vary(0.1);
   const g = v.gain(0, o.dest ?? v.out);
-  const flt = v.filter(o.type ?? 'bandpass', o.freq, o.q ?? 1, g);
-  if (o.to !== undefined) v.glide(flt.frequency, at, o.freq, o.to, attack + o.decay);
-  v.noise(o.noise ?? 'white', at, attack + o.decay + 0.02, flt, o.speed ?? 1);
-  v.ad(g.gain, at, attack, o.gain, o.decay);
+  const flt = v.filter(o.type ?? 'bandpass', o.freq * k, o.q ?? 1, g);
+  if (o.to !== undefined) v.glide(flt.frequency, at, o.freq * k, o.to * k, attack + decay);
+  v.noise(o.noise ?? 'white', at, attack + decay + 0.02, flt, (o.speed ?? 1) * v.vary(0.04));
+  v.ad(g.gain, at, attack, o.gain * v.vary(0.12), decay);
 }
 
 /** Pitch-dropping tone: the body of a thud, a kick, a plop. */
 function thump(v: VoiceBuilder, at: number, from: number, to: number, dur: number, gain: number, dest: Dest = v.out, type: OscillatorType = 'sine'): void {
+  const t = v.nudge(at, 0.003);
+  const k = v.vary(0.05);
+  const d = dur * v.vary(0.08);
   const g = v.gain(0, dest);
-  const o = v.osc(type, from, at, dur + 0.02, g);
-  v.glide(o.frequency, at, from, to, dur);
-  v.ad(g.gain, at, 0.002, gain, dur);
+  const o = v.osc(type, from * k, t, d + 0.02, g);
+  v.glide(o.frequency, t, from * k, to * k, d);
+  v.ad(g.gain, t, 0.002, gain * v.vary(0.1), d);
 }
 
-/** Inharmonic partials with their own decays: metal, bells, ceramic. */
+/** Inharmonic partials with their own decays: metal, bells, ceramic (modal synthesis). */
 function ring(v: VoiceBuilder, at: number, base: number, ratios: readonly number[], decays: readonly number[], gain: number, dest: Dest = v.out): void {
+  const b = base * v.vary(0.015);
   for (let i = 0; i < ratios.length; i++) {
-    const d = decays[i] ?? decays[decays.length - 1]!;
+    const d = (decays[i] ?? decays[decays.length - 1]!) * v.vary(0.12);
     const g = v.gain(0, dest);
-    v.osc('sine', base * ratios[i]!, at, d + 0.03, g);
-    v.ad(g.gain, at, 0.001, gain / (1 + i * 0.6), d);
+    v.osc('sine', b * ratios[i]!, at, d + 0.03, g);
+    v.ad(g.gain, at, 0.001, (gain / (1 + i * 0.6)) * v.vary(0.1), d);
   }
 }
 
 /** Air rushing past: level and band swell together to the peak, then fall away. */
 function whoosh(v: VoiceBuilder, at: number, dur: number, from: number, peak: number, q: number, gain: number, noise: NoiseKind = 'white', dest: Dest = v.out): void {
+  const len = dur * v.vary(0.06);
+  const top = peak * v.vary(0.08);
   const g = v.gain(0, dest);
   const flt = v.filter('bandpass', from, q, g);
   flt.frequency.setValueAtTime(v.f(from), v.at(at));
-  flt.frequency.exponentialRampToValueAtTime(v.f(peak), v.at(at + dur * 0.55));
-  flt.frequency.exponentialRampToValueAtTime(v.f(from * 0.8), v.at(at + dur));
-  v.noise(noise, at, dur + 0.02, flt);
+  flt.frequency.exponentialRampToValueAtTime(v.f(top), v.at(at + len * 0.55));
+  flt.frequency.exponentialRampToValueAtTime(v.f(from * 0.8), v.at(at + len));
+  v.noise(noise, at, len + 0.02, flt);
   g.gain.setValueAtTime(0, v.at(at));
-  g.gain.linearRampToValueAtTime(gain, v.at(at + dur * 0.55));
-  g.gain.exponentialRampToValueAtTime(gain * 1e-3, v.at(at + dur));
+  g.gain.linearRampToValueAtTime(gain, v.at(at + len * 0.55));
+  g.gain.exponentialRampToValueAtTime(gain * 1e-3, v.at(at + len));
 }
 
 /** A gain stage wobbled by an LFO (spin, growl, chunky wet tearing). Returns its input. */
@@ -427,20 +468,78 @@ function tremolo(v: VoiceBuilder, at: number, dur: number, hz: number, depth: nu
 
 /** FM bell: bright metallic attack that settles into a pure tone. */
 function bell(v: VoiceBuilder, at: number, freq: number, ratio: number, index: number, dur: number, gain: number, dest: Dest = v.out): void {
+  const idx = index * v.vary(0.15);
   const g = v.gain(0, dest);
   const car = v.osc('sine', freq, at, dur + 0.03, g);
   const modG = v.gain(0, car.frequency);
   v.osc('sine', freq * ratio, at, dur + 0.03, modG);
-  modG.gain.setValueAtTime(v.f(freq * index), v.at(at));
-  modG.gain.exponentialRampToValueAtTime(v.f(freq * index * 0.04), v.at(at + dur * 0.6));
-  v.ad(g.gain, at, 0.002, gain, dur);
+  modG.gain.setValueAtTime(v.f(freq * idx), v.at(at));
+  modG.gain.exponentialRampToValueAtTime(v.f(freq * idx * 0.04), v.at(at + dur * 0.6));
+  v.ad(g.gain, at, 0.002, gain * v.vary(0.08), dur);
 }
 
-/** Meat: the wet smack and low body under every blow that lands on a fighter. */
+/** The very front of a blow: a few ms of bright noise that makes it land. */
+function click(v: VoiceBuilder, at: number, gain: number, hz = 3500, dest: Dest = v.out): void {
+  burst(v, { at, type: 'highpass', freq: hz, attack: 0.0004, decay: 0.006, gain, dest });
+}
+
+/** What rings on after a blow: a short, dark rumble of body and floor. */
+function tail(v: VoiceBuilder, at: number, dur: number, hz: number, gain: number, dest: Dest = v.out): void {
+  burst(v, { at, noise: 'brown', type: 'lowpass', freq: hz, q: 1.1, attack: 0.006, decay: dur, gain, dest });
+}
+
+type ClangOpts = { ratio?: number; index?: number; partials?: readonly number[]; dest?: Dest };
+
+/**
+ * Struck metal: an FM pair whose index falls fast (a bright, clangy strike that settles), modal
+ * partials for the ring, and noise through narrow resonant filters for the shimmer.
+ */
+function clang(v: VoiceBuilder, at: number, base: number, dur: number, gain: number, o: ClangOpts = {}): void {
+  const dest = o.dest ?? v.out;
+  const b = base * v.vary(0.02);
+  const index = (o.index ?? 3) * v.vary(0.15);
+  const g = v.gain(0, dest);
+  const car = v.osc('sine', b, at, dur + 0.03, g);
+  const modG = v.gain(0, car.frequency);
+  v.osc('sine', b * (o.ratio ?? 1.41), at, dur + 0.03, modG);
+  modG.gain.setValueAtTime(v.f(b * index), v.at(at));
+  modG.gain.exponentialRampToValueAtTime(v.f(b * index * 0.02), v.at(at + Math.min(0.15, dur * 0.4)));
+  v.ad(g.gain, at, 0.0008, gain * 0.6, dur * 0.7);
+  const partials = o.partials ?? [1, 2.76, 5.4, 8.93];
+  ring(v, at, b, partials, partials.map((_, i) => dur * Math.pow(0.68, i)), gain * 0.7, dest);
+  for (const r of [2.03, 3.9]) burst(v, { at, freq: b * r, q: 26, attack: 0.001, decay: dur * 0.5, gain: gain * 3, dest });
+}
+
+/** A wet impact: a band of noise that falls fast with a wet wobble, then droplets pattering down. */
+function splat(v: VoiceBuilder, at: number, size: number, gain: number, dest: Dest = v.out): void {
+  const am = tremolo(v, at, 0.12 + 0.4 * size, 22 + 14 * v.rand(), 0.55, dest);
+  burst(v, { at, noise: 'pink', freq: 2600, to: 300, q: 1.7, attack: 0.004, decay: 0.08 + 0.25 * size, gain, dest: am });
+  burst(v, { at, freq: 1200, q: 0.8, attack: 0.002, decay: 0.03, gain: gain * 0.4, dest });
+  const drops = 2 + Math.round(4 * size);
+  for (let i = 0; i < drops; i++) {
+    const t = at + 0.05 + v.rand() * (0.12 + 0.3 * size);
+    const f = 500 + v.rand() * 900;
+    const g = v.gain(0, dest);
+    const o = v.osc('sine', f, t, 0.06, g);
+    v.glide(o.frequency, t, f, f * 0.55, 0.04);
+    v.ad(g.gain, t, 0.001, gain * 0.14 * (0.5 + v.rand()), 0.04);
+  }
+}
+
+/**
+ * Meat: click, wet smack and crack, a low body and a short tail under every blow that lands on a
+ * fighter. A band of noise carries a fraction of a sine's energy at the same gain (pink noise
+ * spreads over ten octaves), so the noise layers run hot and the body stays small: most of the
+ * energy sits in the mids, and a hit still reads on laptop speakers that cannot play its body.
+ */
 function flesh(v: VoiceBuilder, size: number, gain = 1): void {
-  burst(v, { noise: 'pink', freq: 1600, to: 480, q: 1.3, decay: 0.07 + 0.06 * size, gain: 0.55 * gain });
-  thump(v, 0, 130, 52, 0.1 + 0.08 * size, (0.2 + 0.45 * size) * gain);
-  burst(v, { noise: 'crackle', freq: 1300, q: 0.9, attack: 0.003, decay: 0.1, gain: 0.3 * size * gain });
+  click(v, 0, 0.8 * gain, 2800);
+  const am = tremolo(v, 0, 0.2, 28 + 10 * v.rand(), 0.4, v.out);
+  burst(v, { noise: 'pink', freq: 1700, to: 520, q: 1.3, decay: 0.07 + 0.06 * size, gain: 4 * gain, dest: am });
+  burst(v, { at: 0.002, freq: 2300, q: 1.4, attack: 0.001, decay: 0.03, gain: 1.5 * gain });
+  thump(v, 0, 170, 62, 0.09 + 0.07 * size, (0.04 + 0.1 * size) * gain);
+  burst(v, { noise: 'crackle', freq: 1300, q: 0.9, attack: 0.003, decay: 0.1, gain: 1.5 * size * gain });
+  tail(v, 0.01, 0.12 + 0.18 * size, 380, (0.03 + 0.05 * size) * gain);
 }
 
 /** Snarl: a saw through a throat formant, saturated and wobbled. */
@@ -460,6 +559,55 @@ function heartbeat(v: VoiceBuilder, at: number, beats: number, gain: number): vo
     thump(v, at + i * 0.42, 72, 44, 0.12, gain);
     thump(v, at + i * 0.42 + 0.17, 66, 42, 0.1, gain * 0.7);
   }
+}
+
+/** Vowel formants F1, F2, F3 (Hz) for the crowd's throats. */
+type Vowel = readonly [number, number, number];
+const VOWEL_OH: Vowel = [520, 900, 2450];
+const VOWEL_OO: Vowel = [360, 780, 2300];
+const VOWEL_EH: Vowel = [530, 1850, 2500];
+const VOWEL_AH: Vowel = [800, 1200, 2700];
+const VOWEL_OI: Vowel = [500, 1000, 2400];
+
+/**
+ * A crowd of throats on one vowel: detuned saws at the given fundamentals through three formant
+ * band-passes. Returns the envelope gain for the caller to shape; `shape` bends each voice's pitch.
+ */
+function choir(v: VoiceBuilder, at: number, dur: number, f0s: readonly number[], vowel: Vowel, dest: Dest = v.out, shape?: (o: OscillatorNode, f0: number, start: number) => void): GainNode {
+  const env = v.gain(0, dest);
+  const formants = v.gain(1, env);
+  const f1 = v.filter('bandpass', vowel[0], 3, formants);
+  const f2 = v.filter('bandpass', vowel[1], 4, v.gain(0.5, formants));
+  const f3 = v.filter('bandpass', vowel[2], 6, v.gain(0.2, formants));
+  const mix = v.gain(2.4 / Math.sqrt(f0s.length), f1);
+  mix.connect(f2);
+  mix.connect(f3);
+  for (const f0 of f0s) {
+    const start = at + v.rand() * 0.06;
+    const o = v.osc('sawtooth', f0, start, dur + 0.15, mix, (v.rand() * 2 - 1) * 25);
+    shape?.(o, f0, start);
+  }
+  return env;
+}
+
+/** `n` random fundamentals between `lo` and `hi` Hz. */
+function throats(v: VoiceBuilder, n: number, lo: number, hi: number): number[] {
+  return Array.from({ length: Math.max(1, Math.round(n)) }, () => lo + (hi - lo) * v.rand());
+}
+
+/** Exponential frequency path through `[sec, hz]` points (rate applied). */
+function path(v: VoiceBuilder, param: AudioParam, points: readonly (readonly [number, number])[]): void {
+  const nyq = v.ctx.sampleRate * 0.45;
+  const [s0, h0] = points[0]!;
+  param.setValueAtTime(Math.min(v.f(h0), nyq), v.at(s0));
+  for (let i = 1; i < points.length; i++) param.exponentialRampToValueAtTime(Math.min(v.f(points[i]![1]), nyq), v.at(points[i]![0]));
+}
+
+/** Crash cymbal: a long hiss of high noise over a bright FM shimmer. */
+function crash(v: VoiceBuilder, at: number, dur: number, gain: number): void {
+  burst(v, { at, type: 'highpass', freq: 4300, attack: 0.002, decay: dur, gain: gain });
+  burst(v, { at, freq: 7600, q: 1.2, attack: 0.002, decay: dur * 0.6, gain: gain * 0.6 });
+  clang(v, at, 3150, dur * 0.7, gain * 0.25, { ratio: 1.73, index: 6, partials: [1, 1.34, 1.97, 2.71] });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -522,7 +670,7 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     v.glide(o.frequency, 0, 132, 96, 0.18);
     v.ad(g.gain, 0, 0.002, 0.24, 0.2);
     thump(v, 0, 95, 60, 0.08, 0.22);
-    burst(v, { type: 'highpass', freq: 2600, attack: 0.001, decay: 0.015, gain: 0.22 });
+    click(v, 0, 0.22, 2600);
     whoosh(v, 0.01, 0.14, 2600, 6200, 1.5, 0.14);
   },
   release_axe(v) {
@@ -549,42 +697,43 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
   // --- blows on fighters --------------------------------------------------------------------
   hit_blade(v, cue) {
     // Steel slicing through: a bright shhk, a short metal tick, then meat.
-    burst(v, { freq: 2800, to: 5200, q: 0.9, attack: 0.002, decay: 0.09, gain: 0.5 });
-    ring(v, 0, 2900, [1, 1.47], [0.07, 0.05], 0.08);
+    burst(v, { freq: 2800, to: 5200, q: 0.9, attack: 0.002, decay: 0.09, gain: 1 });
+    clang(v, 0, 2900, 0.1, 0.06, { ratio: 1.47, index: 1.5, partials: [1, 1.47, 2.1] });
     flesh(v, cue.intensity);
   },
   hit_hammer(v, cue) {
-    // A heavy, saturated thud with a bone crack on top.
-    const drv = v.drive(v.out, 2, 0.26);
-    thump(v, 0, 150, 42, 0.3, 0.75, drv);
-    burst(v, { noise: 'brown', type: 'lowpass', freq: 520, decay: 0.22, gain: 0.45 });
-    burst(v, { at: 0.004, freq: 3200, q: 2, attack: 0.0005, decay: 0.012, gain: 0.45 });
-    burst(v, { at: 0.024, freq: 2600, q: 2, attack: 0.0005, decay: 0.015, gain: 0.35 });
+    // A heavy, saturated thud with a bone crack on top and the floor shaking after.
+    const drv = v.drive(v.out, 2, 0.16);
+    thump(v, 0, 160, 50, 0.3, 0.35, drv);
+    burst(v, { noise: 'brown', type: 'lowpass', freq: 700, decay: 0.22, gain: 0.18 });
+    burst(v, { at: 0.004, freq: 3200, q: 2, attack: 0.0005, decay: 0.012, gain: 1.5 });
+    burst(v, { at: 0.024, freq: 2600, q: 2, attack: 0.0005, decay: 0.015, gain: 1.2 });
     flesh(v, cue.intensity, 0.85);
+    tail(v, 0.02, 0.35, 260, 0.15 + 0.1 * cue.intensity);
   },
   hit_dagger(v, cue) {
-    burst(v, { freq: 2200, to: 900, q: 2, attack: 0.001, decay: 0.05, gain: 0.5 });
-    thump(v, 0, 240, 110, 0.06, 0.3);
-    burst(v, { at: 0.018, noise: 'pink', freq: 1800, to: 600, q: 3, decay: 0.09, gain: 0.4 });
+    burst(v, { freq: 2200, to: 900, q: 2, attack: 0.001, decay: 0.05, gain: 1.5 });
+    thump(v, 0, 240, 110, 0.06, 0.15);
+    burst(v, { at: 0.018, noise: 'pink', freq: 1800, to: 600, q: 3, decay: 0.09, gain: 1.6 });
     flesh(v, cue.intensity * 0.6, 0.7);
   },
   hit_arrow(v, cue) {
-    thump(v, 0, 280, 130, 0.06, 0.5);
-    burst(v, { noise: 'pink', freq: 1300, q: 1.5, attack: 0.001, decay: 0.035, gain: 0.5 });
+    thump(v, 0, 280, 130, 0.06, 0.2);
+    burst(v, { noise: 'pink', freq: 1300, q: 1.5, attack: 0.001, decay: 0.035, gain: 2 });
     flesh(v, cue.intensity * 0.7);
   },
   hit_axe(v, cue) {
-    burst(v, { noise: 'pink', freq: 1100, q: 1, attack: 0.001, decay: 0.07, gain: 0.55 });
-    ring(v, 0, 760, [1, 2.4, 4.1], [0.18, 0.12, 0.08], 0.13);
-    thump(v, 0, 170, 60, 0.12, 0.45);
+    burst(v, { noise: 'pink', freq: 1100, q: 1, attack: 0.001, decay: 0.07, gain: 2 });
+    clang(v, 0, 760, 0.18, 0.1, { ratio: 2.4, index: 2, partials: [1, 2.4, 4.1] });
+    thump(v, 0, 170, 60, 0.12, 0.2);
     flesh(v, cue.intensity);
   },
   hit_arcane(v, cue) {
     // An electric zap: buzzy FM through a closing resonant filter, crackle and sizzle.
     const g = v.gain(0, v.out);
-    const drv = v.drive(g, 2, 0.7);
+    const drv = v.drive(g, 2, 0.45);
     const lp = v.filter('lowpass', 4000, 6, drv);
-    v.glide(lp.frequency, 0, 4000, 380, 0.25);
+    v.glide(lp.frequency, 0, 4000, 700, 0.25);
     const car = v.osc('sawtooth', 112, 0, 0.3, lp);
     const modG = v.gain(v.f(75), car.frequency);
     v.osc('square', 47, 0, 0.3, modG);
@@ -594,36 +743,41 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     flesh(v, cue.intensity * 0.5, 0.6);
   },
   hit_punch(v) {
-    burst(v, { noise: 'pink', freq: 1500, q: 0.8, attack: 0.001, decay: 0.05, gain: 0.7 });
-    thump(v, 0, 170, 68, 0.09, 0.55);
+    click(v, 0, 0.6, 2400);
+    burst(v, { noise: 'pink', freq: 1500, q: 0.8, attack: 0.001, decay: 0.05, gain: 3 });
+    thump(v, 0, 170, 68, 0.09, 0.25);
+    tail(v, 0.01, 0.1, 280, 0.08);
   },
   hit_flesh(v, cue) {
     flesh(v, cue.intensity);
   },
   crit_crunch(v) {
-    const drv = v.drive(v.out, 2, 0.4);
-    burst(v, { noise: 'crackle', freq: 2500, q: 1, attack: 0.001, decay: 0.07, gain: 0.45 });
-    burst(v, { at: 0.012, freq: 1800, q: 1.5, attack: 0.0005, decay: 0.02, gain: 0.4 });
-    thump(v, 0, 92, 38, 0.13, 0.55, drv);
+    // Bone giving way: a crackle of breaks over a short saturated knock.
+    const drv = v.drive(v.out, 2, 0.15);
+    burst(v, { noise: 'crackle', freq: 2500, q: 1, attack: 0.001, decay: 0.07, gain: 1.6 });
+    burst(v, { at: 0.012, freq: 1800, q: 1.5, attack: 0.0005, decay: 0.02, gain: 1.3 });
+    burst(v, { at: 0.03, noise: 'crackle', freq: 1500, q: 1.2, attack: 0.001, decay: 0.05, gain: 1 });
+    thump(v, 0, 120, 50, 0.12, 0.2, drv);
   },
   backstab_shink(v) {
     burst(v, { freq: 3000, to: 7000, q: 4, attack: 0.01, decay: 0.2, gain: 0.28 });
-    ring(v, 0.01, 3600, [1, 1.33], [0.26, 0.2], 0.07);
+    clang(v, 0.01, 3600, 0.26, 0.05, { ratio: 1.33, index: 1.2, partials: [1, 1.33] });
   },
 
   // --- projectiles stopped ------------------------------------------------------------------
   thunk_arrow(v) {
-    thump(v, 0, 210, 120, 0.07, 0.5);
-    burst(v, { noise: 'pink', freq: 1400, q: 1.2, attack: 0.001, decay: 0.05, gain: 0.45 });
+    click(v, 0, 0.5, 2200);
+    thump(v, 0, 210, 120, 0.07, 0.25);
+    burst(v, { noise: 'pink', freq: 1400, q: 1.2, attack: 0.001, decay: 0.05, gain: 1.6 });
     // The shaft wobbling in the wood.
     const g = v.gain(0, v.out);
-    const lp = v.filter('lowpass', 620, 2, g);
-    v.osc('square', 71, 0.01, 0.26, lp);
-    v.ad(g.gain, 0.01, 0.002, 0.09, 0.24);
+    const lp = v.filter('lowpass', 900, 2, g);
+    v.osc('square', 96, 0.01, 0.26, lp);
+    v.ad(g.gain, 0.01, 0.002, 0.05, 0.24);
   },
   clang_axe(v) {
-    ring(v, 0, 540, [1, 2.76, 5.4, 8.93], [0.5, 0.35, 0.2, 0.12], 0.32);
-    burst(v, { type: 'highpass', freq: 3500, attack: 0.0005, decay: 0.02, gain: 0.4 });
+    clang(v, 0, 540, 0.5, 0.3, { ratio: 1.41, index: 4 });
+    click(v, 0, 0.4, 3500);
     thump(v, 0, 180, 90, 0.06, 0.3);
   },
   burst_orb(v, _cue, rand) {
@@ -635,17 +789,17 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
 
   // --- big moments --------------------------------------------------------------------------
   parry(v, _cue, rand) {
-    // Steel on steel: a ringing cluster of inharmonic partials over a hard transient.
-    ring(v, 0, R(470, 560, rand), [1, 2.32, 3.87, 5.13, 6.8, 8.3], [0.7, 0.5, 0.36, 0.26, 0.18, 0.12], 0.36);
-    burst(v, { type: 'highpass', freq: 4000, attack: 0.0005, decay: 0.02, gain: 0.6 });
+    // Steel on steel: a bright FM strike over ringing partials, a hard click, then the blades sliding apart.
+    clang(v, 0, R(470, 560, rand), 0.7, 0.34, { ratio: 2.32, index: 5, partials: [1, 2.32, 3.87, 5.13, 6.8, 8.3] });
+    click(v, 0, 0.55, 4000);
     thump(v, 0, 300, 150, 0.05, 0.3);
-    burst(v, { freq: 5200, q: 1, attack: 0.01, decay: 0.3, gain: 0.05 });
+    burst(v, { at: 0.03, freq: 5200, to: 3000, q: 3, attack: 0.01, decay: 0.25, gain: 0.08 });
   },
   dismember(v) {
     // Wet tearing, a bone snap, a plop and the slurp of what came loose.
     const am = tremolo(v, 0, 0.36, 32, 0.75, v.out);
     burst(v, { noise: 'pink', freq: 2600, to: 380, q: 3.5, attack: 0.004, decay: 0.32, gain: 0.85, dest: am });
-    burst(v, { type: 'highpass', freq: 2500, attack: 0.0005, decay: 0.01, gain: 0.7 });
+    click(v, 0, 0.7, 2500);
     thump(v, 0, 900, 250, 0.03, 0.3);
     thump(v, 0.05, 190, 70, 0.16, 0.6);
     const g = v.gain(0, v.out);
@@ -654,14 +808,14 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     v.glide(o.frequency, 0.08, 700, 180, 0.22);
     v.ad(g.gain, 0.08, 0.02, 0.12, 0.18);
     burst(v, { at: 0.03, freq: 4000, q: 0.7, attack: 0.02, decay: 0.4, gain: 0.1 });
+    splat(v, 0.1, 0.4, 0.3);
   },
   death_splat(v, cue, rand) {
-    // A comic body burst: saturated thump, brown blast, wet sweep, spray, then gibs landing.
+    // A comic body burst: saturated thump, brown blast, a big wet splat, spray, then gibs landing.
     const drv = v.drive(v.out, 2.4, 0.6);
     thump(v, 0, 100, 34, 0.45, 0.85, drv);
     burst(v, { noise: 'brown', type: 'lowpass', freq: 1100, decay: 0.55, gain: 0.6 });
-    const am = tremolo(v, 0, 0.5, 26, 0.6, v.out);
-    burst(v, { noise: 'pink', freq: 1900, to: 280, q: 1.8, attack: 0.003, decay: 0.45, gain: 0.6, dest: am });
+    splat(v, 0, 0.8 + 0.2 * cue.intensity, 0.6);
     burst(v, { at: 0.02, freq: 3500, q: 0.6, attack: 0.03, decay: 0.6, gain: 0.15 });
     const gibs = 4 + Math.round(3 * cue.intensity);
     for (let i = 0; i < gibs; i++) {
@@ -670,6 +824,18 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
       thump(v, at, f, f * 0.45, 0.06, R(0.15, 0.3, rand));
       burst(v, { at, noise: 'pink', freq: 1400, q: 1.2, decay: 0.03, gain: 0.18 });
     }
+  },
+  crush(v, _cue, rand) {
+    // Iron slams, bones give one after another, then the wet part.
+    click(v, 0, 0.55, 2200);
+    thump(v, 0, 85, 28, 0.5, 0.95, v.drive(v.out, 2.8, 0.65));
+    clang(v, 0, 170, 0.7, 0.3, { ratio: 1.41, index: 5, partials: [1, 2.32, 3.87, 5.13] });
+    for (let i = 0; i < 10; i++) {
+      const at = 0.01 + i * 0.022 + rand() * 0.012;
+      burst(v, { at, noise: 'crackle', freq: R(1400, 3600, rand), q: 1.4, attack: 0.0005, decay: R(0.012, 0.03, rand), gain: R(0.3, 0.55, rand) });
+    }
+    splat(v, 0.05, 1, 0.65);
+    tail(v, 0.02, 0.6, 200, 0.4);
   },
   kill_sting(v) {
     // A broadcast stinger: a minor orchestra stab (detuned saws through a closing low-pass), kick and snare.
@@ -686,8 +852,33 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     burst(v, { freq: 1900, q: 0.8, attack: 0.001, decay: 0.18, gain: 0.45 });
     burst(v, { type: 'highpass', freq: 6000, attack: 0.002, decay: 0.28, gain: 0.14 });
   },
+  final_sting(v) {
+    // The match is decided: a long sub boom and a crash, then a big major chord that swells open
+    // and rings out over a gong.
+    click(v, 0, 0.5, 2500);
+    thump(v, 0, 110, 24, 1.5, 0.95, v.drive(v.out, 2.4, 0.7));
+    burst(v, { noise: 'brown', type: 'lowpass', freq: 2000, to: 120, q: 0.7, attack: 0.002, decay: 1.4, gain: 0.6 });
+    crash(v, 0, 2.6, 0.2);
+    const env = v.gain(0, v.out);
+    const drv = v.drive(env, 1.3, 0.85);
+    const lp = v.filter('lowpass', 600, 1.2, drv);
+    path(v, lp.frequency, [[0.02, 600], [0.5, 4200], [3.6, 1500]]);
+    const vib = v.ctx.createGain();
+    vib.gain.value = 6;
+    v.osc('sine', 4.8, 0.3, 3.8, vib);
+    const notes = [73.42, 146.83, 185, 220, 293.66, 440];
+    const each = v.gain(0.55 / Math.sqrt(notes.length * 2), lp);
+    for (const n of notes) {
+      for (const cents of [-7, 7]) {
+        const o = v.osc('sawtooth', n, 0.02, 3.8, each, cents);
+        vib.connect(o.detune);
+      }
+    }
+    v.ahr(env.gain, 0.02, 0.06, 1, 1.6, 2);
+    ring(v, 0.01, 73.42, [1, 1.47, 2.09, 2.56, 3.18], [3.6, 2.8, 2.2, 1.6, 1.2], 0.22);
+  },
   crowd_roar(v, cue, rand) {
-    // The crowd erupts: babble pushed up and brighter, an "ohh" choir swelling, breath, claps, whistles.
+    // The crowd erupts: babble pushed up and brighter, an "oh" choir opening into "ah", breath, claps, whistles.
     const d = cue.intensity;
     const attack = 0.12 + 0.12 * d;
     const hold = 0.5 + 0.9 * d;
@@ -701,19 +892,19 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     v.noise('babble', 0, total + 0.05, babble, 1.1 + 0.14 * d);
 
     const formants = v.gain(1, env);
-    const f1 = v.filter('bandpass', 720, 3, formants);
-    const f2 = v.filter('bandpass', 1180, 4, v.gain(0.6, formants));
+    const f1 = v.filter('bandpass', 520, 3, formants);
+    path(v, f1.frequency, [[0, 520], [attack + 0.15, 760]]);
+    const f2 = v.filter('bandpass', 950, 4, v.gain(0.6, formants));
+    path(v, f2.frequency, [[0, 950], [attack + 0.15, 1180]]);
     const f3 = v.filter('bandpass', 2550, 6, v.gain(0.25, formants));
     const voices = 5 + Math.round(9 * d);
-    const choir = v.gain(1.1 / Math.sqrt(voices), f1);
-    choir.connect(f2);
-    choir.connect(f3);
+    const choirIn = v.gain(1.1 / Math.sqrt(voices), f1);
+    choirIn.connect(f2);
+    choirIn.connect(f3);
     for (let i = 0; i < voices; i++) {
       const f0 = R(125, 330, rand);
-      const o = v.osc('sawtooth', f0 * 0.92, R(0, 0.08, rand), total, choir, R(-20, 20, rand));
-      o.frequency.setValueAtTime(v.f(f0 * 0.92), v.at(0));
-      o.frequency.exponentialRampToValueAtTime(v.f(f0 * (1.05 + 0.12 * d)), v.at(attack + 0.1));
-      o.frequency.exponentialRampToValueAtTime(v.f(f0 * 0.94), v.at(total));
+      const o = v.osc('sawtooth', f0 * 0.92, R(0, 0.08, rand), total, choirIn, R(-20, 20, rand));
+      path(v, o.frequency, [[0, f0 * 0.92], [attack + 0.1, f0 * (1.05 + 0.12 * d)], [total, f0 * 0.94]]);
     }
 
     burst(v, { noise: 'pink', freq: 1000, q: 0.6, attack, decay: hold + release, gain: 0.28 + 0.2 * d, dest: env });
@@ -725,9 +916,7 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
         const f = R(1900, 2300, rand);
         const g = v.gain(0, v.out);
         const o = v.osc('sine', f, at, 0.5, g);
-        o.frequency.setValueAtTime(v.f(f), v.at(at));
-        o.frequency.exponentialRampToValueAtTime(v.f(f * 1.28), v.at(at + 0.14));
-        o.frequency.exponentialRampToValueAtTime(v.f(f * 1.1), v.at(at + 0.45));
+        path(v, o.frequency, [[at, f], [at + 0.14, f * 1.28], [at + 0.45, f * 1.1]]);
         v.ahr(g.gain, at, 0.03, 0.035, 0.25, 0.15);
       }
     }
@@ -735,11 +924,105 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
   explosion(v, cue) {
     const s = cue.intensity;
     const drv = v.drive(v.out, 2.5, 0.75);
+    click(v, 0, 0.5, 2000);
     thump(v, 0, 95, 26, 0.9, 0.9, drv);
     burst(v, { noise: 'brown', type: 'lowpass', freq: 3000, to: 150, q: 0.7, attack: 0.002, decay: 1.2 + 0.4 * s, gain: 0.9 });
     burst(v, { freq: 1500, q: 0.5, attack: 0.0005, decay: 0.04, gain: 0.7 });
     burst(v, { at: 0.05, noise: 'crackle', freq: 2200, q: 0.8, attack: 0.05, decay: 0.9, gain: 0.4 });
     burst(v, { noise: 'brown', type: 'lowpass', freq: 120, attack: 0.1, decay: 1.8, gain: 0.45 + 0.2 * s });
+  },
+
+  // --- the crowd's sparse reactions ---------------------------------------------------------
+  crowd_gasp(v, cue) {
+    // A sharp intake, then a rising-falling "OH!" from a few dozen throats.
+    const d = cue.intensity;
+    burst(v, { noise: 'pink', freq: 1700, to: 2600, q: 0.9, attack: 0.09, decay: 0.05, gain: 0.22 });
+    const env = choir(v, 0.1, 1.05, throats(v, 7 + 6 * d, 150, 340), VOWEL_OH, v.out, (o, f0, at) => {
+      path(v, o.frequency, [[at, f0 * 0.9], [at + 0.12, f0 * 1.18], [at + 1.05, f0 * 0.8]]);
+    });
+    v.ahr(env.gain, 0.1, 0.05, 0.9, 0.12, 0.7);
+    const bg = v.gain(0, v.filter('highpass', 300, 0.7, v.out));
+    v.noise('babble', 0.08, 1.0, bg, 1.15);
+    v.ahr(bg.gain, 0.08, 0.06, 0.3, 0.1, 0.6);
+  },
+  crowd_whistle(v, cue, rand) {
+    // Fingers in mouths: a wolf whistle, or a long rising "wheeet", with breath riding the tone.
+    const whistler = (at: number, base: number, gain: number, wolf: boolean) => {
+      const g = v.gain(0, v.out);
+      const o = v.osc('sine', base, at, 0.95, g);
+      const bg = v.gain(0, v.out);
+      const bp = v.filter('bandpass', base, 9, bg);
+      v.noise('white', at, 0.95, bp);
+      const pts: readonly (readonly [number, number])[] = wolf
+        ? [[at, base * 0.75], [at + 0.22, base * 1.25], [at + 0.3, base * 0.8], [at + 0.5, base * 1.32], [at + 0.85, base * 0.62]]
+        : [[at, base * 0.85], [at + 0.6, base * 1.35], [at + 0.85, base * 1.2]];
+      path(v, o.frequency, pts);
+      path(v, bp.frequency, pts);
+      for (const [param, level] of [[g.gain, gain], [bg.gain, gain * 0.9]] as const) {
+        param.setValueAtTime(0, v.at(at));
+        param.linearRampToValueAtTime(level, v.at(at + 0.03));
+        if (wolf) {
+          param.setValueAtTime(level, v.at(at + 0.2));
+          param.linearRampToValueAtTime(0, v.at(at + 0.26));
+          param.linearRampToValueAtTime(level, v.at(at + 0.33));
+        }
+        param.setValueAtTime(level, v.at(at + 0.72));
+        param.exponentialRampToValueAtTime(level * 1e-3, v.at(at + 0.9));
+      }
+    };
+    const wolf = cue.intensity < 0.5;
+    whistler(0, 2100, 0.16, wolf);
+    if (rand() < 0.5) whistler(R(0.12, 0.3, rand), 2100 * R(0.85, 1.15, rand), 0.07, !wolf);
+  },
+  crowd_boo(v, cue, rand) {
+    // "BOOO... booo": low throats on "oo", sagging in pitch, with the crowd's breath under it.
+    const d = cue.intensity;
+    const boo = (at: number, len: number, level: number) => {
+      const env = choir(v, at, len, throats(v, 9 + 6 * d, 95, 210), VOWEL_OO, v.out, (o, f0, start) => {
+        path(v, o.frequency, [[start, f0 * 1.04], [start + len, f0 * 0.88]]);
+      });
+      v.ahr(env.gain, at, 0.22, level, len * 0.45, len * 0.4);
+    };
+    boo(0, 1.4, 1);
+    if (rand() < 0.6) boo(1.35, 1.2, 0.7);
+    burst(v, { noise: 'pink', freq: 450, q: 0.8, attack: 0.25, decay: 1.6, gain: 0.12 });
+  },
+  crowd_chant(v, cue) {
+    // Two bars of a stadium chant at the round's tempo and style; the second bar louder as more join in.
+    const beat = 1 / chantTempo(cue.intensity);
+    const style = chantStyle(cue.variant);
+    const shout = (at: number, vowel: Vowel, level: number) => {
+      burst(v, { at: Math.max(0, at - 0.03), type: 'highpass', freq: 1500, attack: 0.01, decay: 0.04, gain: 0.12 * level });
+      const env = choir(v, at, 0.32, throats(v, 10, 130, 300), vowel, v.out, (o, f0, start) => {
+        path(v, o.frequency, [[start, f0 * 1.06], [start + 0.3, f0 * 0.9]]);
+      });
+      v.ahr(env.gain, at, 0.015, level, 0.1, 0.16);
+    };
+    const clap = (at: number, level: number) => {
+      burst(v, { at, noise: 'applause', freq: 1700, q: 0.7, attack: 0.003, decay: 0.08, gain: 0.5 * level });
+      burst(v, { at, freq: 1200, q: 1, attack: 0.001, decay: 0.03, gain: 0.25 * level });
+    };
+    const stomp = (at: number, level: number) => {
+      thump(v, at, 95, 45, 0.14, 0.45 * level);
+      burst(v, { at, noise: 'brown', type: 'lowpass', freq: 260, attack: 0.015, decay: 0.12, gain: 0.4 * level });
+    };
+    for (let bar = 0; bar < 2; bar++) {
+      const t = bar * 4 * beat;
+      const lv = bar === 0 ? 0.75 : 1;
+      if (style === 'hey') {
+        for (let b = 0; b < 3; b++) shout(t + b * beat, VOWEL_EH, lv);
+        clap(t + 3 * beat, lv);
+        clap(t + 3.5 * beat, lv);
+      } else if (style === 'clap') {
+        for (const b of [0, 1, 2, 2.5]) clap(t + b * beat, lv);
+        shout(t + 3 * beat, VOWEL_OI, lv);
+      } else {
+        stomp(t, lv);
+        stomp(t + beat, lv);
+        shout(t + 2 * beat, VOWEL_OH, lv);
+        clap(t + 3 * beat, lv);
+      }
+    }
   },
 
   // --- skills -------------------------------------------------------------------------------
@@ -802,7 +1085,7 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
   },
   pickup_ammo(v) {
     ring(v, 0, 2300, [1, 1.52, 2.7], [0.06, 0.05, 0.03], 0.14);
-    burst(v, { type: 'highpass', freq: 3000, attack: 0.0005, decay: 0.015, gain: 0.15 });
+    click(v, 0, 0.15, 3000);
     burst(v, { at: 0.04, freq: 1800, q: 2, attack: 0.0005, decay: 0.02, gain: 0.12 });
   },
   spawn_haste(v) {
@@ -818,16 +1101,30 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     thump(v, 0, 72, 52, 0.5, 0.3);
     burst(v, { noise: 'brown', type: 'lowpass', freq: 300, attack: 0.05, decay: 0.6, gain: 0.2 });
   },
-  heal(v) {
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    for (let i = 0; i < notes.length; i++) bell(v, i * 0.04, notes[i]!, 2, 0.6, 0.9, 0.09);
-    burst(v, { noise: 'pink', freq: 1500, q: 0.7, attack: 0.15, decay: 0.5, gain: 0.06 });
+  heal(v, cue) {
+    // A shimmer: a rising arpeggio of soft bells with chorused twins, fluttering air on top, a warm
+    // swell under it. A shrine's blessing (intensity 1) adds a quiet choir.
+    const holy = cue.intensity;
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+    for (let i = 0; i < notes.length; i++) {
+      bell(v, i * 0.055, notes[i]!, 2, 0.7, 1, 0.075);
+      bell(v, i * 0.055 + 0.008, notes[i]! * 1.004, 3, 0.4, 0.9, 0.04);
+    }
+    const am = tremolo(v, 0.05, 1.2, 13, 0.7, v.out);
+    burst(v, { at: 0.05, freq: 7200, q: 2.5, attack: 0.25, decay: 0.8, gain: 0.09, dest: am });
+    const pad = v.gain(0, v.out);
+    for (const [hz, cents] of [[261.63, -6], [261.63, 6], [392, 0]] as const) v.osc('sine', hz, 0, 1.5, pad, cents);
+    v.ahr(pad.gain, 0, 0.25, 0.05 + 0.05 * holy, 0.3, 0.8);
+    if (holy > 0.7) {
+      const env = choir(v, 0.05, 1.3, [261.63, 392, 523.25, 659.25], VOWEL_AH);
+      v.ahr(env.gain, 0.05, 0.3, 0.12, 0.4, 0.55);
+    }
   },
 
   // --- hazards, props, the wall ---------------------------------------------------------------
   hazard_spike(v) {
     burst(v, { freq: 2500, to: 6000, q: 3, attack: 0.005, decay: 0.12, gain: 0.4 });
-    ring(v, 0, 1500, [1, 1.72, 2.9], [0.2, 0.15, 0.1], 0.12);
+    clang(v, 0, 1500, 0.2, 0.1, { ratio: 1.72, index: 2.5, partials: [1, 1.72, 2.9] });
     thump(v, 0, 200, 120, 0.05, 0.3);
   },
   hazard_saw(v) {
@@ -848,9 +1145,11 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     burst(v, { noise: 'crackle', freq: 3000, q: 0.8, attack: 0.02, decay: 0.4, gain: 0.5 });
   },
   break_keg(v) {
-    burst(v, { noise: 'crackle', freq: 1200, q: 0.9, attack: 0.001, decay: 0.15, gain: 0.6 });
-    burst(v, { noise: 'pink', freq: 600, decay: 0.1, gain: 0.5 });
-    thump(v, 0, 130, 70, 0.1, 0.4);
+    // Staves cracking and a hollow barrel knock.
+    burst(v, { noise: 'crackle', freq: 1200, q: 0.9, attack: 0.001, decay: 0.15, gain: 1.8 });
+    burst(v, { noise: 'pink', freq: 600, decay: 0.1, gain: 1.5 });
+    burst(v, { at: 0.02, freq: 1900, q: 1.5, attack: 0.001, decay: 0.04, gain: 1 });
+    thump(v, 0, 160, 80, 0.1, 0.25);
   },
   break_amphora(v, _cue, rand) {
     // Ceramic shattering: scattered bright partials, a hiss of shards, then the splash.
@@ -860,19 +1159,22 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     burst(v, { at: 0.02, noise: 'pink', freq: 900, q: 0.8, attack: 0.01, decay: 0.25, gain: 0.25 });
   },
   break_crate(v) {
-    burst(v, { noise: 'crackle', freq: 900, q: 0.9, attack: 0.001, decay: 0.12, gain: 0.9 });
-    burst(v, { noise: 'brown', type: 'lowpass', freq: 800, decay: 0.15, gain: 0.7 });
-    for (const at of [0, 0.03, 0.07]) burst(v, { at, freq: 2000, q: 1.5, attack: 0.0005, decay: 0.012, gain: 0.3 });
+    burst(v, { noise: 'crackle', freq: 900, q: 0.9, attack: 0.001, decay: 0.12, gain: 2 });
+    burst(v, { noise: 'brown', type: 'lowpass', freq: 800, decay: 0.15, gain: 0.5 });
+    for (const at of [0, 0.03, 0.07]) burst(v, { at, freq: 2000, q: 1.5, attack: 0.0005, decay: 0.012, gain: 1 });
   },
   wall_grind(v) {
-    // Stone and spikes scraping a fighter along: a gritty low grind with sparks.
-    burst(v, { noise: 'brown', freq: 260, q: 1.3, attack: 0.03, decay: 0.22, gain: 0.55 });
-    const env = v.gain(0, v.out);
-    const am = tremolo(v, 0, 0.3, 13, 0.8, env);
-    const lp = v.filter('lowpass', 300, 1, am);
-    v.osc('sawtooth', 46, 0, 0.3, lp);
-    v.ahr(env.gain, 0, 0.03, 0.25, 0.05, 0.2);
-    burst(v, { noise: 'crackle', freq: 1800, q: 1, attack: 0.01, decay: 0.2, gain: 0.18 });
+    // Meat pressed into the spikes (the engine's grind loop carries the scrape): a squelch and a bone scrape.
+    click(v, 0, 0.5, 3200);
+    burst(v, { noise: 'pink', freq: 1500, to: 420, q: 2.2, attack: 0.004, decay: 0.12, gain: 2 });
+    burst(v, { noise: 'crackle', freq: 2400, q: 1.2, attack: 0.002, decay: 0.08, gain: 1.2 });
+    thump(v, 0, 120, 60, 0.08, 0.12);
+  },
+  zone_burn(v) {
+    // The floor bites everyone: a short sizzle and a pop.
+    burst(v, { type: 'highpass', freq: 4200, attack: 0.008, decay: 0.28, gain: 0.22 });
+    burst(v, { noise: 'crackle', freq: 2600, q: 0.9, attack: 0.004, decay: 0.24, gain: 0.3 });
+    thump(v, 0, 240, 120, 0.05, 0.18);
   },
 
   // --- announcements --------------------------------------------------------------------------
@@ -919,7 +1221,30 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     // Boxing bell: three strikes.
     for (const at of [0, 0.3, 0.6]) {
       ring(v, at, 880, [1, 2.13, 3.48, 4.88, 6.3], [1.1, 0.8, 0.55, 0.35, 0.25], 0.34);
-      burst(v, { at, type: 'highpass', freq: 4000, attack: 0.0005, decay: 0.01, gain: 0.3 });
+      click(v, at, 0.3, 4000);
     }
+  },
+  countdown(v, cue) {
+    // One beat of "3, 2, 1": a deep drum, a click and a struck plate; the cue's pitch climbs per beat.
+    click(v, 0, 0.35, 3000);
+    thump(v, 0, 120, 46, 0.4, 0.9, v.drive(v.out, 2, 0.5));
+    burst(v, { noise: 'brown', type: 'lowpass', freq: 380, attack: 0.002, decay: 0.3, gain: 0.45 });
+    clang(v, 0, 880, 0.5, 0.12 + 0.06 * cue.intensity, { ratio: 1.5, index: 2, partials: [1, 2.01, 3.03] });
+    tail(v, 0.02, 0.6, 180, 0.2);
+  },
+  fight(v) {
+    // FIGHT!: a sub drop, a blast and a crash under a brass power chord that opens and slams shut.
+    click(v, 0, 0.5, 2500);
+    thump(v, 0, 150, 30, 0.9, 0.95, v.drive(v.out, 2.6, 0.7));
+    burst(v, { noise: 'brown', type: 'lowpass', freq: 2600, to: 160, q: 0.7, attack: 0.002, decay: 0.9, gain: 0.7 });
+    crash(v, 0, 1.8, 0.22);
+    const env = v.gain(0, v.out);
+    const drv = v.drive(env, 1.6, 0.8);
+    const lp = v.filter('lowpass', 500, 1.8, drv);
+    path(v, lp.frequency, [[0, 500], [0.04, 4200], [0.8, 900]]);
+    const notes = [73.42, 110, 146.83, 220, 293.66];
+    const each = v.gain(0.5 / Math.sqrt(notes.length * 2), lp);
+    for (const n of notes) for (const cents of [-9, 9]) v.osc('sawtooth', n, 0, 1.2, each, cents);
+    v.ahr(env.gain, 0, 0.008, 1, 0.3, 0.75);
   },
 };

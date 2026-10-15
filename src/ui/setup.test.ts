@@ -9,6 +9,7 @@ import {
   dedupeNames,
   defaultSetup,
   effectiveSquadSize,
+  exhibitionConfig,
   houseRef,
   resolveSlots,
   sanitizeSetup,
@@ -116,7 +117,7 @@ describe('dedupeNames', () => {
 describe('configFromReport', () => {
   const report: MatchReport = {
     seed: 99, mapId: 'pit', format: 'ffa', timeLimitTicks: 3600, suddenDeath: false, friendlyFire: false, ticks: 3000,
-    ending: 'time', suddenDeathStart: null,
+    ending: 'time', suddenDeathStart: null, judges: null,
     roster: [
       { fighterId: 'f0', entrantId: 'e7', name: 'Doug', strategyName: 'Doug', strategyVersion: 1, strategyKey: 'Doug@v1', weapon: 'GREATSWORD', skill: 'DASH', squad: 0, color: '#111' },
       { fighterId: 'f1', entrantId: 'e2', name: 'Mine', strategyName: 'Mine', strategyVersion: 2, strategyKey: 'Mine@v2', weapon: 'GREATSWORD', skill: 'DASH', squad: 1, color: '#222' },
@@ -165,7 +166,7 @@ describe('sanitizeSetup', () => {
 
 describe('buildPool', () => {
   const saved = (name: string, version: number): SavedStrategy => ({
-    id: `${name}@v${version}`, name, version, savedAt: 0, strategy: strat(name, version), code: '',
+    id: `${name}@v${version}`, name, version, savedAt: 0, strategy: strat(name, version), code: '', parentId: null, origin: null,
   });
 
   it('lists house stacks first, then saved strategies newest version first, so the newest is the obvious pick', () => {
@@ -183,5 +184,35 @@ describe('buildPool', () => {
     const p = buildPool([], [saved('Mine', 1), saved('Mine', 2)]);
     const cfg = buildMatchConfig({ ...defaultSetup(1), fighters: 2, slots: [savedRef('Mine@v1'), savedRef('Mine@v2')] }, p);
     expect(cfg.entrants.map((e) => strategyKey(e.strategy))).toEqual(['Mine@v1', 'Mine@v2']);
+  });
+});
+
+describe('exhibitionConfig', () => {
+  const me = strat('Lurking Daggers', 7);
+
+  it('puts the strategy in seat 0 and fills the rest from the field', () => {
+    const c = exhibitionConfig(me, house, 'pit', 8, 42)!;
+    expect(c.entrants).toHaveLength(8);
+    expect(c.entrants[0]!.strategy).toBe(me);
+    expect(c.entrants.slice(1).every((e) => house.includes(e.strategy))).toBe(true);
+  });
+
+  it('shows the same fight every time the same entry is watched', () => {
+    expect(exhibitionConfig(me, house, 'pit', 8, 42)).toEqual(exhibitionConfig(me, house, 'pit', 8, 42));
+    const other = exhibitionConfig(me, house, 'pit', 8, 43)!;
+    expect(other.entrants.map((e) => e.name)).not.toEqual(exhibitionConfig(me, house, 'pit', 8, 42)!.entrants.map((e) => e.name));
+  });
+
+  it('plays gym rules, so the fight looks like the ones evolution measured', () => {
+    expect(exhibitionConfig(me, house, 'catacombs', 4, 1)).toMatchObject({
+      mapId: 'catacombs', format: 'ffa', friendlyFire: true, suddenDeath: true, timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS,
+    });
+  });
+
+  it('never seats the strategy against itself, and gives up when there is nobody else', () => {
+    const c = exhibitionConfig(me, [me, house[0]!], 'pit', 4, 1)!;
+    expect(c.entrants.slice(1).every((e) => e.strategy === house[0])).toBe(true);
+    expect(c.entrants.map((e) => e.name)).toEqual(['Lurking Daggers', 'Gary', 'Gary II', 'Gary III']);
+    expect(exhibitionConfig(me, [me], 'pit', 4, 1)).toBeNull();
   });
 });

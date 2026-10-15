@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TICK_HZ } from '../core';
 import type { GameEvent } from '../core';
+import { FINAL_SECONDS } from './round';
 import { FINAL_MOMENT, FixedStep, KILL_MOMENT, MAX_FRAME_SECONDS, TimeDirector } from './time';
 
 /** Ticks simulated over `seconds` of real time at a display refresh of `hz`. */
@@ -44,7 +45,7 @@ describe('FixedStep', () => {
 
 const kill: GameEvent = {
   type: 'kill', tick: 10, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos: { x: 0, y: 0 }, dir: 0, title: 'SPLIT',
-  killerBehaviour: null, victimBehaviour: 'brawl', weapon: 'GREATSWORD', flags: [], hazard: null,
+  killerBehaviour: null, victimBehaviour: 'brawl', weapon: 'GREATSWORD', flags: [], hazard: null, final: false,
 };
 
 /** Scale per frame for `seconds` of 60 Hz frames. */
@@ -83,6 +84,17 @@ describe('TimeDirector', () => {
     const slowFrames = s.filter((x) => x > 0 && x < 1).length;
     expect(Math.min(...s.filter((x) => x > 0))).toBe(FINAL_MOMENT.scale);
     expect(slowFrames / 60).toBeGreaterThan(KILL_MOMENT.hold + 0.5);
+    expect(s[s.length - 1]).toBe(1);
+  });
+
+  // SPEC round end: the final kill plays in ultra slow motion, and the end card (FINAL_SECONDS later)
+  // must not arrive while the gore still crawls.
+  it('plays the final kill in ultra slow motion that is back to speed when the end card arrives', () => {
+    const d = new TimeDirector();
+    d.onEvents([kill, { type: 'match_end', tick: 10, placements: ['f0', 'f1'], ending: 'elimination' }]);
+    const s = trace(d, FINAL_SECONDS);
+    expect(FINAL_MOMENT.scale).toBeLessThanOrEqual(0.15);
+    expect(s.filter((x) => x > 0 && x <= FINAL_MOMENT.scale).length / 60).toBeGreaterThanOrEqual(2);
     expect(s[s.length - 1]).toBe(1);
   });
 

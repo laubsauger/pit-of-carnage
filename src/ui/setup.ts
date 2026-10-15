@@ -197,6 +197,36 @@ export function configFromReport(report: MatchReport, strategies: readonly Strat
   };
 }
 
+/**
+ * A fresh match for one strategy against a field, gym rules (free-for-all, sudden death, the
+ * standard time limit): the strategy in seat 0, the other seats drawn from the field without
+ * replacement (refilled when it runs out) with the seed, so the same button always shows the same
+ * fight. Used to watch an evolution entry, whose own generation matches are not recorded. Null when
+ * there is nobody to fight.
+ */
+export function exhibitionConfig(strategy: Strategy, field: readonly Strategy[], mapId: string, fighters: number, seed: number): MatchConfig | null {
+  const others = field.filter((s) => strategyKey(s) !== strategyKey(strategy));
+  if (others.length === 0) return null;
+  const n = clamp(Math.round(fighters), MIN_FIGHTERS, MAX_FIGHTERS);
+  const rng = new Rng(seed >>> 0).fork('exhibition');
+  let bag: Strategy[] = [];
+  const lineup: Strategy[] = [strategy];
+  while (lineup.length < n) {
+    if (bag.length === 0) bag = rng.shuffle([...others]);
+    lineup.push(bag.pop() as Strategy);
+  }
+  const names = dedupeNames(lineup.map((s) => s.name));
+  return {
+    seed: seed >>> 0,
+    mapId,
+    format: 'ffa',
+    entrants: lineup.map((s, i) => ({ id: `e${i}`, strategy: s, squad: i, name: names[i], color: FIGHTER_COLORS[i % FIGHTER_COLORS.length] })),
+    friendlyFire: true,
+    timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS,
+    suddenDeath: true,
+  };
+}
+
 /** A fresh seed for "Next match" and the dice button. UI-side randomness is fine (not in the sim). */
 export function randomSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff);

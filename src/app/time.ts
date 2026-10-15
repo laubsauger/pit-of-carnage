@@ -47,8 +47,12 @@ type Moment = { stop: number; scale: number; hold: number };
 
 /** A kill: a beat of hit-stop, then slow motion while the gore flies. */
 export const KILL_MOMENT: Moment = { stop: 0.07, scale: 0.3, hold: 0.35 };
-/** The kill that ends the match gets the longest look. */
-export const FINAL_MOMENT: Moment = { stop: 0.1, scale: 0.2, hold: 1.1 };
+/**
+ * The kill that ends the match: ultra slow motion while the camera eases onto it, back to full
+ * speed just before the end card (round.ts FINAL_SECONDS). The sim has stopped by then; the slow
+ * time is for the gore, the camera and the sound.
+ */
+export const FINAL_MOMENT: Moment = { stop: 0.12, scale: 0.12, hold: 2.1 };
 export const DISMEMBER_MOMENT: Moment = { stop: 0, scale: 0.5, hold: 0.2 };
 export const PARRY_MOMENT: Moment = { stop: 0.04, scale: 0.65, hold: 0.1 };
 /** After the hold, the time scale climbs back to 1 at this rate per real second. */

@@ -52,6 +52,94 @@ describe('projectiles', () => {
     expect(back.s.f('Guard').damageTaken).toBeGreaterThan(0);
   });
 
+  // Players see the orb glow at the staff's tip, the arrow on the bow and an axe in each hand; a
+  // shot that appears from the middle of the body reads as a glitch. The spawn point is the
+  // projectile's fixed `origin` and the `projectile` event's pos, so trails and muzzle flashes
+  // start where the weapon is.
+  it('arrows, orbs and axes leave from the weapon, not from the body', () => {
+    const shots = (weapon: 'LONGBOW' | 'ARCANE_STAFF' | 'THROWING_AXES', count: number) => {
+      const s = stage([
+        { name: 'Shooter', weapon, pos: [400, 196], facing: 0, attributes: SHARP, script: { attack: true } },
+        { name: 'Mark', weapon: 'GREATSWORD', pos: [700, 196], facing: Math.PI, script: { stance: 'guard' } },
+      ]);
+      s.scripts.Shooter!.targetId = s.f('Mark').id;
+      const out: { ahead: number; right: number }[] = [];
+      while (out.length < count && s.match.state.tick < 600) {
+        s.run(1);
+        const f = s.f('Shooter');
+        for (const e of of(s.events, 'projectile').slice(out.length)) {
+          const dx = e.pos.x - f.pos.x;
+          const dy = e.pos.y - f.pos.y;
+          out.push({ ahead: dx * Math.cos(f.facing) + dy * Math.sin(f.facing), right: -dx * Math.sin(f.facing) + dy * Math.cos(f.facing) });
+          const p = s.match.state.projectiles.find((q) => q.id === e.projectileId);
+          if (p) {
+            expect(p.origin).toEqual(e.pos);
+            expect(p.pos).not.toEqual(p.origin);
+          }
+        }
+      }
+      expect(out.length, `${weapon}: only ${out.length} of ${count} shots within 600 ticks`).toBe(count);
+      return out;
+    };
+    // The orb comes off the tip of a long staff held out front, in the right hand.
+    const [orb] = shots('ARCANE_STAFF', 1);
+    expect(orb!.ahead).toBeGreaterThan(65);
+    expect(orb!.right).toBeGreaterThan(12);
+    // The arrow leaves the bow, just in front of the body.
+    const [arrow] = shots('LONGBOW', 1);
+    expect(arrow!.ahead).toBeGreaterThan(8);
+    expect(arrow!.ahead).toBeLessThan(25);
+    expect(Math.abs(arrow!.right)).toBeLessThan(8);
+    // Axes come from alternating hands: four in hand, so left, right, left.
+    const axes = shots('THROWING_AXES', 3);
+    expect(axes.map((a) => Math.sign(a.right))).toEqual([-1, 1, -1]);
+    for (const a of axes) {
+      expect(a.ahead).toBeGreaterThan(8);
+      expect(Math.abs(a.right)).toBeGreaterThan(10);
+    }
+  });
+
+  // A long staff must not shoot through what its tip reaches past: the orb bursts on the wall
+  // between the body and the tip, on the tick it is fired, instead of appearing on the far side.
+  it('a staff reaching past a wall bursts on the wall, not beyond it', () => {
+    // The pit's west gate: the gate wall's lower half spans x 192-214, y 480-620. The mage stands
+    // in the hall facing east through the gate at its mark, but the staff's tip (out front, in the
+    // right hand, so lower on screen) reaches past the end of the wall into the arena.
+    const s = stage([
+      { name: 'Mage', weapon: 'ARCANE_STAFF', pos: [150, 465], facing: 0, attributes: SHARP, script: { attack: true } },
+      { name: 'Mark', weapon: 'GREATSWORD', pos: [280, 465], facing: Math.PI },
+    ]);
+    s.scripts.Mage!.targetId = s.f('Mark').id;
+    while (of(s.events, 'projectile').length === 0 && s.match.state.tick < 200) s.run(1);
+    const shot = of(s.events, 'projectile')[0];
+    expect(shot, 'the mage never fired within 200 ticks').toBeDefined();
+    expect(shot!.pos.x, 'the staff tip should reach past the gate wall').toBeGreaterThan(214);
+    const end = of(s.events, 'projectile_end').find((e) => e.projectileId === shot!.projectileId)!;
+    expect(end.tick).toBe(shot!.tick);
+    expect(end.hitId).toBeNull();
+    // It burst where the staff met the wall, never beyond it.
+    expect(end.pos.x).toBeGreaterThanOrEqual(192 - 1e-6);
+    expect(end.pos.x).toBeLessThanOrEqual(214 + 1e-6);
+    expect(end.pos.y).toBeGreaterThanOrEqual(480 - 1e-6);
+    expect(s.f('Mage').pos).toEqual({ x: 150, y: 465 });
+  });
+
+  // ...and a target standing closer than the staff is long still takes the orb.
+  it('a target inside the staff\'s reach is hit, not shot past', () => {
+    const s = stage([
+      { name: 'Mage', weapon: 'ARCANE_STAFF', pos: [400, 196], facing: 0, attributes: SHARP, script: { attack: true } },
+      { name: 'Hugger', weapon: 'GREATSWORD', pos: [460, 196], facing: Math.PI },
+    ]);
+    s.scripts.Mage!.targetId = s.f('Hugger').id;
+    while (of(s.events, 'projectile').length === 0 && s.match.state.tick < 200) s.run(1);
+    const shot = of(s.events, 'projectile')[0];
+    expect(shot, 'the mage never fired within 200 ticks').toBeDefined();
+    const end = of(s.events, 'projectile_end').find((e) => e.projectileId === shot!.projectileId)!;
+    expect(end.tick).toBe(shot!.tick);
+    expect(end.hitId).toBe(s.f('Hugger').id);
+    expect(s.f('Hugger').damageTaken).toBeGreaterThan(0);
+  });
+
   // Ammo is a resource: spent arrows land on the floor and only come back if you walk over them.
   it('spent arrows land on the floor and must be picked up', () => {
     const s = stage([
@@ -224,7 +312,39 @@ describe('props and hazards', () => {
     expect(hits[0]!.amount).toBe(resolveDamage(HAZARD_RULES.spike.damage, 1, BALANCED));
   });
 
-  it('the sudden-death wall hurts only fighters caught outside it before it closes', () => {
+  // Standing in acid must be an obvious, costly mistake and knocking someone into it a tactic: it
+  // slows you, so you cannot just stroll out. Fire burns but does not hold you.
+  it('acid slows whoever stands in it for as long as they stay; fire does not', () => {
+    // The Smasher swings at the air beside the pit's north amphora; it shatters into a pool around them.
+    const s = stage([
+      { name: 'Smasher', weapon: 'GREATSWORD', pos: [640, 236], facing: 0, script: { attack: true } },
+      { name: 'Parked', weapon: 'GREATSWORD', pos: [680, 760], facing: 0 },
+    ]);
+    const smasher = s.f('Smasher');
+    while (!of(s.events, 'prop_break').some((p) => p.kind === 'amphora') && s.match.state.tick < 120) s.run(1);
+    expect(of(s.events, 'prop_break').some((p) => p.kind === 'amphora'), 'the amphora never broke within 120 ticks').toBe(true);
+    s.scripts.Smasher = {};
+    const firstAcid = of(s.events, 'hit').find((h) => h.source === 'hazard' && h.victimId === smasher.id);
+    expect(firstAcid, 'the Smasher was not burned by the spill').toBeDefined();
+    for (let i = 0; i < 150; i++) {
+      s.run(1);
+      expect(smasher.buffs.slow, `not slowed at tick ${s.match.state.tick} while standing in acid`).toBeGreaterThan(0);
+    }
+    expect(smasher.buffs.slow).toBeLessThanOrEqual(HAZARD_RULES.acid.slowTicks);
+
+    const fire = MAPS.pillar_forest!.hazards.find((h) => h.kind === 'fire')!;
+    const f = stage([
+      { name: 'Burnt', weapon: 'GREATSWORD', pos: [fire.pos.x, fire.pos.y], facing: 0 },
+      { name: 'Parked', weapon: 'GREATSWORD', pos: [680, 300], facing: 0 },
+    ], { mapId: 'pillar_forest' });
+    f.run(100);
+    expect(of(f.events, 'hit').filter((h) => h.source === 'hazard').length).toBeGreaterThan(0);
+    expect(f.f('Burnt').buffs.slow).toBe(0);
+  });
+
+  // Before it closes, the wall only hurts whoever it reaches: the fighter tucked in a corner alcove,
+  // never the one standing in the middle.
+  it('the sudden-death wall hurts only the fighters it reaches before it closes', () => {
     const s = stage(
       [
         { name: 'Corner', weapon: 'GREATSWORD', pos: [60, 60], facing: 0 },
@@ -238,6 +358,8 @@ describe('props and hazards', () => {
     expect(s.f('Corner').damageTaken).toBeGreaterThan(0);
     expect(s.f('Centre').damageTaken).toBe(0);
     expect(of(s.events, 'hit').every((h) => h.source === 'sudden_death' && h.victimId === s.f('Corner').id)).toBe(true);
+    expect(of(s.events, 'wall_contact').length).toBeGreaterThan(0);
+    expect(of(s.events, 'wall_contact').every((c) => c.fighterId === s.f('Corner').id)).toBe(true);
   });
 });
 
@@ -422,7 +544,8 @@ describe('ranged vs melee mechanics', () => {
     expect(Math.abs(turning.facing)).toBeLessThanOrEqual(COMBAT.releaseFacingTolerance);
   });
 
-  // Shots are not free: each flies off the aim line by a random angle, never beyond shotSpread.
+  // Shots are not free: each flies off the aim line by a random angle, never beyond shotSpread. The
+  // aim line runs from the muzzle (the bow), where the arrow leaves, to the target.
   it('spreads shots within shotSpread of the aim line', () => {
     const s = stage([
       { name: 'Archer', weapon: 'LONGBOW', pos: [400, 196], facing: 0, script: { attack: true } },
@@ -433,7 +556,7 @@ describe('ranged vs melee mechanics', () => {
     const shots = of(s.events, 'projectile');
     expect(shots.length).toBeGreaterThanOrEqual(5);
     const limit = shotSpread(0, 300);
-    const offs = shots.map((p) => angleDiff(0, p.dir));
+    const offs = shots.map((p) => angleDiff(Math.atan2(196 - p.pos.y, 700 - p.pos.x), p.dir));
     for (const o of offs) expect(Math.abs(o)).toBeLessThanOrEqual(limit + 1e-9);
     expect(new Set(offs).size).toBeGreaterThan(1);
     // The shield took every one: a parry per shot, no damage.

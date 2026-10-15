@@ -83,14 +83,17 @@ each system properly to a shippable standard, and innovate where something can l
 | `time` | Only with sudden death off: the bell at the time limit, placed by standing. |
 | `capped` | Gym safety stop, 10 s past the hard cap. Never happens in a healthy sim; reports flag it. |
 
-- **Round start:** a "3, 2, 1, FIGHT!" countdown of about 2.5 s, with the fighters' names and glyphs
-  flashing at their spawns. The sim holds until FIGHT; a match never just starts mid-air.
-  **(not built yet)**
-- **Round end:** the final kill plays in slow motion (today a 0.1 s freeze, then x0.2 for 1.1 s).
-  Then **(not built yet)**: ultra slow motion with the camera easing onto the kill, a "WINNER" /
-  game-over stamp in the broadcast voice, and the end card only after the moment has been admired
-  (about 3 s; today 1.6 s). The card slides in from the side and never covers the kill spot. Space
-  or a click skips to it.
+- **Round start:** a "3, 2, 1, FIGHT!" countdown of 2.4 s (three 0.8 s beats), each beat ringing
+  every fighter at its spawn in its colour, with a sound per beat and a FIGHT hit. The sim holds at
+  tick 0 until FIGHT; a match never just starts mid-air. Every new match, restart and gym match opened
+  from its start counts down; Space or a click starts the fight at once. A gym match opened at a kill
+  or a death skips the countdown silently (no FIGHT over a replayed death).
+- **Round end:** the final kill plays in ultra slow motion (a 0.12 s freeze, then x0.12 for 2.1 s,
+  back to full speed just before the card) while the camera eases in close on the kill (about
+  3.4 s) and a "WINNER" stamp with the winner's name in its colour slams in above the kill spot
+  ("JUDGES' DECISION" for a judged ending, "WINNERS" and the squad in squads). The end card slides in
+  from the side 3 s after the final kill and the camera keeps the winner in view beside it. Space or a
+  click skips to it. A match replayed or seeked to its end again goes straight to the card.
 
 ## 3. Sudden death and stalemates
 
@@ -102,7 +105,8 @@ Every match ends with deaths. Hiding or getting stuck can never stall a match.
 | Stalemate | No fighter has damaged another fighter for 15 s. Weapons, skills and kegs count; hazards and the wall do not. |
 | Wall speed | Moves inward 0.25 px per tick on every side. |
 | Final size | Stops when the arena is 90 px from its centre to an edge (centred on the map). |
-| Damage outside | 4 every 10 ticks. |
+| Wall contact | 4 every tick of contact, a push back in, 45 more per tick when pinned (crushed). |
+| Damage outside | 4 every 10 ticks (a backstop; the solid wall keeps everyone inside). |
 | Escalation | When the wall stops, level 1; +1 every second. Each level adds 2 to the wall damage outside. |
 | Everywhere | 5 s after the wall stops, the escalated damage hits fighters inside the zone too. |
 | Saws | Move x1.6 faster. |
@@ -111,17 +115,20 @@ Every match ends with deaths. Hiding or getting stuck can never stall a match.
 - **Judges' decision:** survivors placed by HP fraction left, then damage dealt, then kills; full ties
   keep roster order. Announced in the feed ("The judges give it to Gary, 40% health left."), logged
   in the report and its findings. Never silent.
-- **The closing wall is solid and it hurts.** **(not built yet: today fighters can stand outside the
-  wall; they take the periodic damage above and a small 4 px shove toward the centre.)**
-  - Movement and knockback clamp every fighter inside the playable rectangle.
-  - The advancing wall pushes anyone it reaches inward with a strong knockback impulse every tick of
-    contact, whether they move or not (impenetrable: push, push, push), with a hard clamp as backstop.
-  - Touching it deals contact damage every tick of contact (grinding spikes), with a visible spark
-    and blood effect.
-  - A fighter pinned between the wall and a wall, pillar or prop is crushed: big damage and a
-    "CRUSHED" stamp.
-  - Nobody can ever end up outside it. Test: after sudden death starts, no living fighter is ever
-    outside the bounds for more than one tick.
+- **The closing wall is solid and it hurts.**
+  - Movement and knockback keep every fighter's whole body inside the playable rectangle.
+  - The wall pushes anyone touching it straight back in with a knockback impulse of 10 (before the
+    0.55 knockback scale) every tick of contact, whether they move or not, with a hard clamp as
+    backstop. It also sweeps spent arrows, axes and dropped gear ahead of it, so ammo stays reachable,
+    and Shadowstep cannot land behind it.
+  - Touching it deals 4 damage every tick of contact (grinding spikes), with sparks, a blood smear and
+    a grinding sound (`wall_contact` event).
+  - A fighter pinned between the wall and a wall, pillar or prop is crushed: 45 more damage every
+    pinned tick, kill flag `crushed`, stamp "CRUSHED".
+  - Nobody can ever end up outside it. Tested: after sudden death starts, no living fighter is ever
+    outside the bounds for more than one tick, on all four maps, brawls and wall-walkers included.
+  - The numbers are `MATCH_RULES.wallContactDamage`, `wallPushKnockback` and `wallCrushDamage`. The
+    "Damage outside" row above is now only a backstop.
 - **Strategies can respond:** sensors `sudden_death` (0/1), `zone.distance` (px from me to the
   wall), `zone.time_to_reach` (s until the wall reaches me); place `zone_centre`; zone
   `outside_zone` (outside the arena and the strip the wall reaches within 3 s). Starter behaviour
@@ -236,6 +243,14 @@ Cooldown and windup are in ticks; projectile speeds are before the 0.65 speed sc
 
 ### Projectiles
 
+**Stuck arrows and axes (not built yet).** Projectiles that hit a wall, pillar or prop stick into it
+at the impact point and angle (a thunk, a little quiver, dust), instead of bouncing and dropping.
+They stay retrievable: a fighter recovers one by walking up to that spot (the pickup point sits just
+in front of the surface). Arrows and axes that hit a fighter stick in the body (comic pincushion,
+capped number shown) and drop to the floor as pickups when that fighter dies; until then that ammo is
+out of play. Misses that reach open floor skid and lie there as today. The balance pass checks the
+bow's ammo economy with this rule (more arrows or a slow quiver refill if needed).
+
 - A projectile stops at the first wall, pillar, prop, closing wall or fighter in its path. Any
   fighter: crowds take stray shots. It flies up to range x1.15, then drops.
 - Spent arrows and axes land on the floor and must be walked over to take back. The staff
@@ -244,8 +259,10 @@ Cooldown and windup are in ticks; projectile speeds are before the 0.65 speed sc
 - Shields: a greatsword or warhammer user in `guard` stance (with its left arm, not stunned) blocks
   projectiles arriving within a 1.6 rad arc of facing. A blocked orb still bursts on the shield; its
   splash spares the bearer.
-- Every projectile spawns from its weapon's muzzle point (staff tip, bow string, throwing hand).
-  **(not built yet: projectiles spawn from the fighter's centre.)**
+- Every projectile spawns from its weapon's muzzle point (staff tip about 80 px ahead in the right
+  hand, bow string, throwing hand; axes alternate hands) and aims from there. The stretch from body to
+  muzzle is checked first, so a staff tip past a thin wall bursts on the wall and an enemy inside the
+  staff's reach is still hit. `ProjectileState.origin` is the muzzle point.
 
 ### Skills
 
@@ -285,6 +302,27 @@ Kiting is easy and closing in is hard, so the numbers must make melee worth it.
   targets hold.)**
 
 ### Core balance and expressiveness pass (not built yet)
+
+User observations to start from (watching live matches after pass 1):
+
+- **Longbow struggles.** Archers must walk to recover arrows and seem to do too little damage, while
+  staff users dance around them and regenerate. Candidates: more arrows per quiver or a slow quiver
+  refill, higher arrow damage or crit chance, arrows that pierce one body; the bow should reward
+  standing still and aiming.
+- **Staff too safe.** Slow its orbs so they can be dodged and body-blocked, cap mana so regeneration
+  is a real pause, and make it plant to cast like the bow.
+- **Twin daggers / Brenda From Accounts overpowered.** The user sees her attack so fast that
+  opponents have no chance. Numbers today: 16 damage every 18 ticks before haste (about 3-4 swings a
+  second), +43% from her 18 power, backstab x2.35, SHADOWSTEP to get behind, a 36 px lunge, move x1.15
+  and turn x1.38. Check how haste shortens the cooldown, whether backstab and lunge stack with
+  shadowstep too well, and give daggers a real weakness (low reach, no block, fragile).
+- **The Unpaid Intern camps.** It survives by hiding and rarely matters. Treat it as the first
+  candidate for automated per-strategy tuning (below).
+- **Automated per-strategy tuning.** A gym tool (`npm run tune <strategy>`) that improves one
+  strategy only through its JSON (weights, thresholds, ranges, attributes, behaviour choices from the
+  library), never by changing the engine: local search over many seeded FFAs against the current
+  field, keeping the strategy's identity and niche, reporting before/after placement and win share.
+  The roster pipeline uses the same tool for every house strategy.
 
 Treat the current numbers as untested. The user sees the arcane staff dominate: it fires too often
 and too fast, and nobody has an answer. A dedicated pass, measured with the harness:
@@ -381,13 +419,16 @@ Power-ups must matter: strong, short, visible, and worth a detour.
   times, 3 kills while berserk"; skill buffs do not count). Findings flag strategies that never take
   one when one was up, and matches where nobody touched them.
 
-### Shrine readability (not built yet)
+### Shrine readability
 
 The shrine is not a capture point: a wounded fighter touching it (34 px) heals 42% of max HP at once,
 then it recharges for 320 ticks. Players must be able to see that: a ready shrine pulses and glows, a
 ring fills while it recharges, a use shows a green heal burst, a "+N" heal number and a feed line
-("Gary patched up at the shrine"). Every map object (shrine, pickups, kegs, acid, saws, spikes) has a
-hover card with what it does and its current state ("Recharging, 3.2 s"). A centre "crowd favour"
+("Gary patched up at the shrine, 86 health back."). Built as: a heartbeat throb with a heal cross and
+green floor light when ready, a drain burst on use, a dark refilling basin with runes lighting up one
+by one while it recharges. Every map object (shrine, pedestals, kegs, amphoras, crates, acid, saws,
+spikes, fire) has a hover card with what it does, in seconds, and its live state ("Recharging, 3.2 s",
+"Back in 7.5 s", "Thrusts in 0.8 s", "18 of 32 HP", "Dries up in 4.1 s"). A centre "crowd favour"
 zone is an optional idea for the balance pass, not a default.
 
 ### Hazards
@@ -396,11 +437,11 @@ zone is an optional idea for the balance pass, not a default.
 | --- | --- |
 | Spike trap | Thrusts at 88% of its 165-tick cycle for 36 damage. Holes glow red over the last 30% of the cycle. |
 | Saw blade | Rolls along its track; 22 damage every 12 ticks to anyone it touches. x1.6 faster in sudden death. |
-| Acid pool | 11 damage every 24 ticks while you stand in it. Spilled pools dry up after 400 ticks. |
+| Acid pool | 11 damage every 24 ticks and a slow (x0.6 speed for 40 ticks after each damage tick) while you stand in it. Spilled pools dry up after 400 ticks. |
 | Fire pit | 9 damage every 20 ticks while you stand in it. Also a light source. |
 
-- **Acid reads as acid and hurts.** **(not met yet: today the pool is a translucent green blob with a
-  glowing rim, and acid only deals the damage above.)**
+- **Acid reads as acid and hurts.** **(not met yet: the look and the slow are built; the damage is
+  still 11 every 24 ticks, to be raised in the balance pass.)**
   - Look: an opaque, sunken liquid, darker toward the centre, a slowly churning surface, bubbles
     that rise and pop, a few bright glints, thin toxic fumes, a corroded scorched rim, only a faint
     glow. Blood and floor never show through.
@@ -630,20 +671,34 @@ Knowing a strategy lost is useless without seeing why. Every gym match is determ
 them can be rebuilt exactly.
 
 - **Watch from anywhere.** Each match row in a batch report has Watch (same seed, same fight in the
-  arena). **(not built yet:)** Watch on each evolution archive entry; one-click "Watch worst loss",
-  "Watch best win" and "Watch a typical match" for the selected strategy; opening a match straight at
-  a chosen kill or at the candidate's death, with the timeline pre-filtered to the candidate.
-- **Back to the gym.** The watch view shows which batch it came from and returns to the same report.
-  **(not built yet)**
-- **More numbers per fighter, for humans and LLMs** **(not built yet**, beyond the report fields
-  above): distance travelled, accuracy, damage dealt and taken per second while engaged, time to
-  first contact, ticks idle or stuck, time near walls and in the sudden-death zone, skill hit rate,
-  kill participation, and a coarse position heatmap per map (drawn in the UI,
-  summarised in words for the LLM: "spent 62% of the match in the dark corners").
-- **Compare.** Two strategies or two versions side by side over the same seeds, with the numbers
-  above and their heatmaps. **(not built yet)**
+  arena), and expands to per-fighter numbers with Watch at any kill or death. One-click "Watch worst
+  loss", "Watch best win" and "Watch a typical match" for the selected strategy (the gym's
+  `pickMatches`) open just before the moment, with the candidate selected and the timeline
+  pre-filtered to it. Evolution generations and archive entries have Watch too. **(not met yet: an
+  archive entry plays a fresh deterministic match against the run's field, not the generation's own
+  match, because generation reports do not record their matches.)**
+- **Back to the gym.** The watch view shows which report it came from ("Test report, match 7 of 20")
+  and returns to the same row, flashing it.
+- **More numbers per fighter, for humans and LLMs** (beyond the report fields above): distance
+  travelled, accuracy, damage dealt and taken per second while engaged, time to first contact, ticks
+  idle or stuck (stuck = wanted to move but could not), time near walls and outside the zone, skill
+  hit rate, assists and kill participation, and a coarse position heatmap per map (drawn in the UI,
+  summarised in words for the LLM: "corners 62%, sides 30%, centre 8%; busiest spot: the north-west
+  corner"). Habit findings call out camping, getting stuck, never fighting and a favourite spot. The
+  words do not say "dark": shadow time is reported on its own ("in shadow 26%").
+- **Compare.** Two strategies or two versions side by side over exactly the same seeds, maps,
+  opponents and seat (they never meet; not rated), with the numbers above, their heatmaps, the finish
+  on each seed and Watch for either side ("Compare two" in the Test tab; `compareToText` for the LLM).
 
 ### Ratings
+
+**Showing a rating (not met yet).** The gym report appends a faint "?" after some ratings: it means
+"provisional, few rated matches", but nothing explains it (the native title tooltip is easy to miss)
+and it shifts the digits. Rule: ratings sit in a right-aligned column with tabular figures so digits
+line up; uncertainty is shown, not hinted: "1240 ±85" with the ± part muted; a provisional rating gets
+a small leading "new" marker in its own fixed-width slot before the number, with a proper hover card
+("Provisional: rated from 3 matches. Settles after about 10."). Every symbol in the UI has a hover
+explanation; no bare glyphs.
 
 - openskill (Plackett-Luce over FFA placements; one team per squad). New strategies start at mu 25,
   sigma 25/3. Ordinal = mu - 3 x sigma, used for sorting. Shown as `round(1000 + ordinal x 40)`, so a
@@ -734,7 +789,8 @@ and expressiveness pass (section 6).
 
 One TSL `RenderPipeline`: bloom on emissive only (fire, sparks, orbs), vignette, a light film grain,
 and a brief kill punch (chromatic split and contrast kick, about 0.3 s). The kill punch must not
-tint the screen red at high speed. **(not met yet: at 4x the punch tints the screen red.)**
+tint the screen red at high speed: a real-time envelope allows a full punch only after a quiet
+stretch (the final kill always gets one), and the red edge grade multiplies instead of adding red.
 
 ### Hits: weight without rumble
 
@@ -747,10 +803,14 @@ sparks or spray coloured by the weapon, and the HP bar chip. The camera stays ca
 Every ordinary hit, melee or ranged, gets a similar, modest impact sized by its damage. The big
 moments are reserved for crits, kills, backstabs and explosions, for every weapon: crits get a sharp
 flash and extra spray, kills the full death burst. Spells keep their colour identity, not extra size.
-**(not met yet: projectile impacts are sized by weapon type, and a normal staff hit still looks like
-fireworks.)**
+Built: `impactSize` sizes every hit by its damage; a staff orb's burst is no bigger than an arrow
+or axe hit.
 
 ### Projectiles and their impacts
+
+**Spell colour comes from the fighter.** Every caster's spell colour is derived from its fighter
+colour (same hue, brighter and more saturated): staff tip glow, orb, trail, light on the floor and
+impact all use it, so a spell always says who cast it.
 
 Each projectile has its own colour and impact, and its trail uses the same colour, so a hit reads at
 a glance. Never one shared grey smoke puff.
@@ -759,10 +819,28 @@ a glance. Never one shared grey smoke puff.
 | --- | --- |
 | Arrow | Fletching in the shooter's colour; amber trail; wood splinters and a small spray. |
 | Thrown axe | Spinning, steel trail; metallic sparks and a clang flash. |
-| Staff orb | A spell colour per caster (from the fighter's colour) for the orb, trail, halo, floor light, burst and ring. The staff's own tip glow uses the caster's spell colour too **(not met yet: the tip glow is a fixed purple)**. |
+| Staff orb | A spell colour per caster (from the fighter's colour) for the orb, trail, halo, floor light, burst and ring. The staff's own tip glow uses the caster's spell colour too. |
 | Keg | Orange fireball, hot core, rings, embers, smoke and a scorch mark. |
 
 ### Blood and gore
+
+**Blood is stored as data, not colour.** The floor decal target holds, per texel, blood density,
+wet density, tone-weighted density (each as exp(-x), so stamps add up exactly) and soot. The floor
+shader (`goreFloor`, render-fx) maps them through one blood gradient: arterial red, deep red, dark
+maroon, with a darkness floor (#2c0809) and a minimum light on blood, a faint red view-independent
+gloss on wet blood, no noise, and the cool gameplay-shadow tint on the bare floor only. Pass 1's grey
+haze came from an additive wet sheen with baked noise, the shadow tint on blood and stamps
+multiplying toward near black; all three are gone.
+
+Acceptance (met, `docs/screenshots/pass2-render-fx-overlap.png`): a heavily overlapped area, in
+torchlight and in shadow, shows only reds and maroons, no grey, no blue cast and no noise pattern.
+
+**Blood ages (user feedback).** Fresh blood starts a little less bright than now (deep arterial red,
+not neon) with a slight wet gloss; over about 30 s of game time it darkens and dries toward a deep
+dried maroon-brown, never grey. New blood landing on old must stand out clearly, so even late in a
+long match you can see where the latest hits landed. Wetness is stored per texel with the density
+and dries with a 10 s half-life (in 0.5 s steps), so a fresh splat over old blood makes that spot
+fresh again.
 
 Comic excess, not realism. Carnage is the default blood setting.
 
@@ -786,19 +864,16 @@ Comic excess, not realism. Carnage is the default blood setting.
     density and age, accumulated with a clamped or max blend) and let the floor shader map density and
     age through one blood gradient (bright arterial red, deep red, dark maroon, never grey or
     black-grey) with a darkness floor. Verify with a screenshot of a heavily overlapped area.
-    **(not met yet: stamps multiply into the target; a floor clamp keeps it from pure black, but the
-    user still sees grey-black where blood overlaps.)**
   - **Drying darkens, never greys.** Drying shifts toward deep maroon and near-black brown, loses the
     wet highlight and some saturation, and keeps the splat's shape. No grey, no blotchy noise.
-    **(not met yet: only the wet highlight dries; the colour never shifts.)**
   - **Reads from straight above.** The wet highlight is subtle and view-independent, splat masks never
     show a repeating pattern (no screen-aligned noise), and dried blood never looks metallic.
-  - **Readable on every floor.** **(not met yet: blood barely shows on the dark Catacombs floor.)**
+  - **Readable on every floor.** Blood replaces the floor albedo by coverage instead of multiplying
+    it, so it reads the same red on sand, flagstone (the dark Catacombs included) and flesh.
 - **Dismemberment bleeds.** When a limb comes off both pieces spray: the flying limb trails blood and
   the stump spurts. The stump keeps bleeding for several seconds (pulsing spurts that weaken), then
   drips wherever the fighter walks, so a maimed fighter is easy to read and leaves a track.
-  **(not met yet: the stump spurts for only about 1 s before it drips, and the flying limb marks the
-  floor where it lands and slides but does not spray in flight.)** Bleed damage over time is a
+  Built: the flying limb trails blood; the stump spurts for 4.6 s, then drips. Bleed damage over time is a
   balance-pass decision (section 6).
 - **Gibs bleed where they land.** A landed gib, above all intestines, oozes a small pool that grows
   for a second or two under it (today 1.7 s; intestines leave the largest pool).
@@ -809,16 +884,15 @@ Comic excess, not realism. Carnage is the default blood setting.
   readable at 1x, but out of the way. Smaller text, spawned offset above the kill spot (not on the
   body), a quick elastic pop, then within about 0.6 s they shrink and float upward while fading, gone
   by about 1.2 s. Several stamps stack upward instead of overlapping. A screen-space size cap keeps
-  zooming in from making them huge. **(not met yet: stamps are 13% of the view height and last
-  2.15 s.)**
+  zooming in from making them huge. Built: 40-60 CSS px tall at any zoom, gone at 1.2 s.
 - **Damage numbers** (on by default): small, short-lived (under 1 s), in the attacker's colour, crits
   bigger with "!", backstabs labelled. They stack on the victim's flank and never overlap its name
   tag or HP bar; a quick series from one attacker merges. Numbers of different victims standing close
-  together never overlap. **(not met yet.)**
+  together never overlap.
 - **Barks:** rare and small. Default "key moments" (spawn, kill, low HP, skill, death); "all" adds hits
   and taunts. At most one bark per fighter every 8 s and at most two bubbles on screen; lines show at
   most about five words; small bubbles that fade in about 1.5 s and dodge each other and the name
-  tags. Bubbles stay put once placed. **(not met yet: bubbles jump when they dodge.)**
+  tags. Bubbles stay put once placed (they glide up only when something moves into them).
 
 ### Blood amount
 
@@ -834,24 +908,27 @@ splatter, drips, stamp sizes, gib count). Cosmetic only; the sim is unaffected.
 - Cues for every swing, release, hit (by weapon, plus crit and backstab), projectile stop, parry,
   dismemberment, death, kill (stepped up for multi-kills and the final kill), crowd roar, explosion,
   skill, footstep (wet in blood), pickup and respawn, heal, hazard, breaking prop, the sudden-death
-  wall grind and the match signals (horn, escalation, gong, bell).
+  wall grind (a continuous grind loop while anyone touches it, a crush cue for CRUSHED, a sizzle when
+  the whole floor bites), the match signals (horn, escalation, gong, bell) and the round beats
+  (countdown 3, 2, 1, the FIGHT hit, the final-kill sting, played once whether the kill or the
+  signal arrives first).
 - A mixer with voice limits per group, throttling, ducking, a limiter and a soft clipper, so 16
   fighters never clip.
 - Slow motion pitches sound down tape-style and closes a lowpass; announcer signals are not bent.
 - Volume from the view settings; M mutes.
-- **Crowd that breathes.** **(not met yet: the murmur is too loud, constant and identical every
-  round.)** The bed is much quieter, swells with action intensity (hits, low-HP fighters, close
+- **Crowd that breathes.** The bed is much quieter, swells with action intensity (hits, low-HP fighters, close
   fights) and falls nearly silent in lulls. Its texture, density and pitch vary per round (seeded).
   Occasional sparse reactions (gasps, whistles, boos at campers, chants on a streak) instead of a
-  loop. Kills and the final kill get the big roars.
+  loop. Kills and the final kill get the big roars. Built and measured offline (levels, spectra,
+  real matches through the cue mapping); **(not met yet: nobody has listened to it.)**
 
 ## 14. UI
 
 ### Shell
 
 - Three screens as top tabs (URL hash): **Watch** (arena full-bleed, thin overlays), **Gym**
-  (strategy editor, batches, evolution, reports), **Room** (leaderboard from local results; online
-  rooms "coming later"). Leaving Watch pauses the match.
+  (strategy editor, batches, evolution, reports), **Room** (online rooms, section 15, and the
+  leaderboard from local results). Leaving Watch pauses the match.
 - Palette: stone neutrals `#0e0d0c`, `#161412`, `#1f1c19`, `#2a2622`, `#3a352f` (and `#4d463e`),
   text `#e8e2d9` and dim `#a39a8e`, one accent: blood red `#c4302b`. Fighter colours: the 16
   `FIGHTER_COLORS`, high chroma, colour-blind-aware, no blood red.
@@ -860,44 +937,57 @@ splatter, drips, stamp sizes, gib count). Cosmetic only; the sim is unaffected.
 - Without WebGPU the Watch screen shows "The arena needs WebGPU" with the reason and a link to the
   Gym.
 
-### Splash and loading (not built yet)
+### Splash and loading
 
 Assets are in `public/brand/` (originals from Codex image generation in `docs/brand/`).
 
 - A static splash in `index.html` shows instantly, before any script: `splash.webp` as a cover
   background with a dark vignette, `wordmark.webp` centred (blended so its dark backdrop disappears),
   a progress bar and rotating comedic status lines ("Sharpening blades...", "Mopping yesterday's floor...").
-- Progress follows real stages: bundle loaded, WebGPU check, renderer init and shader warm-up, audio
-  ready, match ready.
+- Progress follows real stages: bundle loaded, WebGPU check, renderer init (three.js and the
+  renderer load as their own chunk) and shader warm-up, audio ready, match ready.
 - An "Enter the pit" button (Enter and Space too) is the first user gesture, so audio starts with it;
   the splash then fades into the round-start countdown.
+- Nothing plays behind the splash: the match is built but does not simulate, animate or make sound
+  until the player enters and the countdown reaches FIGHT. The controller holds the sim at tick 0
+  and passes a time factor of 0 to the renderer and sound until "Enter the pit".
 - Without WebGPU the splash shows a clear message naming supported browsers instead of the button.
 - `index.html` head: favicons (`brand/favicon-16/32/48.png`), apple-touch icon, `site.webmanifest`,
   theme colour `#0e0d0c`, Open Graph and Twitter card tags with the absolute image URL
   `https://laubsauger.github.io/pit-of-carnage/brand/og-image.jpg`. All paths work under `BASE_PATH`.
 - The emblem appears in the app chrome; the wordmark on menus and the end card where it fits.
 
-### Background jobs (not built yet)
+### Background jobs
 
 A running evolution or batch shows a small chip with a progress ring in the top bar on every screen
 ("Evolving: gen 4 of 20"); clicking it returns to the job. Jobs keep running while the user watches
-matches or edits strategies.
+matches or edits strategies. On the Watch screen the match clock owns the top bar's centre, so the
+chip shows only its count there ("37/100", the full line in its tooltip).
 
 ### Watch HUD
 
 - **Scoreboard** (top left): alive first (by kills), dead greyed with their place; squads grouped.
   Click selects, double-click follows.
 - **Match clock** (top centre): play/pause, time, state ("N standing", "Sudden death in m:ss",
-  "Sudden death", "Paused", "Final"), speed presets 0.25x-4x.
+  "Sudden death", "Paused", "Final"), speed presets 0.25x-4x. A room's match shows "Room, live"
+  instead of play/pause and speeds (the host runs it).
 - **Kill feed** (right): short broadcast lines with names in their colours, fading after a few
   seconds. Each line links to its timeline mark (hover pulses it, click replays it).
 - **Timeline** (bottom), **hover card**, **inspector**: below.
 - **View** button (gear) and **Reset camera** in a quiet corner.
 
-### Dead fighters (not met yet)
+### Dead fighters
 
 Dead fighters get no hover card and cannot be picked in the arena; hovering a corpse shows nothing.
 They stay inspectable from the scoreboard, the kill feed and the end card.
+
+### Cinematic view (not built yet)
+
+The scoreboard (top left) and the kill feed (top right) each collapse to a small tab at their edge
+and reopen from it; the state persists. A cinematic toggle (key `V`, and a button) hides all HUD
+chrome at once except the match clock, leaving the arena full screen; any HUD key or the toggle brings
+it back. On narrow screens (phones, below about 760 px wide) scoreboard and feed start collapsed and
+the timeline shrinks to a thin bar.
 
 ### Keyboard (Watch)
 
@@ -905,13 +995,14 @@ They stay inspectable from the scoreboard, the kill feed and the end card.
 | --- | --- |
 | Tab / Shift+Tab | Cycle the selected fighter (living, scoreboard order) |
 | F | Follow the selected fighter / release |
-| Space | Pause / play |
+| Space | Pause / play; during the countdown or the final moment, skip ahead |
 | ← / → | Step one think (6 ticks) back or forward; with Shift, one second |
 | 1-5 | Speed 0.25x, 0.5x, 1x, 2x, 4x |
 | End | Back to live |
 | Esc | Deselect, then unfollow; closes the end card |
 | C | Reset camera |
-| I | Open the full-screen fighter overview **(not built yet)** |
+| I | Open the full-screen fighter overview |
+| ? | Open the Codex (every screen) |
 | T, B, N, A, K | Name tags, HP bars, damage numbers, barks (off / key / all), kill stamps |
 | V, R, O, H | Vision cones (off / selected / all), steering ring and target line, fog of war, hearing ripples |
 | S, M | Screen shake, mute |
@@ -948,11 +1039,10 @@ The timeline and click-to-replay are liked; they must be explorable.
 - **Colour-coded.** Each mark is filled with the colour of the fighter who caused it (killer for
   kills, attacker for big hits and lost limbs, taker for power-ups; neutral for hazards and sudden
   death). The shape is the event type: diamond kill (a size up), downward wedge lost limb, dot big hit
-  (45+ damage), ringed dot power-up, bar sudden death.
+  (45+ damage), filled four-point star power-up, bar sudden death.
 - **Always readable.** Every mark is solid, filled with the fighter colour, has a dark outline that
   separates it from the track, sits above the track line and has a minimum size; no hollow rings or
-  tiny dots inside circles. Shapes stay distinguishable at a glance. **(not met yet: the power-up
-  mark is a ring with a dot, and in lanes, events done to that lane's fighter are hollow.)**
+  tiny dots inside circles. Shapes stay distinguishable at a glance.
 - **Dense moments cluster** without overlapping: up to three shapes stack, the rest show as "+n".
 - **Hover tells the story.** A tooltip shows the time and the event as a sentence with names in their
   fighter colours ("0:42 Gary backstabbed Brenda, twin daggers, from shadow."), plus each side's
@@ -972,10 +1062,10 @@ marked, and action chips (attacking, skill, parry, throttle); the steering ring 
 small ring; "What it knows" (seen, heard, remembered with distance); power-ups and zone; guard
 trips; sensors; the fight so far; the build with attribute bars and derived stats.
 
-- The inspector must not cover the arena's action: the camera framing accounts for the panel.
-  **(not met yet: it covers the right side of the arena.)**
+- The inspector must not cover the arena's action: the panels report what they cover
+  (`setViewInsets`) and the camera frames, follows and eases moments inside the uncovered part.
 
-### Full-screen fighter overview (not built yet)
+### Full-screen fighter overview
 
 Watching needs the sidebar; reviewing a strategy needs a full view. An "Expand" button on the
 inspector (and key I) opens a full-screen overview of the selected fighter, reusing the inspector's
@@ -991,36 +1081,71 @@ parts in a roomier layout. Esc closes it.
 - Attributes chart, build, damage dealt and taken by source, the fighter's own event log.
 - A picture-in-picture arena view that follows the fighter, so the match stays visible.
 
+Built, with two gaps: the target-score column appears only when a brain reports per-enemy target
+scores (no `Decision` field carries them yet), and damage by source is the report's split, so during
+the match it shows totals.
+
 ### End card
+
+**"Next match" keeps the lineup (not met yet).** Today "Next match" restarts from the saved match
+setup with a new seed, so a fighter the player just brought in (from the editor, gym or import) drops
+out. Rule: the current lineup is whatever the last match used, from any source; "Next match" repeats
+it with a new seed (and the next map if a map rotation is on). Every way of bringing a fighter into
+the pit updates the match setup, so the setup panel always shows the lineup that will play next.
+Fighters the player added are marked as theirs and stay pinned until removed; "Shuffle field" refills
+only the unpinned slots from the house stacks.
+
+**Victory moment (not built yet:** the WINNER stamp and the camera easing onto the final kill are
+built (section 2); the pose, spotlight, dimming and the quiet end card are not). After the final
+kill's slow motion, the camera eases in on the winner, who strikes a victory pose (weapon raised, a little hop or flex per weapon class, a taunt
+bark) under a warm spotlight while the rest of the arena dims; confetti-of-gore optional. The crowd
+gives one big roar and then quiets down; when the end card is up, combat sounds and the crowd bed
+stop (only a soft, low ambience or silence remains). Nothing keeps rumbling after a match is over.
 
 - Shows the winner ("Gary takes the Pit."), build or squad, kills, damage, HP left, match time, up to
   three findings, every placing with how they went out, and Next match, Watch again, Copy report for
   LLM.
 - Timing and motion: section 2, "Round end".
-- **Inspect anyone.** **(not built yet)** On the end card (and the scoreboard after a match), click any
+- **Inspect anyone.** On the end card (and the scoreboard after a match), click any
   fighter, the winner first in line, to open its full strategy sheet: the full-screen overview from
   this match (stats, behaviour usage, heatmap, kills) plus the strategy itself (visual view and JSON)
   with "Copy strategy code" and "Open in gym". Visible to everyone for now, for debugging and
   learning. Later, rooms get a setting for whether rivals' strategies are revealed after a match
-  (strategy theft is a real concern); keep the reveal behind one flag so that decision stays cheap.
+  (strategy theft is a real concern); keep the reveal behind one flag (`REVEAL_RIVAL_STRATEGIES`) so
+  that decision stays cheap. A room's match never shows the strategies (they never leave the host).
 
 ### Strategy editor
+
+**LLM prompt interviews the player.** "Copy LLM prompt" makes the model ask the player first (name and
+personality, plan, weapon and skill or "pick for me", whom to beat and how much risk, optional colour
+and glyph, each with suggestions) and wait for the answers; examples in the rulebook are syntax only
+and must never be copied. With a strategy open and no goal, the model first asks whether to design a
+brand-new fighter or improve this one. The prompt never sets `version`. Built in `src/strategy/prompt.ts`
+(`mode: 'new' | 'improve'`); the editor should offer two buttons, "New fighter with an LLM" and
+"Improve this with an LLM" (not built yet).
 
 - JSON editing with live validation, a problem list ("Checks") with line, column and path that jumps
   to the spot, a status bar with the issue under the caret, a point-budget meter, "What the build
   gives you" (derived stats), version list (load, delete), Save version (Cmd/Ctrl+S), Format, Copy
   LLM prompt (rulebook + strategy + latest report, or a fix-these-errors goal when the draft is
   broken), Copy code, Import, Test in gym, Watch it fight.
-- **Diagnostics in place.** Errors and warnings differ in colour and icon (today: a wavy red
-  underline and a dotted grey one, coloured gutter line numbers). Hovering a gutter marker or the
+- **Diagnostics in place.** Errors and warnings differ in colour and icon (an error is a red circle
+  with a wavy underline, a warning an amber triangle with a dotted underline). Hovering a gutter marker or the
   underline shows that issue's message and suggested fix in a tooltip at the spot; several issues on
-  one line stack in one tooltip. Clicking an entry in the problem list jumps to the spot and flashes
-  it. **(not built yet: tooltips, icons, flash.)**
+  one line stack in one tooltip, with a one-click fix from "did you mean" ("Use enemies_seen").
+  Clicking an entry in the problem list jumps to the spot and flashes it in the code and the builder.
 - **CodeMirror 6** (`@codemirror/lang-json`, `@codemirror/lint` for gutter markers, underlines and
   hover tooltips) instead of the hand-made textarea overlay, with autocompletion and hover docs for
-  vocabulary words straight from the registry, so the editor teaches the language. **(not built yet)**
+  vocabulary words straight from the registry, so the editor teaches the language. Completion knows
+  the slot under the caret (`it.*` only in the target expression, places with their arguments). It
+  loads as its own chunk when the code view first opens.
 
-### Strategy builder: visual and code, both ways (not built yet)
+### Strategy builder: visual and code, both ways
+
+The strategy text stays the single source of truth: the visual builder writes minimal edits to it,
+so the player's formatting and undo survive. Views: Visual, Split, Code (persisted). **(not met yet:
+numbers can be scrubbed in the visual builder only, not in the code view; behaviours and move terms
+cannot be reordered.)**
 
 - **Two-way editing.** A visual editor and the code editor edit the same strategy; a change in either
   updates the other immediately. Visual parts: attribute sliders with the budget meter and colour
@@ -1038,6 +1163,47 @@ parts in a roomier layout. Esc closes it.
   thinks, every sensor, place, zone, term, policy, attribute, weapon, skill, map, limit and formula,
   searchable, with the starter library as worked examples. Learning the game should be fun.
 
+### Versions and the library (not built yet)
+
+Saves already record their origin (`editor`, `import`, `evolution` with generation); nothing else
+below is built. Today the store silently renumbers: saving a strategy whose JSON says `version: 140` stores it as
+"latest saved version of that name + 1", and the editor then shows "v2", so it is unclear what was
+saved and from where. One clear model:
+
+- **Version numbers belong to the library**, are per name, monotonic and assigned on save. The JSON
+  `version` field is overwritten on save and never trusted on import; the editor always shows the
+  library number.
+- **Origin is separate from version.** Each saved version records its parent (the version it was
+  edited from) and its source (editor, import, evolution with generation, room). An evolved build
+  reads "Slurpy Hawk v4, evolved from v3, generation 140", never "v140".
+- **The editor states its base.** Header: "Editing Slurpy Hawk, based on v3 (saved 17:42)", an
+  unsaved-changes dot, and the Save button says what will happen ("Save as v4"). After saving, a toast
+  confirms "Saved Slurpy Hawk v4 (from v3)".
+- **Name collisions ask.** Importing or saving under a name that exists from a different lineage
+  offers "Add as new version of Slurpy Hawk" or "Save as new strategy" (with a suggested new name).
+- **History panel.** Every version with time, source, parent and a short diff of what changed
+  (attributes, behaviours, weights); "Load this version" and "Compare with current".
+
+### Codex everywhere
+
+The Codex is always one step away: a "Codex" entry in the top bar on every screen, the key `?`, and
+deep links. Every hover card (editor words, attributes, sensors, map objects, weapons, skills,
+inspector rows) has a "Open in Codex" link that opens the Codex at that entry. Entries have stable
+URL anchors (`#codex/sensor/target.visible`), so a link can be shared and opens the right page; Esc
+returns to where the player was. Built: the top-bar entry, `?`, the anchors (opening over whatever
+screen is showing) and Esc; the editor's hover cards link in. **(not met yet: map-object cards,
+inspector rows and attribute charts have no "Open in Codex" link.)**
+
+### Quick matchup (not built yet)
+
+Setting up a fight from files on disk must be low friction:
+- "Add fighter" opens a slot where the player drops a `.json` file, pastes JSON or a strategy code,
+  or picks a saved or house strategy; it goes through the gate and shows errors in place. "Add next"
+  repeats. Dropping several JSON files onto the arena or the setup panel adds them all at once.
+- Rules sit next to the lineup: map, format (free-for-all, squads with size, duel), fighter count
+  (house stacks fill the rest unless turned off), time limit and sudden death, seed.
+- "Fight" starts it. The lineup stays for "Next match" (see End card).
+
 ### Import
 
 Drag and drop `.json` files (onto the dialog or the editor), pick files, or paste text or a strategy
@@ -1045,33 +1211,48 @@ code. The dialog shows each entry's report (errors, warnings, line and column) b
 saved. Errors block; warnings can be accepted ("Open with 2 warnings"). Save to library or open in
 the editor. Export is "Copy code".
 
-### Resizable panes (not built yet)
+### Resizable panes
 
 Side panels (scoreboard, inspector, editor, gym panels) get drag handles on their inner edge, with
-min and max widths so nothing wraps badly; double-click a handle to reset; widths persist per screen
-in localStorage. Panels can collapse to a thin rail. The arena canvas resizes live with them
-(`renderer.resize`), without a frame of stretched content.
+min and max widths so nothing wraps badly; double-click a handle to reset (arrow keys nudge it);
+widths persist per pane in localStorage (`poc.pane.<id>`). Panels can collapse to a thin rail. On the
+Watch screen the panels float over a full-bleed canvas that never resizes (so there is never a frame
+of stretched content) and report what they cover, so the camera frames the action in the part that
+shows (see DECISIONS). **(not met yet: the editor's side panel has no handle yet.)**
 
-### Attribute display (not built yet)
+### Attribute display
 
 - **Colour-coded attributes.** Each of the six attributes has one fixed, muted hue used everywhere
   it appears (inspector, hover card, editor budget meter, roster cards, reports): vitality red, power
   orange, agility green, perception cyan, armor steel, haste amber. Labels stay readable without
-  colour (name plus number). Muted, so fighter colours still dominate the arena.
-- **Taller distribution chart.** Today the attribute view is a thin strip and builds look alike. Give
-  it about 60-80 px for bars, values on hover, so two builds' distributions differ at a glance;
-  compare against the 40-point maximum, not the build's own maximum.
+  colour (name plus number). Muted, so fighter colours still dominate the arena. One table
+  (`ATTRIBUTE_COLORS`) and the matching `--attr-<name>` theme tokens; a test keeps them equal.
+- **Taller distribution chart.** About 60-80 px for bars, values shown, so two builds' distributions
+  differ at a glance; compared against the 40-point maximum, not the build's own maximum.
 
-## 15. Multiplayer prototype (not built yet)
+## 15. Multiplayer prototype
 
-A WebRTC peer-to-peer prototype (Trystero, no backend) to find out whether multiplayer is worth more
-time, before any server work. Host-authoritative: the host simulates and streams state; peers watch.
+A WebRTC peer-to-peer prototype (Trystero over public Nostr relays, no backend) to find out whether
+multiplayer is worth more time, before any server work. Host-authoritative: the host simulates and
+streams state; peers watch.
 
-- Create a room, share a 4-6 letter code, friends join.
-- Everyone drops strategies into the pool (gated on arrival, source `network`).
-- The host runs back-to-back matches and streams state; peers watch.
-- A per-room leaderboard.
-- Keep it small and honest about limits: no session browser, TURN may be needed on strict networks.
+- Create a room, share a 5-letter code (no I or O) or an invite link (`?room=CODE#room`), friends
+  join. A host can reopen a room it hosted (pool and board come back); a guest that reloads rejoins
+  as the same member.
+- Everyone drops strategies into the pool (up to 3 each, 24 in all, 8 people), gated again on the
+  host with source `network`. Others see only a strategy's name, weapon and skill, never the strategy.
+  House stacks fill empty seats and play while the pool is empty.
+- The host runs back-to-back matches and streams them (about 20 frames a second, events in between,
+  its slow motion included); everyone, the host too, watches the stream: on the room's radar or in the
+  full arena ("Watch in the arena": renderer, sound and HUD, a beat behind the host), with the same
+  countdown, final moment and end card as a local match. Playback controls do nothing there.
+- Every message is checked (types, ranges, lengths, ids; unknown fields dropped), peers are
+  rate-limited and anyone pretending to be the host is ignored.
+- A per-room leaderboard (openskill, kept by the host).
+- Small and honest about its limits, and the room screen says so: no session browser, strict
+  networks need a TURN relay this prototype lacks, the host's tab runs everything.
+  **(not met yet: the inspector shows no decisions or knowledge for a streamed match; a guest who
+  joins mid-match sees no gore from before it joined; only tested with two tabs on one machine.)**
 
 ## 16. Copy and voice
 
@@ -1089,6 +1270,6 @@ verb, emoji everywhere) reads generic. Write like a dry, funny sports broadcast.
   RAMPAGE), specials (OWN GOAL, BACKSTAB, COLLATERAL, NEVER SAW IT, OVERKILL), then by weapon (SPLIT,
   FLATTENED, PERFORATED, AXED, PINNED, VAPORIZED, ...), hazard (SAWED, SKEWERED, DISSOLVED, TOASTED),
   skill, keg (KABOOM), friendly fire, sudden death (CLOSED IN), reflect (RETURN TO SENDER), revenge
-  (PAYBACK) and clutch (BY A HAIR). Crushing by the wall stamps CRUSHED **(not built yet)**.
+  (PAYBACK) and clutch (BY A HAIR). Crushing by the wall stamps CRUSHED.
 - **Announcer lines** for sudden death, the wall stopping, damage everywhere, judges' decisions and
   power-ups coming back ("Berserk is up.").

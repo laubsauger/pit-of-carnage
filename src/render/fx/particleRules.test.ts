@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GRAVITY, PK, bloodLanding } from './particleRules';
-import { DRYING, GORE_FLOOR, bloodColor, dryFraction, hexToLinear, srgbToLinear } from './palette';
+import { bloodColor, hexToLinear, srgbToLinear } from './palette';
 
 describe('blood drop landing prediction', () => {
   // Footprints use the CPU prediction of where drops land; it must match where the GPU kernel
@@ -30,9 +30,9 @@ describe('blood drop landing prediction', () => {
 
 describe('blood palette', () => {
   const c = { r: 0, g: 0, b: 0 };
-  // Gore is a multiply colour: fresh arterial blood must stay redder and brighter than clotted blood,
-  // and blood must always kill green/blue far more than red (or it reads as mud).
-  it('runs from near-black maroon to bright arterial red', () => {
+  // Blood in the air (drops, mist): fresh arterial blood must be redder and brighter than clotted
+  // blood, and always far more red than green or blue (or it reads as mud).
+  it('runs from dark maroon to bright arterial red', () => {
     const old = { ...bloodColor(c, 0) };
     const fresh = { ...bloodColor(c, 1) };
     expect(fresh.r).toBeGreaterThan(old.r * 4);
@@ -56,29 +56,5 @@ describe('blood palette', () => {
     expect(c.r).toBeCloseTo(srgbToLinear(0xf2), 6);
     hexToLinear(c, 'nope');
     expect(c.r).toBeCloseTo(0.2, 6);
-  });
-});
-
-describe('drying blood', () => {
-  // Old, trampled blood used to multiply down to black; with the floor's sheen on top that read as
-  // grey blotches. The clamp floor must be a deep maroon: dark, but clearly red, never neutral.
-  it('bottoms out at a deep maroon, not black or grey', () => {
-    expect(GORE_FLOOR.r).toBeGreaterThan(GORE_FLOOR.g * 8);
-    expect(GORE_FLOOR.r).toBeGreaterThan(GORE_FLOOR.b * 8);
-    expect(GORE_FLOOR.r).toBeGreaterThan(0.03);
-    expect(GORE_FLOOR.r).toBeLessThan(0.15);
-    // Fresh blood must stay well above the floor, or the clamp would flatten every splat.
-    const fresh = bloodColor({ r: 0, g: 0, b: 0 }, 1);
-    expect(fresh.r).toBeGreaterThan(GORE_FLOOR.r * 4);
-  });
-
-  // The wet sheen dries off over seconds of game time; the colour itself never fades.
-  it('dries the wet sheen with the configured half-life, frame-rate independent', () => {
-    expect(dryFraction(0)).toBe(0);
-    expect(dryFraction(DRYING.wetHalfLife)).toBeCloseTo(0.5, 9);
-    let wet = 1;
-    for (let i = 0; i < 60 * DRYING.wetHalfLife; i++) wet *= 1 - dryFraction(1 / 60);
-    expect(wet).toBeCloseTo(0.5, 6);
-    expect(DRYING.wetHalfLife).toBeLessThan(30);
   });
 });

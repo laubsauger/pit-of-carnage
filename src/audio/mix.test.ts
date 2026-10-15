@@ -224,6 +224,16 @@ describe('PauseDetector', () => {
     }
   });
 
+  // The countdown holds the sim at tick 0; its beats must sound even if the time factor reads 0.
+  it('stays unpaused through a hold, then pauses once time keeps standing still', () => {
+    const d = new PauseDetector();
+    expect(run(d, 1, 0)).toBe(true);
+    d.hold(1.5);
+    expect(d.paused).toBe(false);
+    expect(run(d, 1.4, 0)).toBe(false);
+    expect(run(d, 0.2, 0)).toBe(true);
+  });
+
   it('pauses when time stays stopped and resumes on the first running frame', () => {
     const d = new PauseDetector();
     expect(run(d, 0.5, 0)).toBe(true);
