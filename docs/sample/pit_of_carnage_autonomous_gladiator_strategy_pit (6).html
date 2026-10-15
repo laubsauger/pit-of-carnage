@@ -1,0 +1,2467 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PIT OF CARNAGE — Vision Cones, Fog of War & Live Co-Evolution Pit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                        comic: ['Bangers', 'cursive']
+                    },
+                    colors: {
+                        pitbg: '#08070C',
+                        pitpanel: '#12101B',
+                        pitcard: '#1B1828',
+                        pitborder: '#2E2946'
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        * { box-sizing: border-box; user-select: none; }
+        body { background: #08070C; color: #F8FAFC; overflow: hidden; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #0D0B14; }
+        ::-webkit-scrollbar-thumb { background: #3B3358; border-radius: 9999px; }
+        input[type="range"] { accent-color: #F43F5E; cursor: pointer; }
+        @keyframes pulseGlow {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5); }
+            50% { box-shadow: 0 0 18px 4px rgba(244, 63, 94, 0.55); }
+        }
+        .evo-pulse { animation: pulseGlow 2s infinite; }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col font-sans antialiased">
+
+    <!-- TOP COMMAND BAR -->
+    <header class="h-13 shrink-0 bg-pitpanel border-b border-pitborder px-3 py-1.5 flex items-center justify-between gap-2 z-30">
+        <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-600 to-amber-500 flex items-center justify-center font-comic text-xl shadow">⚔️</div>
+            <div>
+                <h1 class="font-comic text-lg tracking-wider bg-gradient-to-r from-rose-400 via-amber-300 to-rose-400 bg-clip-text text-transparent leading-none">PIT OF CARNAGE</h1>
+                <p class="text-[9px] font-mono text-slate-400">48-RAY VISION CONES • FOG OF WAR • STEALTH AMBUSH • LIVE CO-EVOLUTION</p>
+            </div>
+        </div>
+
+        <!-- Match Format & 5 Tactical Maps -->
+        <div class="flex items-center gap-1.5 bg-pitbg/90 px-2 py-1 rounded-xl border border-pitborder">
+            <select id="formatSelect" class="bg-pitcard text-xs font-mono font-bold text-amber-300 px-2 py-1 rounded-lg border border-slate-700 focus:outline-none">
+                <option value="1v1">1v1 Duel</option>
+                <option value="2v2" selected>2v2 Squads</option>
+                <option value="3v3">3v3 Warband</option>
+                <option value="4v4">4v4 Carnage</option>
+                <option value="FFA">6-Bot FFA</option>
+            </select>
+            <select id="mapSelect" class="bg-pitcard text-xs font-mono text-slate-200 px-2 py-1 rounded-lg border border-slate-700 focus:outline-none">
+                <option value="proving_grounds" selected>⚔️ #1: Pure Proving Grounds (Pillars & Shrines Only)</option>
+                <option value="catacombs">🏛️ #2: Catacombs of the Blind King (Stealth Chambers)</option>
+                <option value="spike_pit">⚙️ #3: The Gnashing Spike Pit (3D Spike Grates)</option>
+                <option value="alchemist_vault">🛢️ #4: Alchemist's Powder Keg Vault (Explosive Props)</option>
+                <option value="abattoir">🪚 #5: Chaos Butcher's Abattoir (Saws + Grates + Kegs)</option>
+            </select>
+            <button id="respawnBtn" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition">⚔️ Fight!</button>
+            <button id="randomAllBtn" class="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-300 text-xs font-bold transition">🎲 Mutate</button>
+            <button id="cleanBloodBtn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono transition" title="Mop Blood & Reset Props">🧽 Mop</button>
+        </div>
+
+        <!-- Live Team Banner -->
+        <div id="scoreHud" class="hidden xl:flex items-center gap-2 bg-pitbg/90 px-3 py-1 rounded-xl border border-pitborder font-mono text-xs"></div>
+
+        <!-- Vision / Fog of War Mode & Sub-Frame Speed Controls -->
+        <div class="flex items-center gap-1.5">
+            <select id="visionModeSelect" class="bg-emerald-950/80 text-emerald-300 border border-emerald-500/50 text-[11px] font-mono font-bold px-2 py-1 rounded-lg focus:outline-none" title="Vision Cone & Fog of War Mode">
+                <option value="cones" selected>👁️ Tactical Cones</option>
+                <option value="fog">🌫️ Strict Selected POV (Fog)</option>
+                <option value="clear">☀️ Omniscient Clear</option>
+            </select>
+            <button id="toggleVectorsBtn" class="px-2 py-1 rounded-lg bg-sky-500/20 border border-sky-400/40 text-sky-300 text-[11px] font-mono font-bold">🎯 RAYS: ON</button>
+            <div class="flex items-center bg-pitbg rounded-xl p-0.5 border border-pitborder text-[11px] font-mono">
+                <button id="playPauseBtn" class="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold mr-0.5">⏸</button>
+                <button id="stepFrameBtn" class="px-1.5 py-1 rounded-lg hover:bg-slate-800 text-amber-300 font-bold mr-0.5" title="Step +1 Frame">+1f</button>
+                <button data-speed="0.1" class="spd-btn px-1.5 py-1 rounded-lg text-slate-400">0.1x</button>
+                <button data-speed="0.25" class="spd-btn px-1.5 py-1 rounded-lg text-slate-400">0.25x</button>
+                <button data-speed="0.5" class="spd-btn px-1.5 py-1 rounded-lg text-slate-400">0.5x</button>
+                <button data-speed="1" class="spd-btn px-1.5 py-1 rounded-lg bg-rose-600 text-white font-bold">1x</button>
+                <button data-speed="2" class="spd-btn px-1.5 py-1 rounded-lg text-slate-400">2x</button>
+                <button data-speed="4" class="spd-btn px-1.5 py-1 rounded-lg text-slate-400">4x</button>
+            </div>
+            <button id="sfxBtn" class="px-2 py-1 rounded-lg bg-pitcard border border-pitborder text-slate-300 text-xs">🔊</button>
+        </div>
+    </header>
+
+    <!-- MAIN 3-COLUMN WORKSPACE -->
+    <div class="flex-1 flex overflow-hidden">
+
+        <!-- LEFT SIDEBAR: ROSTER & COLOR-CODED PLAY-BY-PLAY FEED -->
+        <aside class="w-64 shrink-0 bg-pitpanel border-r border-pitborder flex flex-col z-20">
+            <div class="p-2.5 border-b border-pitborder flex items-center justify-between">
+                <span class="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">Gladiator Roster</span>
+                <span id="aliveBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">4 Alive</span>
+            </div>
+            <div id="rosterList" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
+
+            <div class="h-56 border-t border-pitborder flex flex-col bg-pitbg/60">
+                <div class="px-2.5 py-1.5 border-b border-pitborder flex items-center justify-between">
+                    <span class="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-bold">🩸 Play-by-Play Feed</span>
+                    <button id="clearLogBtn" class="text-[10px] font-mono text-slate-500 hover:text-slate-300">Clear</button>
+                </div>
+                <div id="combatLog" class="flex-1 overflow-y-auto p-2 space-y-1 font-mono text-[11px]"></div>
+            </div>
+        </aside>
+
+        <!-- CENTER: RETINA 2.5D ARENA VIEWPORT -->
+        <main class="flex-1 flex flex-col bg-pitbg relative overflow-hidden">
+            <div id="canvasWrap" class="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing">
+                <canvas id="arenaCanvas" class="block w-full h-full"></canvas>
+
+                <!-- Selected Gladiator Live Telemetry HUD -->
+                <div id="selectedHud" class="absolute top-3 left-3 bg-pitpanel/90 backdrop-blur-md border border-pitborder rounded-xl p-2.5 w-68 pointer-events-none shadow-xl"></div>
+
+                <!-- Live Evolution Broadcast Banner (Top Center) -->
+                <div id="evoBroadcastBanner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 bg-gradient-to-r from-purple-950/95 via-slate-900/95 to-rose-950/95 backdrop-blur-md border-2 border-amber-400/80 rounded-2xl px-4 py-1.5 text-center shadow-2xl pointer-events-none z-20 min-w-[400px] evo-pulse">
+                    <div id="evoBroadcastTag" class="text-[9px] font-mono font-extrabold uppercase tracking-widest text-amber-300">🧬 NEW CHALLENGER ENTERING THE PIT!</div>
+                    <div id="evoBroadcastTitle" class="font-comic text-lg tracking-wide text-white">APEX vs CHALLENGER</div>
+                    <div id="evoBroadcastSub" class="text-[10px] font-mono text-emerald-300">Live 60FPS Arena Showcase</div>
+                </div>
+
+                <!-- Match Winner Modal -->
+                <div id="winnerBanner" class="hidden absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-sm z-30">
+                    <div class="bg-pitpanel border-2 border-amber-400/80 rounded-2xl px-7 py-5 text-center shadow-2xl max-w-md">
+                        <div class="text-xs font-mono uppercase tracking-widest text-amber-300 mb-1">Carnage Complete</div>
+                        <h2 id="winnerTitle" class="font-comic text-4xl tracking-wider text-white mb-1">RED SQUAD WINS!</h2>
+                        <p id="winnerSub" class="text-xs font-mono text-slate-300 mb-4"></p>
+                        <div class="flex items-center justify-center gap-2">
+                            <button id="rematchBtn" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs">⚔️ Instant Rematch</button>
+                            <button id="mutateRematchBtn" class="px-4 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-300 font-bold text-xs">🎲 Mutate & Fight</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Legend Pill -->
+                <div class="absolute bottom-2.5 left-2.5 bg-pitpanel/90 backdrop-blur px-3 py-1 rounded-lg border border-pitborder text-[10px] font-mono text-slate-300 flex items-center gap-3 pointer-events-none">
+                    <span>👁️ <b>Vision Cone:</b> Raycasted LOS</span>
+                    <span>👻 <b>Ghost:</b> Last Seen Pos</span>
+                    <span>🔉 <b>Ring:</b> 360° Hearing</span>
+                    <span>🧱 <b>Pillar Hide:</b> Ambush</span>
+                </div>
+            </div>
+
+            <!-- Bottom Timeline Replay Scrubber -->
+            <div class="h-9 bg-pitpanel border-t border-pitborder px-3 flex items-center gap-3 z-20">
+                <span class="text-[10px] font-mono uppercase text-slate-400">Replay Scrubber</span>
+                <input id="replaySlider" type="range" min="0" max="0" value="0" class="flex-1 h-1.5 bg-slate-800 rounded-lg">
+                <span id="tickLabel" class="text-[11px] font-mono text-amber-300 w-24 text-right">Tick 0</span>
+            </div>
+        </main>
+
+        <!-- RIGHT DOCK: SIM & EVOLVE LAB + STRATEGY DSL FORGE + JSON -->
+        <aside class="w-96 shrink-0 bg-pitpanel border-l border-pitborder flex flex-col z-20">
+            <div class="grid grid-cols-3 border-b border-pitborder bg-pitbg/60 text-xs font-mono font-bold">
+                <button data-tab="sim" class="tab-btn py-2.5 border-b-2 border-rose-500 text-rose-400">🧬 Sim & Evolve</button>
+                <button data-tab="forge" class="tab-btn py-2.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">🎛️ DSL Forge</button>
+                <button data-tab="json" class="tab-btn py-2.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">🤖 LLM JSON</button>
+            </div>
+
+            <!-- TAB 1: SIM & EVOLVE LAB -->
+            <div id="tab-sim" class="flex-1 overflow-y-auto p-3 space-y-3">
+                <div class="bg-gradient-to-br from-purple-950/70 via-pitcard to-rose-950/50 p-3 rounded-xl border border-purple-500/50 space-y-2 shadow-lg">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-amber-300">♾️ Live Arena Co-Evolution Showcase</div>
+                            <p class="text-[10px] font-mono text-slate-300">Non-blocking background breeder + live 60FPS arena bouts</p>
+                        </div>
+                        <span id="poolCountBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 border border-purple-400/40 text-purple-200 font-bold">6 Pool</span>
+                    </div>
+
+                    <button id="toggleAutoEvoBtn" class="w-full py-2 rounded-xl bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-500 hover:to-rose-500 text-white text-xs font-extrabold tracking-wide shadow transition">
+                        ▶️ Start Continuous Auto-Evolution Loop
+                    </button>
+
+                    <select id="liveEvoModeSelect" class="w-full bg-pitbg text-[11px] font-mono text-slate-200 p-1.5 rounded-lg border border-purple-500/40">
+                        <option value="exhibition" selected>👑 Watch Apex vs Challenger Exhibition</option>
+                        <option value="live_trial">🧪 Watch Every Candidate Live Trial on Screen</option>
+                    </select>
+
+                    <div class="p-2 rounded-lg bg-pitbg/90 border border-purple-500/30 font-mono text-[10px] space-y-1">
+                        <div class="flex justify-between text-slate-400">
+                            <span id="evoPhaseLabel">Status: Idle</span>
+                            <span id="evoGenCount" class="text-amber-300 font-bold">Gen 0</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                            <div id="evoProgressBar" class="h-full bg-gradient-to-r from-purple-400 to-amber-400 w-0 transition-all duration-200"></div>
+                        </div>
+                        <div id="evoLastAction" class="text-emerald-300 truncate">Breeds vision, stealth, kiting & parry counters.</div>
+                    </div>
+                </div>
+
+                <!-- Manual Matchup Controls -->
+                <div class="bg-pitcard p-3 rounded-xl border border-pitborder space-y-2">
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[10px] font-mono text-rose-400">RED CHALLENGER</label>
+                            <select id="simRedSelect" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded-lg border border-slate-700"></select>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-mono text-sky-400">BLUE CHALLENGER</label>
+                            <select id="simBlueSelect" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded-lg border border-slate-700"></select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1.5 pt-1">
+                        <button id="watchMatchupBtn" class="py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold">👁️ Watch Live</button>
+                        <button id="run10BoutsBtn" class="py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-300 text-xs font-bold">⚡ Sim 12 Bouts</button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1.5">
+                        <button id="matrixSweepBtn" class="py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-300 text-xs font-bold">📊 Meta Matrix</button>
+                        <button id="evolveCounterBtn" class="py-1.5 rounded-lg bg-purple-500/25 hover:bg-purple-500/35 border border-purple-400/50 text-purple-200 text-xs font-bold">🧬 Evolve 1 Counter</button>
+                    </div>
+                    <div id="simSummaryBox" class="text-[11px] font-mono text-slate-300 bg-pitbg/80 p-2 rounded-lg border border-pitborder">
+                        Select contenders or run the Continuous Auto-Evolution Loop.
+                    </div>
+                </div>
+
+                <!-- Dynamic All-vs-All Matrix -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-mono uppercase tracking-wider text-amber-300 font-bold">Dynamic All-vs-All Matrix (%)</span>
+                        <span id="matrixSizeLabel" class="text-[9px] font-mono text-slate-400">Includes Evolved</span>
+                    </div>
+                    <div id="matrixTableWrap" class="overflow-x-auto text-[10px] font-mono"></div>
+                </div>
+
+                <!-- Live ELO Standings -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">🏆 ELO Leaderboard</span>
+                        <button id="resetEloBtn" class="text-[10px] font-mono text-slate-400 hover:text-white">Reset Pool</button>
+                    </div>
+                    <div id="eloList" class="space-y-1"></div>
+                </div>
+            </div>
+
+            <!-- TAB 2: VISUAL STRATEGY & STEALTH DSL FORGE -->
+            <div id="tab-forge" class="hidden flex-1 overflow-y-auto p-3 space-y-3">
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder">
+                    <div class="text-[10px] font-mono uppercase text-slate-400 mb-1.5">1-Click Archetype Stamp (Selected Bot)</div>
+                    <div id="archetypeStampers" class="grid grid-cols-2 gap-1"></div>
+                </div>
+
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-2">
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[10px] font-mono text-slate-400">GLADIATOR NAME</label>
+                            <input id="unitNameInput" type="text" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-slate-700 text-white">
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-mono text-slate-400">WEAPON RIG</label>
+                            <select id="unitWeaponSelect" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-slate-700 text-amber-300"></select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-mono uppercase text-slate-400 font-bold">RPG Attributes (100 Pt Budget)</span>
+                        <span id="budgetBadge" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">100 / 100</span>
+                    </div>
+                    <div id="attrSliders" class="space-y-1.5"></div>
+                </div>
+
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <span class="text-[10px] font-mono uppercase text-amber-400 font-bold block">Tactical & Stealth Positioning DSL</span>
+                    <div id="dslSliders" class="space-y-1.5"></div>
+                </div>
+            </div>
+
+            <!-- TAB 3: RAW LLM JSON STRATEGY SCHEMA -->
+            <div id="tab-json" class="hidden flex-1 flex flex-col p-3 space-y-2 overflow-hidden">
+                <p class="text-[11px] text-slate-400">Edit or paste any structured Gladiator Strategy JSON (including `pillarHideWeight` and `stealthAmbush`).</p>
+                <textarea id="jsonEditor" spellcheck="false" class="flex-1 w-full bg-pitbg font-mono text-[11px] text-emerald-300 p-2.5 rounded-xl border border-pitborder focus:outline-none resize-none"></textarea>
+                <div class="flex gap-2">
+                    <button id="applyJsonBtn" class="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">✅ Apply JSON to Selected</button>
+                    <button id="copyJsonBtn" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono text-xs">📋 Copy</button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <div id="toast" class="fixed bottom-4 right-4 bg-pitcard border border-amber-400/60 text-amber-200 px-3.5 py-2 rounded-xl text-xs font-mono shadow-2xl opacity-0 pointer-events-none transition-opacity duration-200 z-50"></div>
+
+    <script>
+        /***********************************************************************
+         * 1. WEAPONS, ARCHETYPES & 5 TACTICAL ARENA MAPS
+         ***********************************************************************/
+        const WORLD_W = 1360;
+        const WORLD_H = 860;
+        const NUM_RAYS = 16;
+
+        const TEAM_COLORS = [
+            { name: "RED",   hex: "#F43F5E", light: "#FDA4AF" },
+            { name: "BLUE",  hex: "#38BDF8", light: "#BAE6FD" },
+            { name: "GOLD",  hex: "#FBBF24", light: "#FDE68A" },
+            { name: "GREEN", hex: "#10B981", light: "#A7F3D0" },
+            { name: "VIOLET",hex: "#A855F7", light: "#E9D5FF" },
+            { name: "ORANGE",hex: "#FB923C", light: "#FED7AA" }
+        ];
+
+        const WEAPONS = {
+            GREATSWORD:    { name: "Claymore Greatsword", type: "melee",  range: 74,  dmg: 28, windup: 14, strikeDuration: 11, recovery: 15, cd: 38, knockback: 11, arc: 2.0, speedMod: 0.96, turnMod: 0.84, visionBonus: 0,  fov: 1.95, helm: "horns" },
+            WARHAMMER:     { name: "Spiked Maul & Shield", type: "melee",  range: 66,  dmg: 32, windup: 17, strikeDuration: 11, recovery: 18, cd: 45, knockback: 19, arc: 1.7, speedMod: 0.91, turnMod: 0.78, stunTicks: 24, visionBonus: -15, fov: 1.80, helm: "knight" },
+            TWIN_DAGGERS:  { name: "Shadow Kris Daggers", type: "melee",  range: 54,  dmg: 14, windup: 5,  strikeDuration: 7,  recovery: 6,  cd: 16, knockback: 4,  arc: 1.35,speedMod: 1.18, turnMod: 1.38, backstabMult: 2.35, visionBonus: 35, fov: 2.25, helm: "ninja" },
+            THROWING_AXES: { name: "Dual Bearded Axes",   type: "ranged", range: 270, dmg: 18, windup: 8,  strikeDuration: 9,  recovery: 9,  cd: 28, knockback: 8,  projSpeed: 11.2, projType: "axe",   speedMod: 1.06, turnMod: 1.12, visionBonus: 45, fov: 2.05, helm: "horns" },
+            LONGBOW:       { name: "Frost Recurve Bow",   type: "ranged", range: 430, dmg: 17, windup: 9,  strikeDuration: 8,  recovery: 8,  cd: 29, knockback: 5,  projSpeed: 14.8, projType: "arrow", slowTicks: 65, speedMod: 1.07, turnMod: 1.15, visionBonus: 130, fov: 1.65, helm: "hood" },
+            ARCANE_STAFF:  { name: "Dragon Arcane Staff", type: "ranged", range: 380, dmg: 25, windup: 12, strikeDuration: 9,  recovery: 11, cd: 38, knockback: 12, projSpeed: 10.6, projType: "comet", splash: 62, speedMod: 0.99, turnMod: 1.02, visionBonus: 95, fov: 1.90, helm: "crown" }
+        };
+
+        const BASE_ARCHETYPES = [
+            {
+                id: "berserker", name: "Bloodthirsty Berserker", icon: "🪓", weapon: "GREATSWORD",
+                attributes: { vitality: 24, power: 26, agility: 18, perception: 10, armor: 12, haste: 10 },
+                strategy: { idealRangeMin: 0, idealRangeMax: 60, strafeWeight: 0.25, hazardAvoidance: 0.55, trapBaiting: 0.15, parryReflex: 0.25, aimPrediction: 0.50, backstabBias: 0.25, pillarHideWeight: 0.10, stealthAmbush: 0.15 }
+            },
+            {
+                id: "frost_ranger", name: "Deadeye Frost Ranger", icon: "🏹", weapon: "LONGBOW",
+                attributes: { vitality: 14, power: 20, agility: 24, perception: 22, armor: 6, haste: 14 },
+                strategy: { idealRangeMin: 230, idealRangeMax: 390, strafeWeight: 0.82, hazardAvoidance: 0.92, trapBaiting: 0.65, parryReflex: 0.35, aimPrediction: 0.96, backstabBias: 0.20, pillarHideWeight: 0.65, stealthAmbush: 0.45 }
+            },
+            {
+                id: "shadow_assassin", name: "Backstab Shadow Stalker", icon: "🗡️", weapon: "TWIN_DAGGERS",
+                attributes: { vitality: 14, power: 22, agility: 28, perception: 16, armor: 5, haste: 15 },
+                strategy: { idealRangeMin: 0, idealRangeMax: 46, strafeWeight: 0.94, hazardAvoidance: 0.85, trapBaiting: 0.35, parryReflex: 0.45, aimPrediction: 0.70, backstabBias: 0.98, pillarHideWeight: 0.92, stealthAmbush: 0.95 }
+            },
+            {
+                id: "parry_duelist", name: "Ironclad Parry Juggernaut", icon: "🛡️", weapon: "WARHAMMER",
+                attributes: { vitality: 26, power: 21, agility: 12, perception: 12, armor: 22, haste: 7 },
+                strategy: { idealRangeMin: 0, idealRangeMax: 58, strafeWeight: 0.40, hazardAvoidance: 0.88, trapBaiting: 0.80, parryReflex: 0.92, aimPrediction: 0.60, backstabBias: 0.15, pillarHideWeight: 0.25, stealthAmbush: 0.15 }
+            },
+            {
+                id: "pyromancer", name: "Pyromancer Trap-Baiter", icon: "🔮", weapon: "ARCANE_STAFF",
+                attributes: { vitality: 15, power: 25, agility: 18, perception: 20, armor: 8, haste: 14 },
+                strategy: { idealRangeMin: 190, idealRangeMax: 340, strafeWeight: 0.76, hazardAvoidance: 0.95, trapBaiting: 0.92, parryReflex: 0.40, aimPrediction: 0.92, backstabBias: 0.25, pillarHideWeight: 0.78, stealthAmbush: 0.60 }
+            },
+            {
+                id: "axe_skirmisher", name: "Whirlwind Axe Skirmisher", icon: "🪓", weapon: "THROWING_AXES",
+                attributes: { vitality: 18, power: 21, agility: 22, perception: 16, armor: 10, haste: 13 },
+                strategy: { idealRangeMin: 125, idealRangeMax: 240, strafeWeight: 0.88, hazardAvoidance: 0.82, trapBaiting: 0.55, parryReflex: 0.35, aimPrediction: 0.92, backstabBias: 0.45, pillarHideWeight: 0.55, stealthAmbush: 0.50 }
+            }
+        ];
+
+        const MAPS = {
+            proving_grounds: {
+                name: "⚔️ Pure Proving Grounds",
+                walls: [
+                    { x: 370, y: 200, w: 68, h: 68, cracks: 0 },
+                    { x: 922, y: 200, w: 68, h: 68, cracks: 0 },
+                    { x: 370, y: 592, w: 68, h: 68, cracks: 0 },
+                    { x: 922, y: 592, w: 68, h: 68, cracks: 0 },
+                    { x: 644, y: 394, w: 72, h: 72, cracks: 0 }
+                ],
+                hazards: [
+                    { type: "shrine",  x: 680, y: 145, r: 34, cd: 0 },
+                    { type: "shrine",  x: 680, y: 715, r: 34, cd: 0 },
+                    { type: "haste",   x: 255, y: 430, r: 30, cd: 0 },
+                    { type: "berserk", x: 1105, y: 430, r: 30, cd: 0 }
+                ],
+                props: [
+                    { type: "amphora", x: 520, y: 430, r: 19, hp: 30, maxHp: 30 },
+                    { type: "amphora", x: 840, y: 430, r: 19, hp: 30, maxHp: 30 }
+                ]
+            },
+            catacombs: {
+                name: "🏛️ Catacombs of the Blind King",
+                walls: [
+                    { x: 330, y: 120, w: 48, h: 210, cracks: 0 },
+                    { x: 330, y: 530, w: 48, h: 210, cracks: 0 },
+                    { x: 982, y: 120, w: 48, h: 210, cracks: 0 },
+                    { x: 982, y: 530, w: 48, h: 210, cracks: 0 },
+                    { x: 580, y: 255, w: 200, h: 46, cracks: 0 },
+                    { x: 580, y: 559, w: 200, h: 46, cracks: 0 },
+                    { x: 648, y: 398, w: 64, h: 64, cracks: 0 }
+                ],
+                hazards: [
+                    { type: "shrine",  x: 680, y: 140, r: 34, cd: 0 },
+                    { type: "shrine",  x: 680, y: 720, r: 34, cd: 0 },
+                    { type: "haste",   x: 460, y: 430, r: 30, cd: 0 },
+                    { type: "berserk", x: 900, y: 430, r: 30, cd: 0 }
+                ],
+                props: [
+                    { type: "amphora", x: 220, y: 220, r: 19, hp: 30, maxHp: 30 },
+                    { type: "amphora", x: 1140, y: 220, r: 19, hp: 30, maxHp: 30 },
+                    { type: "keg",     x: 525, y: 170, r: 21, hp: 32, maxHp: 32 },
+                    { type: "keg",     x: 835, y: 690, r: 21, hp: 32, maxHp: 32 }
+                ]
+            },
+            spike_pit: {
+                name: "⚙️ The Gnashing Spike Pit",
+                walls: [
+                    { x: 340, y: 210, w: 56, h: 140, cracks: 0 },
+                    { x: 964, y: 210, w: 56, h: 140, cracks: 0 },
+                    { x: 340, y: 510, w: 56, h: 140, cracks: 0 },
+                    { x: 964, y: 510, w: 56, h: 140, cracks: 0 }
+                ],
+                hazards: [
+                    { type: "shrine",  x: 680, y: 140, r: 34, cd: 0 },
+                    { type: "shrine",  x: 680, y: 720, r: 34, cd: 0 },
+                    { type: "berserk", x: 680, y: 430, r: 32, cd: 0 },
+                    { type: "spike",   x: 510, y: 310, r: 42, timer: 15, period: 165, bloodTip: 0, thrust: 0 },
+                    { type: "spike",   x: 850, y: 310, r: 42, timer: 95, period: 165, bloodTip: 0, thrust: 0 },
+                    { type: "spike",   x: 510, y: 550, r: 42, timer: 95, period: 165, bloodTip: 0, thrust: 0 },
+                    { type: "spike",   x: 850, y: 550, r: 42, timer: 15, period: 165, bloodTip: 0, thrust: 0 }
+                ],
+                props: [
+                    { type: "keg",     x: 680, y: 275, r: 21, hp: 34, maxHp: 34 },
+                    { type: "keg",     x: 680, y: 585, r: 21, hp: 34, maxHp: 34 }
+                ]
+            },
+            alchemist_vault: {
+                name: "🛢️ Alchemist's Powder Keg Vault",
+                walls: [
+                    { x: 430, y: 170, w: 54, h: 160, cracks: 0 },
+                    { x: 876, y: 170, w: 54, h: 160, cracks: 0 },
+                    { x: 430, y: 530, w: 54, h: 160, cracks: 0 },
+                    { x: 876, y: 530, w: 54, h: 160, cracks: 0 },
+                    { x: 646, y: 396, w: 68, h: 68, cracks: 0 }
+                ],
+                hazards: [
+                    { type: "shrine",  x: 220, y: 430, r: 34, cd: 0 },
+                    { type: "shrine",  x: 1140, y: 430, r: 34, cd: 0 },
+                    { type: "haste",   x: 680, y: 140, r: 30, cd: 0 },
+                    { type: "berserk", x: 680, y: 720, r: 30, cd: 0 }
+                ],
+                props: [
+                    { type: "keg",     x: 545, y: 295, r: 21, hp: 32, maxHp: 32 },
+                    { type: "keg",     x: 585, y: 325, r: 21, hp: 32, maxHp: 32 },
+                    { type: "keg",     x: 815, y: 295, r: 21, hp: 32, maxHp: 32 },
+                    { type: "keg",     x: 775, y: 325, r: 21, hp: 32, maxHp: 32 },
+                    { type: "acid_vat",x: 680, y: 270, r: 22, hp: 36, maxHp: 36 },
+                    { type: "acid_vat",x: 680, y: 590, r: 22, hp: 36, maxHp: 36 }
+                ]
+            },
+            abattoir: {
+                name: "🪚 Chaos Butcher's Abattoir",
+                walls: [
+                    { x: 310, y: 190, w: 48, h: 170, cracks: 0 },
+                    { x: 1002, y: 190, w: 48, h: 170, cracks: 0 },
+                    { x: 310, y: 500, w: 48, h: 170, cracks: 0 },
+                    { x: 1002, y: 500, w: 48, h: 170, cracks: 0 },
+                    { x: 642, y: 392, w: 76, h: 76, cracks: 0 }
+                ],
+                hazards: [
+                    { type: "shrine",  x: 680, y: 145, r: 34, cd: 0 },
+                    { type: "shrine",  x: 680, y: 715, r: 34, cd: 0 },
+                    { type: "spike",   x: 495, y: 300, r: 42, timer: 20, period: 170, bloodTip: 0, thrust: 0 },
+                    { type: "spike",   x: 865, y: 560, r: 42, timer: 95, period: 170, bloodTip: 0, thrust: 0 },
+                    { type: "saw",     x: 495, y: 550, r: 34, vx: 0, vy: -2.2, minY: 250, maxY: 610, angle: 0 },
+                    { type: "saw",     x: 865, y: 310, r: 34, vx: 0, vy: 2.2,  minY: 250, maxY: 610, angle: 0 }
+                ],
+                props: [
+                    { type: "keg",     x: 565, y: 430, r: 21, hp: 34, maxHp: 34 },
+                    { type: "keg",     x: 795, y: 430, r: 21, hp: 34, maxHp: 34 }
+                ]
+            }
+        };
+
+        /***********************************************************************
+         * 2. PROCEDURAL WEBAUDIO SFX
+         ***********************************************************************/
+        const Sfx = {
+            ctx: null, enabled: true,
+            play(type) {
+                if (!this.enabled) return;
+                try {
+                    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const now = this.ctx.currentTime;
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.connect(gain); gain.connect(this.ctx.destination);
+                    if (type === "hit") {
+                        osc.type = "triangle"; osc.frequency.setValueAtTime(175, now); osc.frequency.exponentialRampToValueAtTime(42, now + 0.09);
+                        gain.gain.setValueAtTime(0.14, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.09);
+                        osc.start(now); osc.stop(now + 0.09);
+                    } else if (type === "parry") {
+                        osc.type = "sine"; osc.frequency.setValueAtTime(980, now); osc.frequency.exponentialRampToValueAtTime(1560, now + 0.14);
+                        gain.gain.setValueAtTime(0.16, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.14);
+                        osc.start(now); osc.stop(now + 0.14);
+                    } else if (type === "clank") {
+                        osc.type = "square"; osc.frequency.setValueAtTime(490, now); osc.frequency.exponentialRampToValueAtTime(160, now + 0.08);
+                        gain.gain.setValueAtTime(0.10, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+                        osc.start(now); osc.stop(now + 0.08);
+                    } else if (type === "boom" || type === "kill") {
+                        osc.type = "sawtooth"; osc.frequency.setValueAtTime(125, now); osc.frequency.exponentialRampToValueAtTime(25, now + 0.28);
+                        gain.gain.setValueAtTime(0.22, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.28);
+                        osc.start(now); osc.stop(now + 0.28);
+                    }
+                } catch (e) {}
+            }
+        };
+
+        /***********************************************************************
+         * 3. GLOBAL STATE & PERSISTENT GORE DECAL CANVAS
+         ***********************************************************************/
+        const decalCanvas = document.createElement('canvas');
+        decalCanvas.width = WORLD_W; decalCanvas.height = WORLD_H;
+        const decalCtx = decalCanvas.getContext('2d');
+
+        const state = {
+            running: true, simSpeed: 1, ticks: 0, hitStop: 0,
+            format: "2v2", mapKey: "proving_grounds",
+            visionMode: "cones", // "cones" | "fog" | "clear"
+            showVectors: true, selectedId: null,
+            archetypes: JSON.parse(JSON.stringify(BASE_ARCHETYPES)),
+            elo: {}, lastMatrix: null,
+            blueprints: [], units: [], walls: [], hazards: [], props: [], acidPools: [],
+            projectiles: [], slashes: [], gibs: [], popups: [], soundRipples: [], history: [],
+            cam: { x: WORLD_W / 2, y: WORLD_H / 2, zoom: 0.86, drag: false, lx: 0, ly: 0 },
+            shake: 0, dpr: window.devicePixelRatio || 1,
+            autoEvo: {
+                active: false, mode: "exhibition", generation: 0, maxPoolSize: 10,
+                jobQueue: [], currentApex: null, currentChallenger: null,
+                candidateList: [], liveTrialCandidate: null
+            }
+        };
+
+        function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+        function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
+        function normAngle(a) {
+            while (a > Math.PI) a -= Math.PI * 2;
+            while (a < -Math.PI) a += Math.PI * 2;
+            return a;
+        }
+        function getAllArchetypes() { return state.archetypes; }
+
+        function initElo() {
+            getAllArchetypes().forEach(a => {
+                if (!state.elo[a.id]) state.elo[a.id] = { name: a.name, icon: a.icon, rating: 1200, wins: 0, games: 0 };
+            });
+            const badge = document.getElementById('poolCountBadge');
+            if (badge) badge.textContent = `${state.archetypes.length} Pool`;
+        }
+
+        function paintArenaFloor() {
+            decalCtx.fillStyle = "#0D0B14";
+            decalCtx.fillRect(0, 0, WORLD_W, WORLD_H);
+            decalCtx.strokeStyle = "rgba(255,255,255,0.03)";
+            decalCtx.lineWidth = 1;
+            for (let x = 0; x <= WORLD_W; x += 68) {
+                decalCtx.beginPath(); decalCtx.moveTo(x, 0); decalCtx.lineTo(x, WORLD_H); decalCtx.stroke();
+            }
+            for (let y = 0; y <= WORLD_H; y += 68) {
+                decalCtx.beginPath(); decalCtx.moveTo(0, y); decalCtx.lineTo(WORLD_W, y); decalCtx.stroke();
+            }
+            decalCtx.strokeStyle = "rgba(244,63,94,0.14)";
+            decalCtx.lineWidth = 3;
+            decalCtx.beginPath(); decalCtx.arc(WORLD_W / 2, WORLD_H / 2, 235, 0, Math.PI * 2); decalCtx.stroke();
+        }
+
+        function paintBloodSplatter(x, y, dirAngle, power = 1.0) {
+            decalCtx.save();
+            decalCtx.translate(x, y);
+            const poolR = (7 + Math.random() * 8) * Math.min(1.8, power);
+            const hues = ["rgba(185, 28, 28, 0.72)", "rgba(136, 19, 55, 0.76)", "rgba(220, 38, 38, 0.65)"];
+            decalCtx.fillStyle = hues[Math.floor(Math.random() * hues.length)];
+            for (let i = 0; i < 4; i++) {
+                const a = (i / 4) * Math.PI * 2 + Math.random();
+                const d = Math.random() * poolR * 0.45;
+                decalCtx.beginPath();
+                decalCtx.arc(Math.cos(a) * d, Math.sin(a) * d, poolR * (0.45 + Math.random() * 0.4), 0, Math.PI * 2);
+                decalCtx.fill();
+            }
+            const drops = Math.floor(3 + power * 4);
+            for (let i = 0; i < drops; i++) {
+                const a = dirAngle + (Math.random() - 0.5) * 1.1;
+                const d = poolR * 0.6 + Math.random() * 24 * power;
+                const r = 1.8 + Math.random() * 3.2;
+                decalCtx.save();
+                decalCtx.translate(Math.cos(a) * d, Math.sin(a) * d);
+                decalCtx.rotate(a);
+                decalCtx.beginPath();
+                decalCtx.ellipse(0, 0, r * (1.2 + Math.random() * 0.8), r * 0.75, 0, 0, Math.PI * 2);
+                decalCtx.fill();
+                decalCtx.restore();
+            }
+            decalCtx.restore();
+        }
+
+        function paintScorchOrAcidDecal(x, y, radius, isAcid = false) {
+            decalCtx.save();
+            decalCtx.translate(x, y);
+            const grad = decalCtx.createRadialGradient(0, 0, radius * 0.15, 0, 0, radius);
+            if (isAcid) {
+                grad.addColorStop(0, "rgba(16, 185, 129, 0.55)");
+                grad.addColorStop(1, "rgba(5, 150, 105, 0)");
+            } else {
+                grad.addColorStop(0, "rgba(15, 23, 42, 0.88)");
+                grad.addColorStop(0.6, "rgba(120, 53, 15, 0.42)");
+                grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+            }
+            decalCtx.fillStyle = grad;
+            decalCtx.beginPath(); decalCtx.arc(0, 0, radius, 0, Math.PI * 2); decalCtx.fill();
+            decalCtx.restore();
+        }
+
+        function spawnAnatomicalGibs(victim, hitAngle) {
+            const parts = ["skull", "jaw", "ribcage", "heart", "eyeball", "eyeball", "weapon_arm", "leg", "boot", "intestine"];
+            parts.forEach((type, idx) => {
+                const a = hitAngle + (Math.random() - 0.5) * 1.7 + (idx % 2 === 0 ? 0.2 : -0.2);
+                const spd = 2.8 + Math.random() * 6.5;
+                state.gibs.push({
+                    type, x: victim.x, y: victim.y, z: 10 + Math.random() * 14,
+                    vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, vz: 4.5 + Math.random() * 6.5,
+                    rot: Math.random() * Math.PI * 2, vrot: (Math.random() - 0.5) * 0.38,
+                    color: victim.color, bounces: 0, settled: false,
+                    trailHistory: [{ x: victim.x, y: victim.y }]
+                });
+            });
+        }
+
+        function spawnPropDebris(x, y, debrisType, count = 6) {
+            for (let i = 0; i < count; i++) {
+                const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+                const spd = 2.4 + Math.random() * 5.2;
+                state.gibs.push({
+                    type: debrisType, x, y, z: 8 + Math.random() * 10,
+                    vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, vz: 3.5 + Math.random() * 4.5,
+                    rot: Math.random() * Math.PI * 2, vrot: (Math.random() - 0.5) * 0.4,
+                    color: debrisType === "wood_stave" ? "#B45309" : debrisType === "pot_shard" ? "#34D399" : "#64748B",
+                    bounces: 0, settled: false, trailHistory: []
+                });
+            }
+        }
+
+        /***********************************************************************
+         * 4. RAYCASTED VISION POLYGONS, LINE-OF-SIGHT & PILLAR STEALTH GEOMETRY
+         ***********************************************************************/
+        // Ray-vs-AABB intersection returning distance along ray [0..maxRange]
+        function rayRectIntersect(ox, oy, dx, dy, maxDist, rx, ry, rw, rh) {
+            const invX = dx !== 0 ? 1 / dx : 1e9;
+            const invY = dy !== 0 ? 1 / dy : 1e9;
+            const t1 = (rx - ox) * invX;
+            const t2 = (rx + rw - ox) * invX;
+            const t3 = (ry - oy) * invY;
+            const t4 = (ry + rh - oy) * invY;
+            const tmin = Math.max(Math.min(t1, t2), Math.min(t3, t4));
+            const tmax = Math.min(Math.max(t1, t2), Math.max(t3, t4));
+            if (tmax < 0 || tmin > tmax || tmin > maxDist) return maxDist;
+            return tmin >= 0 ? tmin : maxDist;
+        }
+
+        function castVisionRay(ox, oy, angle, maxRange) {
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
+            let bestDist = maxRange;
+            for (const w of state.walls) {
+                const d = rayRectIntersect(ox, oy, dx, dy, bestDist, w.x, w.y, w.w, w.h);
+                if (d < bestDist) bestDist = d;
+            }
+            return { x: ox + dx * bestDist, y: oy + dy * bestDist, dist: bestDist };
+        }
+
+        // Computes a 44-ray clipped Vision Cone Polygon for rendering and FOV checks
+        function computeVisionPolygon(u, numRays = 42) {
+            const pts = [{ x: u.x, y: u.y }];
+            const halfFov = u.visionFov * 0.5;
+            const startAng = u.headAngle - halfFov;
+            for (let i = 0; i <= numRays; i++) {
+                const a = startAng + (i / numRays) * u.visionFov;
+                const hit = castVisionRay(u.x, u.y, a, u.visionRange);
+                pts.push({ x: hit.x, y: hit.y });
+            }
+            return pts;
+        }
+
+        // True Line-of-Sight check against all stone walls/pillars
+        function hasLineOfSight(ax, ay, bx, by) {
+            const d = dist(ax, ay, bx, by);
+            if (d < 1) return true;
+            const dx = (bx - ax) / d;
+            const dy = (by - ay) / d;
+            for (const w of state.walls) {
+                if (rayRectIntersect(ax, ay, dx, dy, d, w.x, w.y, w.w, w.h) < d - 2) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Can observer `u` detect target `t` via Raycasted Vision Cone OR 360° Hearing Range?
+        function canDetectTarget(u, t) {
+            if (!t || !t.alive) return { detected: false, reason: "none" };
+            const d = dist(u.x, u.y, t.x, t.y);
+            // 1. Acoustic 360° Hearing Ring (moving enemies emit louder footsteps)
+            const targetSpeed = Math.hypot(t.vx, t.vy);
+            const effectiveHearing = u.hearingRange * (targetSpeed > 1.5 ? 1.15 : 0.72);
+            if (d <= effectiveHearing) {
+                return { detected: true, reason: "heard" };
+            }
+            // 2. Raycasted Vision Cone
+            if (d <= u.visionRange) {
+                const ang = Math.atan2(t.y - u.y, t.x - u.x);
+                if (Math.abs(normAngle(ang - u.headAngle)) <= u.visionFov * 0.52) {
+                    if (hasLineOfSight(u.x, u.y, t.x, t.y)) {
+                        return { detected: true, reason: "seen" };
+                    }
+                }
+            }
+            return { detected: false, reason: "none" };
+        }
+
+        // Finds the best tactical hiding spot behind the nearest pillar relative to an enemy threat
+        function findPillarShadowPoint(u, threatX, threatY) {
+            let bestPt = null;
+            let bestScore = 1e9;
+            for (const w of state.walls) {
+                const cx = w.x + w.w * 0.5;
+                const cy = w.y + w.h * 0.5;
+                const angFromThreat = Math.atan2(cy - threatY, cx - threatX);
+                const offset = Math.max(w.w, w.h) * 0.65 + u.radius + 18;
+                const hx = clamp(cx + Math.cos(angFromThreat) * offset, 55, WORLD_W - 55);
+                const hy = clamp(cy + Math.sin(angFromThreat) * offset, 55, WORLD_H - 55);
+                const score = dist(u.x, u.y, hx, hy) + dist(cx, cy, threatX, threatY) * 0.25;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestPt = { x: hx, y: hy, pillarX: cx, pillarY: cy };
+                }
+            }
+            return bestPt;
+        }
+
+        /***********************************************************************
+         * 5. GLADIATOR CREATION, VISION ATTRIBUTES & MATCH SPAWNING
+         ***********************************************************************/
+        function getTurnRateRad(u) {
+            const w = WEAPONS[u.weapon] || WEAPONS.GREATSWORD;
+            const agi = u.attributes.agility || 16;
+            const arm = u.attributes.armor || 10;
+            let rate = (0.068 + agi * 0.0044 - arm * 0.0012) * w.turnMod;
+            if (u.windupTimer > 0) rate *= 0.28;
+            else if (u.strikeTimer > 0) rate *= 0.35;
+            else if (u.recoveryTimer > 0) rate *= 0.55;
+            return clamp(rate, 0.025, 0.24);
+        }
+
+        function computeLeadPoint(shooter, target, projSpeed, skill) {
+            const d = dist(shooter.x, shooter.y, target.x, target.y);
+            const t = d / Math.max(5, projSpeed);
+            return {
+                x: clamp(target.x + target.vx * t * skill, 36, WORLD_W - 36),
+                y: clamp(target.y + target.vy * t * skill, 36, WORLD_H - 36)
+            };
+        }
+
+        function makeUnitFromBlueprint(bp, idxOnTeam, teamCount, teamId, isFFA) {
+            const w = WEAPONS[bp.weapon] || WEAPONS.GREATSWORD;
+            const attr = bp.attributes;
+            const maxHp = Math.round(95 + attr.vitality * 6.5 + attr.armor * 1.6);
+            const moveSpeed = (2.35 + attr.agility * 0.072 + attr.haste * 0.025) * w.speedMod;
+
+            // Vision Range, FOV Cone & 360° Hearing Ring derived from Perception + Weapon
+            const visionRange = Math.round(255 + (attr.perception || 15) * 9.5 + (w.visionBonus || 0));
+            const visionFov = clamp((w.fov || 1.9) + (attr.perception || 15) * 0.012, 1.35, 2.55);
+            const hearingRange = Math.round(115 + (attr.perception || 15) * 4.2);
+
+            let x = WORLD_W / 2, y = WORLD_H / 2, facing = 0;
+            if (isFFA) {
+                const a = (idxOnTeam / teamCount) * Math.PI * 2;
+                x = WORLD_W / 2 + Math.cos(a) * 330;
+                y = WORLD_H / 2 + Math.sin(a) * 265;
+                facing = a + Math.PI;
+            } else {
+                const left = teamId === 0;
+                x = left ? 185 : WORLD_W - 185;
+                const span = 440;
+                const step = teamCount > 1 ? span / (teamCount - 1) : 0;
+                y = (WORLD_H / 2 - span / 2) + idxOnTeam * step + (teamCount === 1 ? span / 2 : 0);
+                facing = left ? 0 : Math.PI;
+            }
+
+            const pal = TEAM_COLORS[teamId % TEAM_COLORS.length];
+            return {
+                id: bp.id, archetypeId: bp.archetypeId || bp.id, name: bp.name, icon: bp.icon || "⚔️",
+                teamId, color: pal.hex, lightColor: pal.light, weapon: bp.weapon,
+                attributes: JSON.parse(JSON.stringify(attr)),
+                strategy: JSON.parse(JSON.stringify(bp.strategy)),
+                x, y, vx: 0, vy: 0, smoothSteerX: Math.cos(facing), smoothSteerY: Math.sin(facing),
+                facing, headAngle: facing, scanPhase: Math.random() * 6,
+                radius: Math.round(16 + attr.vitality * 0.17 + attr.armor * 0.13),
+                hp: maxHp, maxHp, moveSpeed, attackRange: w.range,
+                visionRange, visionFov, hearingRange,
+                alive: true, atkCd: 15, windupTimer: 0, maxWindup: w.windup,
+                strikeTimer: 0, maxStrike: w.strikeDuration || 10, recoveryTimer: 0,
+                swingDir: 1, parryTicks: 0, parryCd: 0, stunTicks: 0, slowTicks: 0,
+                hasteTicks: 0, berserkTicks: 0, wallSlamCd: 0, hitFlash: 0,
+                walkPhase: Math.random() * 6, strafeDir: Math.random() > 0.5 ? 1 : -1,
+                badge: "PATROL", speech: "", speechTimer: 0, speechCd: 0,
+                aimPoint: null,
+                // Last-Known Position Ghost Memory & Patrol Waypoint for Fog of War / LOS breaks
+                lastSeenGhost: null, // { x, y, vx, vy, name, color, ttl }
+                patrolPt: { x: WORLD_W * 0.5 + (Math.random() - 0.5) * 360, y: WORLD_H * 0.5 + (Math.random() - 0.5) * 280 },
+                isHidingBehindPillar: false,
+                raysInterest: new Array(NUM_RAYS).fill(0), raysDanger: new Array(NUM_RAYS).fill(0),
+                kills: 0, dmgDealt: 0
+            };
+        }
+
+        function buildRosterFromFormat(fmt) {
+            state.format = fmt;
+            const archs = getAllArchetypes();
+            state.blueprints = [];
+            if (fmt === "FFA") {
+                for (let i = 0; i < 6; i++) {
+                    const a = JSON.parse(JSON.stringify(archs[i % archs.length]));
+                    a.id = `u_ffa_${i}`; a.archetypeId = archs[i % archs.length].id; a.teamId = i;
+                    state.blueprints.push(a);
+                }
+            } else {
+                const count = fmt === "1v1" ? 1 : fmt === "2v2" ? 2 : fmt === "3v3" ? 3 : 4;
+                for (let t = 0; t < 2; t++) {
+                    for (let i = 0; i < count; i++) {
+                        const pick = archs[(t * 2 + i) % archs.length];
+                        const a = JSON.parse(JSON.stringify(pick));
+                        a.id = `u_${t}_${i}`; a.archetypeId = pick.id; a.teamId = t;
+                        state.blueprints.push(a);
+                    }
+                }
+            }
+            respawnArena();
+        }
+
+        function respawnArena() {
+            const m = MAPS[state.mapKey] || MAPS.proving_grounds;
+            state.walls = JSON.parse(JSON.stringify(m.walls || []));
+            state.hazards = JSON.parse(JSON.stringify(m.hazards || []));
+            state.props = JSON.parse(JSON.stringify(m.props || []));
+            state.acidPools = []; state.projectiles = []; state.slashes = [];
+            state.gibs = []; state.popups = []; state.soundRipples = [];
+            state.history = []; state.ticks = 0;
+            document.getElementById('winnerBanner').classList.add('hidden');
+            paintArenaFloor();
+
+            const isFFA = state.format === "FFA";
+            const teamCounts = {};
+            state.blueprints.forEach(b => { teamCounts[b.teamId] = (teamCounts[b.teamId] || 0) + 1; });
+            const teamSlot = {};
+            state.units = state.blueprints.map((bp, idx) => {
+                const tid = bp.teamId;
+                const slot = teamSlot[tid] || 0;
+                teamSlot[tid] = slot + 1;
+                const u = makeUnitFromBlueprint(bp, isFFA ? idx : slot, isFFA ? state.blueprints.length : teamCounts[tid], tid, isFFA);
+                u.bpIndex = idx;
+                return u;
+            });
+            if (!state.selectedId || !state.units.some(u => u.id === state.selectedId)) {
+                state.selectedId = state.units[0]?.id || null;
+            }
+            refreshUI();
+        }
+
+        /***********************************************************************
+         * 6. 16-RAY CONTEXT STEERING, LOS GHOST HUNTING & PILLAR STEALTH AI
+         ***********************************************************************/
+        function selectTargetWithVision(u, enemies) {
+            let bestVisible = null;
+            let bestScore = -1e9;
+
+            for (const e of enemies) {
+                const det = canDetectTarget(u, e);
+                if (!det.detected) continue;
+
+                const d = dist(u.x, u.y, e.x, e.y);
+                const hpPct = e.hp / e.maxHp;
+                const angleBehind = Math.abs(normAngle(u.facing - e.facing));
+                const backBonus = (angleBehind < 1.1) ? (u.strategy.backstabBias || 0.3) * 155 : 0;
+                const score = -d * 0.65 + (1 - hpPct) * 145 + backBonus;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestVisible = e;
+                }
+            }
+
+            if (bestVisible) {
+                // Update Last-Known Position Ghost memory whenever an enemy is seen or heard!
+                u.lastSeenGhost = {
+                    x: bestVisible.x, y: bestVisible.y,
+                    vx: bestVisible.vx, vy: bestVisible.vy,
+                    name: bestVisible.name, color: bestVisible.color,
+                    ttl: 240
+                };
+                return bestVisible;
+            }
+            return null;
+        }
+
+        function computeContextSteering(u, target, dt = 1.0) {
+            const strat = u.strategy;
+            const hpRatio = u.hp / u.maxHp;
+            u.isHidingBehindPillar = false;
+
+            let goalX = WORLD_W * 0.5, goalY = WORLD_H * 0.5;
+            let idealMin = strat.idealRangeMin ?? 0;
+            let idealMax = strat.idealRangeMax ?? 65;
+
+            if (target) {
+                goalX = target.x; goalY = target.y;
+
+                // 1. PILLAR HIDING / STEALTH AMBUSH AI:
+                // Sneaky assassins (whilst waiting for cooldowns) or wounded bots with high `pillarHideWeight` duck behind pillars to break enemy LOS!
+                const wantStealthHide = ((strat.pillarHideWeight || 0) > 0.55 && (hpRatio < 0.58 || (u.atkCd > 10 && (strat.stealthAmbush || 0) > 0.65)));
+                if (wantStealthHide && state.walls.length > 0) {
+                    const shadowPt = findPillarShadowPoint(u, target.x, target.y);
+                    if (shadowPt) {
+                        goalX = shadowPt.x; goalY = shadowPt.y;
+                        idealMin = 0; idealMax = 18;
+                        u.isHidingBehindPillar = true;
+                        u.badge = "STEALTH HIDE";
+                    }
+                }
+
+                // 2. TRAP BAITING AI: Position on the far side of spike grates or explosive kegs
+                if (!u.isHidingBehindPillar && (strat.trapBaiting || 0) > 0.6) {
+                    for (const h of state.hazards) {
+                        if (h.type === "spike" || h.type === "saw") {
+                            if (dist(target.x, target.y, h.x, h.y) < 230) {
+                                const ang = Math.atan2(h.y - target.y, h.x - target.x);
+                                goalX = h.x + Math.cos(ang) * 95;
+                                goalY = h.y + Math.sin(ang) * 95;
+                                idealMin = 0; idealMax = 24;
+                                u.badge = "BAIT TRAP";
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if (u.lastSeenGhost && u.lastSeenGhost.ttl > 0) {
+                // 3. INVESTIGATE LAST KNOWN POSITION GHOST (`👻 LAST SEEN`)
+                goalX = clamp(u.lastSeenGhost.x + u.lastSeenGhost.vx * 14, 60, WORLD_W - 60);
+                goalY = clamp(u.lastSeenGhost.y + u.lastSeenGhost.vy * 14, 60, WORLD_H - 60);
+                idealMin = 0; idealMax = 22;
+                u.badge = "SEARCHING";
+            } else {
+                // 4. EXPLORE / PATROL ARENA WAYPOINTS WHEN NO ENEMIES ARE IN SIGHT
+                if (dist(u.x, u.y, u.patrolPt.x, u.patrolPt.y) < 55) {
+                    u.patrolPt = {
+                        x: 160 + Math.random() * (WORLD_W - 320),
+                        y: 140 + Math.random() * (WORLD_H - 280)
+                    };
+                }
+                goalX = u.patrolPt.x; goalY = u.patrolPt.y;
+                idealMin = 0; idealMax = 25;
+                u.badge = "PATROL";
+            }
+
+            // 5. LOW HP SHRINE SEEKING
+            if (hpRatio < 0.42) {
+                const shrine = state.hazards.find(h => h.type === "shrine" && (h.cd || 0) <= 0);
+                if (shrine) {
+                    goalX = shrine.x; goalY = shrine.y;
+                    idealMin = 0; idealMax = 15;
+                    u.badge = "HEAL SEEK";
+                }
+            }
+
+            const dToGoal = dist(u.x, u.y, goalX, goalY);
+            const angToGoal = Math.atan2(goalY - u.y, goalX - u.x);
+            if (Math.random() < 0.02 * dt) u.strafeDir *= -1;
+
+            let fx = 0, fy = 0;
+            for (let i = 0; i < NUM_RAYS; i++) {
+                const rayAng = (i / NUM_RAYS) * Math.PI * 2;
+                const rx = Math.cos(rayAng), ry = Math.sin(rayAng);
+                let interest = 0.1;
+
+                if (dToGoal > idealMax) {
+                    const align = Math.cos(rayAng - angToGoal);
+                    const strafe = Math.cos(rayAng - (angToGoal + u.strafeDir * Math.PI * 0.5));
+                    interest = Math.max(0, align * 0.84 + strafe * (strat.strafeWeight || 0.5) * 0.42);
+                    if (target && !u.isHidingBehindPillar && u.badge !== "BAIT TRAP" && u.badge !== "HEAL SEEK") {
+                        u.badge = ((strat.backstabBias || 0) > 0.7 || (strat.stealthAmbush || 0) > 0.7) ? "FLANK" : "ENGAGE";
+                    }
+                } else if (dToGoal < idealMin && target) {
+                    const retreatAlign = Math.cos(rayAng - (angToGoal + Math.PI));
+                    const strafe = Math.cos(rayAng - (angToGoal + u.strafeDir * Math.PI * 0.5));
+                    interest = Math.max(0, retreatAlign * 0.88 + strafe * (strat.strafeWeight || 0.5) * 0.45);
+                    u.badge = "KITE";
+                } else if (target) {
+                    const strafe = Math.cos(rayAng - (angToGoal + u.strafeDir * Math.PI * 0.5));
+                    interest = Math.max(0.15, strafe * (strat.strafeWeight || 0.6));
+                    if (!u.isHidingBehindPillar && u.badge !== "BAIT TRAP") u.badge = "STRAFE";
+                }
+
+                // Danger raycast against walls, boundaries, traps & acid pools
+                let danger = 0;
+                const px = u.x + rx * 64, py = u.y + ry * 64;
+                if (px < 46 || px > WORLD_W - 46 || py < 46 || py > WORLD_H - 46) danger = 0.92;
+                for (const w of state.walls) {
+                    if (px >= w.x - 18 && px <= w.x + w.w + 18 && py >= w.y - 18 && py <= w.y + w.h + 18) {
+                        danger = Math.max(danger, 0.94);
+                    }
+                }
+                for (const h of state.hazards) {
+                    if (h.type === "saw" || (h.type === "spike" && h.timer > h.period * 0.52)) {
+                        if (dist(px, py, h.x, h.y) < h.r + 36) danger = Math.max(danger, (strat.hazardAvoidance || 0.75) * 0.98);
+                    }
+                }
+                for (const ap of state.acidPools) {
+                    if (dist(px, py, ap.x, ap.y) < ap.r + 22) danger = Math.max(danger, (strat.hazardAvoidance || 0.75) * 0.92);
+                }
+
+                u.raysInterest[i] = interest;
+                u.raysDanger[i] = danger;
+                const net = Math.max(0, interest - danger * 1.18);
+                fx += rx * net; fy += ry * net;
+            }
+
+            const mag = Math.hypot(fx, fy) || 1;
+            const blend = clamp(0.17 * dt, 0.03, 0.45);
+            u.smoothSteerX += ((fx / mag) - u.smoothSteerX) * blend;
+            u.smoothSteerY += ((fy / mag) - u.smoothSteerY) * blend;
+            const sm = Math.hypot(u.smoothSteerX, u.smoothSteerY) || 1;
+            return { fx: u.smoothSteerX / sm, fy: u.smoothSteerY / sm };
+        }
+
+        /***********************************************************************
+         * 7. POPUPS, DESTRUCTIBLE PROPS & COMBAT MECHANICS
+         ***********************************************************************/
+        function addPopup(x, y, text, color = "#FFFFFF", size = 1.0, isCrit = false) {
+            state.popups.push({
+                x: x + (Math.random() - 0.5) * 14, y: y - 24,
+                vx: (Math.random() - 0.5) * 2.2, vy: isCrit ? -4.2 : -2.9,
+                text, color, size, isCrit, life: 42, maxLife: 42
+            });
+        }
+
+        function setSpeech(u, text) {
+            if (u.speechCd > 0) return;
+            u.speech = text; u.speechTimer = 50; u.speechCd = 125;
+        }
+
+        function logEvent(html) {
+            const box = document.getElementById('combatLog');
+            if (!box) return;
+            const row = document.createElement('div');
+            row.className = "leading-tight border-b border-slate-800/70 pb-1";
+            row.innerHTML = `<span class="text-slate-500">[${(state.ticks / 60).toFixed(1)}s]</span> ${html}`;
+            box.prepend(row);
+            while (box.children.length > 40) box.removeChild(box.lastChild);
+        }
+
+        function damageArenaProp(prop, dmg, attacker, headless = false) {
+            if (!prop || prop.hp <= 0) return;
+            prop.hp -= dmg; prop.hitFlash = 6;
+            if (prop.hp > 0) return;
+            prop.hp = 0;
+
+            if (prop.type === "keg") {
+                if (!headless) {
+                    Sfx.play("boom"); state.shake = Math.max(state.shake, 12); state.hitStop = 2.5;
+                    paintScorchOrAcidDecal(prop.x, prop.y, 72, false);
+                    spawnPropDebris(prop.x, prop.y, "wood_stave", 8);
+                    state.slashes.push({ x: prop.x, y: prop.y, r: 102, angle: 0, arc: Math.PI * 2, color: "#FB923C", life: 15, maxLife: 15 });
+                    addPopup(prop.x, prop.y - 10, "🛢️ KEG BOOM!!", "#FB923C", 1.4, true);
+                    logEvent(`💥 <b>POWDER KEG</b> detonated!`);
+                }
+                state.units.forEach(u => {
+                    if (u.alive && dist(prop.x, prop.y, u.x, u.y) <= 106 + u.radius) {
+                        applyDamage(attacker, u, 38, Math.atan2(u.y - prop.y, u.x - prop.x), 20, "🛢️ KEG BLAST!", headless);
+                    }
+                });
+            } else if (prop.type === "amphora") {
+                if (!headless) {
+                    Sfx.play("clank"); spawnPropDebris(prop.x, prop.y, "pot_shard", 6);
+                    state.slashes.push({ x: prop.x, y: prop.y, r: 76, angle: 0, arc: Math.PI * 2, color: "#34D399", life: 14, maxLife: 14 });
+                    addPopup(prop.x, prop.y, "🏺 HEAL MIST!", "#34D399", 1.2);
+                }
+                state.units.forEach(u => {
+                    if (u.alive && dist(prop.x, prop.y, u.x, u.y) <= 82 + u.radius) {
+                        const heal = Math.round(u.maxHp * 0.28);
+                        u.hp = Math.min(u.maxHp, u.hp + heal);
+                        if (!headless) addPopup(u.x, u.y - 12, `💚 +${heal} HP`, "#34D399", 1.15);
+                    }
+                });
+            } else if (prop.type === "acid_vat") {
+                if (!headless) {
+                    Sfx.play("boom"); paintScorchOrAcidDecal(prop.x, prop.y, 64, true);
+                    spawnPropDebris(prop.x, prop.y, "pot_shard", 6);
+                    addPopup(prop.x, prop.y, "🧪 ACID SPILL!", "#10B981", 1.3, true);
+                }
+                state.acidPools.push({ x: prop.x, y: prop.y, r: 62, life: 400 });
+            }
+        }
+
+        function applyDamage(attacker, victim, rawDmg, hitAngle, knockback, tag = "", headless = false) {
+            if (!victim.alive) return;
+
+            // 1. Parry / Riposte Counter-Stun
+            if (victim.parryTicks > 0) {
+                victim.parryTicks = 0;
+                if (attacker && dist(attacker.x, attacker.y, victim.x, victim.y) < 115) {
+                    attacker.stunTicks = 34;
+                    attacker.vx -= Math.cos(hitAngle) * 10; attacker.vy -= Math.sin(hitAngle) * 10;
+                }
+                if (!headless) {
+                    Sfx.play("parry"); state.hitStop = 2.0;
+                    addPopup(victim.x, victim.y, "🛡️ PARRY RIPOSTE!", "#38BDF8", 1.3, true);
+                    setSpeech(victim, "PARRIED!");
+                }
+                return;
+            }
+
+            // 2. Backstab / Stealth Ambush Bonus
+            let mult = 1.0;
+            let isCrit = false;
+            if (attacker) {
+                const w = WEAPONS[attacker.weapon];
+                const behindDiff = Math.abs(normAngle(hitAngle - victim.facing));
+                if (behindDiff < 1.05) {
+                    mult *= (w.backstabMult || 1.45);
+                    tag = "🩸 BACKSTAB!";
+                    isCrit = true;
+                }
+            }
+
+            // If victim hadn't detected the attacker yet, alert them immediately to the ambush direction!
+            if (attacker) {
+                victim.lastSeenGhost = { x: attacker.x, y: attacker.y, vx: attacker.vx, vy: attacker.vy, name: attacker.name, color: attacker.color, ttl: 240 };
+            }
+
+            const armorMit = 1 - clamp(victim.attributes.armor * 0.016, 0, 0.46);
+            const finalDmg = Math.max(3, Math.round(rawDmg * mult * armorMit));
+            victim.hp = Math.max(0, victim.hp - finalDmg);
+            victim.hitFlash = 7;
+            victim.vx += Math.cos(hitAngle) * knockback * 0.65;
+            victim.vy += Math.sin(hitAngle) * knockback * 0.65;
+
+            if (attacker) attacker.dmgDealt += finalDmg;
+
+            if (!headless) {
+                Sfx.play("hit");
+                if (isCrit) state.hitStop = 1.8;
+                state.shake = Math.min(11, state.shake + (isCrit ? 5.5 : 2.2));
+                paintBloodSplatter(victim.x, victim.y, hitAngle, isCrit ? 1.55 : 0.9);
+                addPopup(victim.x, victim.y, `${tag ? tag + ' ' : ''}-${finalDmg}`, isCrit ? "#FBBF24" : "#F87171", isCrit ? 1.32 : 1.05, isCrit);
+            }
+
+            if (victim.hp <= 0) {
+                victim.alive = false;
+                if (attacker) attacker.kills++;
+                if (!headless) {
+                    Sfx.play("kill"); state.hitStop = 3.2; state.shake = 13;
+                    paintBloodSplatter(victim.x, victim.y, hitAngle, 2.3);
+                    spawnAnatomicalGibs(victim, hitAngle);
+                    addPopup(victim.x, victim.y, "💀 FATALITY!!", "#F43F5E", 1.48, true);
+                    const killerHtml = attacker
+                        ? `<span style="color:${attacker.color};font-weight:800">${attacker.name}</span>`
+                        : `<span class="text-amber-400 font-bold">ARENA HAZARD</span>`;
+                    const victimHtml = `<span style="color:${victim.color};font-weight:800">${victim.name}</span>`;
+                    logEvent(`${killerHtml} obliterated ${victimHtml}!`);
+                }
+            }
+        }
+
+        function fireWeaponStrike(u, headless = false) {
+            const w = WEAPONS[u.weapon];
+            const pwrMult = 1 + u.attributes.power * 0.028 + (u.berserkTicks > 0 ? 0.35 : 0);
+            const finalDmg = Math.round(w.dmg * pwrMult);
+            u.swingDir *= -1;
+            u.strikeTimer = w.strikeDuration || 10;
+
+            if (w.type === "melee") {
+                if (!headless) {
+                    state.slashes.push({ x: u.x, y: u.y, r: u.attackRange + 8, angle: u.facing, arc: w.arc || 1.6, color: u.color, life: 10, maxLife: 10 });
+                }
+                for (const o of state.units) {
+                    if (!o.alive || o.teamId === u.teamId) continue;
+                    if (dist(u.x, u.y, o.x, o.y) <= u.attackRange + o.radius + 4) {
+                        const ang = Math.atan2(o.y - u.y, o.x - u.x);
+                        if (Math.abs(normAngle(ang - u.facing)) <= (w.arc || 1.6) * 0.62) {
+                            if (w.stunTicks) o.stunTicks = Math.max(o.stunTicks, w.stunTicks);
+                            applyDamage(u, o, finalDmg, ang, w.knockback, "", headless);
+                        }
+                    }
+                }
+                for (let pi = state.props.length - 1; pi >= 0; pi--) {
+                    const pr = state.props[pi];
+                    if (pr.hp > 0 && dist(u.x, u.y, pr.x, pr.y) <= u.attackRange + pr.r + 6) {
+                        damageArenaProp(pr, finalDmg, u, headless);
+                    }
+                }
+                state.props = state.props.filter(p => p.hp > 0);
+            } else {
+                state.projectiles.push({
+                    ownerId: u.id, teamId: u.teamId, color: u.color, lightColor: u.lightColor,
+                    projType: w.projType,
+                    x: u.x + Math.cos(u.facing) * (u.radius + 12),
+                    y: u.y + Math.sin(u.facing) * (u.radius + 12),
+                    z: 14, vx: Math.cos(u.facing) * w.projSpeed, vy: Math.sin(u.facing) * w.projSpeed,
+                    angle: u.facing, spin: 0, dmg: finalDmg, knockback: w.knockback,
+                    slowTicks: w.slowTicks || 0, splash: w.splash || 0,
+                    traveled: 0, maxDist: u.attackRange + 65, trail: []
+                });
+            }
+        }
+
+        /***********************************************************************
+         * 8. CONTINUOUS 60FPS PHYSICS & WALL-SLAM ENGINE
+         ***********************************************************************/
+        function resolveWallCollisions(u, headless = false) {
+            const speed = Math.hypot(u.vx, u.vy);
+            const hitOuter = (u.x < u.radius + 16 || u.x > WORLD_W - u.radius - 16 || u.y < u.radius + 16 || u.y > WORLD_H - u.radius - 16);
+            if (hitOuter && speed > 5.8 && (u.wallSlamCd || 0) <= 0) {
+                u.wallSlamCd = 38; u.vx *= -0.45; u.vy *= -0.45; u.stunTicks = Math.max(u.stunTicks, 20);
+                applyDamage(null, u, Math.round(14 + speed * 1.4), u.facing + Math.PI, 2, "🧱 WALL SLAM!", headless);
+                if (!headless) { Sfx.play("clank"); spawnPropDebris(u.x, u.y, "stone_chip", 5); }
+            }
+            u.x = clamp(u.x, u.radius + 16, WORLD_W - u.radius - 16);
+            u.y = clamp(u.y, u.radius + 16, WORLD_H - u.radius - 16);
+
+            for (const w of state.walls) {
+                const cx = clamp(u.x, w.x, w.x + w.w), cy = clamp(u.y, w.y, w.y + w.h);
+                const dx = u.x - cx, dy = u.y - cy, d = Math.hypot(dx, dy);
+                if (d < u.radius && d > 0.001) {
+                    const nx = dx / d, ny = dy / d;
+                    u.x += nx * (u.radius - d); u.y += ny * (u.radius - d);
+                    if (speed > 5.4 && (u.wallSlamCd || 0) <= 0) {
+                        u.wallSlamCd = 38; w.cracks = (w.cracks || 0) + 1;
+                        u.vx = nx * speed * 0.45; u.vy = ny * speed * 0.45; u.stunTicks = Math.max(u.stunTicks, 22);
+                        applyDamage(null, u, Math.round(15 + speed * 1.5), Math.atan2(ny, nx), 2, "🧱 PILLAR SLAM!", headless);
+                        if (!headless) { Sfx.play("clank"); spawnPropDebris(cx, cy, "stone_chip", 6); }
+                    }
+                }
+            }
+
+            for (const pr of state.props) {
+                if (pr.hp <= 0) continue;
+                const dx = u.x - pr.x, dy = u.y - pr.y, d = Math.hypot(dx, dy), minD = u.radius + pr.r;
+                if (d < minD && d > 0.001) {
+                    u.x += (dx / d) * (minD - d); u.y += (dy / d) * (minD - d);
+                }
+            }
+        }
+
+        function stepSimulation(headless = false, dt = 1.0) {
+            if (!headless && state.hitStop > 0) {
+                state.hitStop = Math.max(0, state.hitStop - dt);
+                dt *= 0.14;
+            }
+            const prevTick = Math.floor(state.ticks);
+            state.ticks += dt;
+            const currTick = Math.floor(state.ticks);
+            const crossedTick = currTick > prevTick;
+
+            const alive = state.units.filter(u => u.alive);
+            const aliveTeams = [...new Set(alive.map(u => u.teamId))];
+
+            if (!headless && aliveTeams.length <= 1 && state.ticks > 12) {
+                const winTeam = aliveTeams[0];
+                if (state.autoEvo.active) {
+                    if (state.ticks > 18) onLiveArenaBoutFinished(winTeam);
+                } else {
+                    const banner = document.getElementById('winnerBanner');
+                    if (banner.classList.contains('hidden')) {
+                        banner.classList.remove('hidden');
+                        const winners = alive.filter(u => u.teamId === winTeam);
+                        const pal = TEAM_COLORS[(winTeam ?? 0) % TEAM_COLORS.length];
+                        document.getElementById('winnerTitle').textContent = winners.length ? `${pal.name} VICTORY!` : `MUTUAL CARNAGE DRAW!`;
+                        document.getElementById('winnerSub').textContent = winners.length ? `Survivors: ${winners.map(w => w.name).join(', ')}` : `Nobody survived the Pit!`;
+                    }
+                }
+            }
+
+            // 1. Update Hazards & Mechanical 3D Spike Grates
+            for (const h of state.hazards) {
+                if (h.cd > 0) h.cd = Math.max(0, h.cd - dt);
+                if (h.type === "spike") {
+                    const prev = h.timer;
+                    h.timer = (h.timer + dt) % h.period;
+                    const prog = h.timer / h.period;
+                    if (prog < 0.80) h.thrust = 0;
+                    else if (prog < 0.86) h.thrust = (prog - 0.80) / 0.06;
+                    else if (prog < 0.94) h.thrust = 1.0;
+                    else h.thrust = Math.max(0, 1.0 - (prog - 0.94) / 0.06);
+
+                    if (prev < h.period * 0.82 && h.timer >= h.period * 0.82) {
+                        if (!headless) Sfx.play("clank");
+                        for (const u of alive) {
+                            if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                                h.bloodTip = 1.0;
+                                applyDamage(null, u, 42, Math.atan2(u.y - h.y, u.x - h.x), 14, "🩸 IMPALED!!", headless);
+                            }
+                        }
+                    }
+                } else if (h.type === "saw") {
+                    h.x += (h.vx || 0) * dt; h.y += (h.vy || 0) * dt; h.angle += 0.25 * dt;
+                    if (h.minY && (h.y < h.minY || h.y > h.maxY)) h.vy *= -1;
+                    if (crossedTick && currTick % 12 === 0) {
+                        for (const u of alive) {
+                            if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                                applyDamage(null, u, 22, Math.atan2(u.y - h.y, u.x - h.x), 14, "⚙️ SAWBLADE!", headless);
+                            }
+                        }
+                    }
+                } else if (h.cd <= 0) {
+                    for (const u of alive) {
+                        if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                            if (h.type === "shrine" && u.hp < u.maxHp * 0.9) {
+                                const heal = Math.round(u.maxHp * 0.42);
+                                u.hp = Math.min(u.maxHp, u.hp + heal); h.cd = 320;
+                                if (!headless) addPopup(u.x, u.y, `💚 +${heal} HP`, "#34D399", 1.2);
+                                break;
+                            } else if (h.type === "haste") {
+                                u.hasteTicks = 200; h.cd = 340;
+                                if (!headless) addPopup(u.x, u.y, `⚡ 2X SPEED!`, "#38BDF8", 1.2);
+                                break;
+                            } else if (h.type === "berserk") {
+                                u.berserkTicks = 200; h.cd = 340;
+                                if (!headless) addPopup(u.x, u.y, `🔥 RAGE +35%!`, "#F43F5E", 1.2);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update Acid Pools & Prop Flashes
+            for (let ai = state.acidPools.length - 1; ai >= 0; ai--) {
+                const ap = state.acidPools[ai]; ap.life -= dt;
+                if (crossedTick && currTick % 24 === 0) {
+                    for (const u of alive) {
+                        if (dist(u.x, u.y, ap.x, ap.y) <= ap.r + u.radius * 0.5) applyDamage(null, u, 11, u.facing, 1, "🧪 ACID!", headless);
+                    }
+                }
+                if (ap.life <= 0) state.acidPools.splice(ai, 1);
+            }
+            for (const pr of state.props) if (pr.hitFlash > 0) pr.hitFlash = Math.max(0, pr.hitFlash - dt);
+
+            // 2. Update Living Gladiators (Vision Detection, Ghost Decay, Steering & Combat)
+            for (const u of alive) {
+                if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
+                if (u.parryTicks > 0) u.parryTicks = Math.max(0, u.parryTicks - dt);
+                if (u.parryCd > 0) u.parryCd = Math.max(0, u.parryCd - dt);
+                if (u.slowTicks > 0) u.slowTicks = Math.max(0, u.slowTicks - dt);
+                if (u.hasteTicks > 0) u.hasteTicks = Math.max(0, u.hasteTicks - dt);
+                if (u.berserkTicks > 0) u.berserkTicks = Math.max(0, u.berserkTicks - dt);
+                if (u.wallSlamCd > 0) u.wallSlamCd = Math.max(0, u.wallSlamCd - dt);
+                if (u.hitFlash > 0) u.hitFlash = Math.max(0, u.hitFlash - dt);
+                if (u.speechTimer > 0) u.speechTimer = Math.max(0, u.speechTimer - dt);
+                if (u.speechCd > 0) u.speechCd = Math.max(0, u.speechCd - dt);
+                if (u.lastSeenGhost) {
+                    u.lastSeenGhost.ttl -= dt;
+                    if (u.lastSeenGhost.ttl <= 0 || dist(u.x, u.y, u.lastSeenGhost.x, u.lastSeenGhost.y) < 34) {
+                        u.lastSeenGhost = null;
+                    }
+                }
+
+                const damp = Math.pow(0.78, dt);
+                if (u.stunTicks > 0) {
+                    u.stunTicks = Math.max(0, u.stunTicks - dt);
+                    u.x += u.vx * dt; u.y += u.vy * dt; u.vx *= damp; u.vy *= damp;
+                    resolveWallCollisions(u, headless);
+                    continue;
+                }
+
+                const enemies = alive.filter(e => e.teamId !== u.teamId);
+                const target = selectTargetWithVision(u, enemies);
+                const w = WEAPONS[u.weapon];
+
+                // Active Parry Reflex
+                if (target && u.parryCd <= 0 && u.windupTimer <= 0) {
+                    if (target.windupTimer > 0 && dist(u.x, u.y, target.x, target.y) <= target.attackRange + 35) {
+                        if (Math.random() < u.strategy.parryReflex * 0.35 * dt) {
+                            u.parryTicks = 22; u.parryCd = 105; u.badge = "PARRY";
+                        }
+                    }
+                }
+
+                // 4-Phase Weapon State Machine
+                if (u.windupTimer > 0) {
+                    u.windupTimer -= dt;
+                    if (u.windupTimer <= 0) {
+                        fireWeaponStrike(u, headless);
+                        u.recoveryTimer = w.recovery;
+                        u.atkCd = Math.max(10, w.cd - Math.floor(u.attributes.haste * 0.55));
+                    }
+                } else if (u.strikeTimer > 0) {
+                    u.strikeTimer = Math.max(0, u.strikeTimer - dt);
+                } else if (u.recoveryTimer > 0) {
+                    u.recoveryTimer = Math.max(0, u.recoveryTimer - dt);
+                }
+
+                // Steering & Movement
+                const steer = computeContextSteering(u, target, dt);
+                let spd = u.moveSpeed;
+                if (u.slowTicks > 0) spd *= 0.58;
+                if (u.hasteTicks > 0) spd *= 1.38;
+                if (u.windupTimer > 0) spd *= (w.type === "ranged" ? 0.65 : 0.38);
+                if (u.parryTicks > 0) spd *= 0.45;
+
+                u.vx += steer.fx * spd * 0.25 * dt;
+                u.vy += steer.fy * spd * 0.25 * dt;
+
+                // Ballistic Target Leading & Angular Head/Body Rotation
+                let desiredAng = Math.atan2(steer.fy, steer.fx);
+                u.aimPoint = null;
+                if (target) {
+                    if (w.type === "ranged") {
+                        const lead = computeLeadPoint(u, target, w.projSpeed, u.strategy.aimPrediction);
+                        u.aimPoint = lead;
+                        desiredAng = Math.atan2(lead.y - u.y, lead.x - u.x);
+                    } else {
+                        desiredAng = Math.atan2(target.y - u.y, target.x - u.x);
+                    }
+                } else if (u.lastSeenGhost) {
+                    desiredAng = Math.atan2(u.lastSeenGhost.y - u.y, u.lastSeenGhost.x - u.x);
+                }
+
+                const turnRate = getTurnRateRad(u) * dt;
+                const diff = normAngle(desiredAng - u.facing);
+                u.facing = normAngle(u.facing + clamp(diff, -turnRate, turnRate));
+
+                // When searching or patrolling with no visible enemy, scan head left & right to sweep the Vision Cone!
+                if (target) {
+                    u.headAngle = u.facing;
+                } else {
+                    u.scanPhase += 0.07 * dt;
+                    u.headAngle = normAngle(u.facing + Math.sin(u.scanPhase) * 0.55);
+                }
+
+                // Trigger Attack only when enemy is detected AND in Line-of-Sight
+                if (target && u.atkCd <= 0 && u.windupTimer <= 0 && u.strikeTimer <= 0 && u.recoveryTimer <= 0 && !u.isHidingBehindPillar) {
+                    const d = dist(u.x, u.y, target.x, target.y);
+                    if (d <= u.attackRange + target.radius && Math.abs(diff) < 0.52 && hasLineOfSight(u.x, u.y, target.x, target.y)) {
+                        u.windupTimer = w.windup; u.maxWindup = w.windup; u.badge = "ATTACK";
+                    }
+                }
+
+                u.x += u.vx * dt; u.y += u.vy * dt;
+                u.vx *= damp; u.vy *= damp;
+                u.walkPhase += Math.hypot(u.vx, u.vy) * 0.19 * dt;
+                resolveWallCollisions(u, headless);
+
+                // Emit acoustic footstep ripples when moving fast (visible through Fog of War!)
+                if (!headless && crossedTick && currTick % 18 === 0 && Math.hypot(u.vx, u.vy) > 1.7) {
+                    state.soundRipples.push({ x: u.x, y: u.y, r: 8, maxR: 56, color: u.color, alpha: 0.65, teamId: u.teamId });
+                }
+            }
+
+            // Soft Unit-vs-Unit Separation
+            for (let i = 0; i < alive.length; i++) {
+                for (let j = i + 1; j < alive.length; j++) {
+                    const a = alive[i], b = alive[j];
+                    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+                    const minD = a.radius + b.radius;
+                    if (d < minD) {
+                        const push = (minD - d) * 0.42;
+                        a.x -= (dx / d) * push; a.y -= (dy / d) * push;
+                        b.x += (dx / d) * push; b.y += (dy / d) * push;
+                    }
+                }
+            }
+
+            // 3. Update Projectiles
+            for (let i = state.projectiles.length - 1; i >= 0; i--) {
+                const p = state.projectiles[i];
+                if (!headless && crossedTick) {
+                    p.trail.push({ x: p.x, y: p.y });
+                    if (p.trail.length > 7) p.trail.shift();
+                }
+                p.x += p.vx * dt; p.y += p.vy * dt;
+                p.spin += 0.34 * dt;
+                p.traveled += Math.hypot(p.vx, p.vy) * dt;
+
+                let hit = (p.traveled >= p.maxDist || p.x < 16 || p.x > WORLD_W - 16 || p.y < 16 || p.y > WORLD_H - 16);
+                if (!hit) {
+                    for (const w of state.walls) {
+                        if (p.x >= w.x && p.x <= w.x + w.w && p.y >= w.y && p.y <= w.y + w.h) { hit = true; break; }
+                    }
+                }
+                if (!hit) {
+                    for (let pi = state.props.length - 1; pi >= 0; pi--) {
+                        const pr = state.props[pi];
+                        if (pr.hp > 0 && dist(p.x, p.y, pr.x, pr.y) <= pr.r + 8) {
+                            damageArenaProp(pr, p.dmg, state.units.find(x => x.id === p.ownerId), headless);
+                            hit = true; break;
+                        }
+                    }
+                    state.props = state.props.filter(pr => pr.hp > 0);
+                }
+                if (!hit) {
+                    for (const u of alive) {
+                        if (u.teamId !== p.teamId && dist(p.x, p.y, u.x, u.y) <= u.radius + 9) {
+                            const shooter = state.units.find(x => x.id === p.ownerId);
+                            if (p.splash > 0) {
+                                for (const o of alive) {
+                                    if (o.teamId !== p.teamId && dist(p.x, p.y, o.x, o.y) <= p.splash) {
+                                        applyDamage(shooter, o, p.dmg, p.angle, p.knockback, "🔥 AoE!", headless);
+                                    }
+                                }
+                            } else {
+                                if (p.slowTicks > 0) u.slowTicks = p.slowTicks;
+                                applyDamage(shooter, u, p.dmg, p.angle, p.knockback, p.slowTicks ? "❄️ SLOW" : "", headless);
+                            }
+                            hit = true; break;
+                        }
+                    }
+                }
+                if (hit) state.projectiles.splice(i, 1);
+            }
+
+            // 4. Visual Slashes, Ragdoll Gibs, Popups & Sound Ripples
+            if (!headless) {
+                for (let i = state.slashes.length - 1; i >= 0; i--) {
+                    state.slashes[i].life -= dt;
+                    if (state.slashes[i].life <= 0) state.slashes.splice(i, 1);
+                }
+                for (const g of state.gibs) {
+                    if (g.settled) continue;
+                    g.x += g.vx * dt; g.y += g.vy * dt; g.z += g.vz * dt;
+                    g.vz -= 0.46 * dt; g.rot += g.vrot * dt;
+                    if (g.type === "intestine" && crossedTick && currTick % 2 === 0) {
+                        g.trailHistory.push({ x: g.x, y: g.y - Math.max(0, g.z) });
+                        if (g.trailHistory.length > 7) g.trailHistory.shift();
+                    }
+                    if (g.z <= 0) {
+                        g.z = 0; g.vz *= -0.45; g.vx *= 0.62; g.vy *= 0.62; g.bounces++;
+                        paintBloodSplatter(g.x, g.y, g.rot, 0.42);
+                        if (g.bounces >= 3 || Math.hypot(g.vx, g.vy) < 0.35) g.settled = true;
+                    }
+                }
+                for (let i = state.popups.length - 1; i >= 0; i--) {
+                    const pop = state.popups[i];
+                    pop.x += pop.vx * dt; pop.y += pop.vy * dt; pop.vy += 0.14 * dt; pop.life -= dt;
+                    if (pop.life <= 0) state.popups.splice(i, 1);
+                }
+                for (let i = state.soundRipples.length - 1; i >= 0; i--) {
+                    const sr = state.soundRipples[i];
+                    sr.r += 1.4 * dt; sr.alpha -= 0.018 * dt;
+                    if (sr.alpha <= 0) state.soundRipples.splice(i, 1);
+                }
+                if (crossedTick && currTick % 5 === 0) {
+                    state.history.push(state.units.map(u => ({
+                        id: u.id, x: u.x, y: u.y, facing: u.facing, headAngle: u.headAngle,
+                        hp: u.hp, alive: u.alive, badge: u.badge
+                    })));
+                    if (state.history.length > 260) state.history.shift();
+                    const sl = document.getElementById('replaySlider');
+                    if (sl) { sl.max = state.history.length - 1; sl.value = state.history.length - 1; }
+                    document.getElementById('tickLabel').textContent = `Tick ${currTick}`;
+                }
+                if (crossedTick && currTick % 12 === 0) updateLiveHuds();
+            }
+        }
+
+        /***********************************************************************
+         * 9. 2.5D RENDERER (RAYCASTED VISION CONES, FOG OF WAR & OVERSIZED RIGS)
+         ***********************************************************************/
+        const canvas = document.getElementById('arenaCanvas');
+        const ctx = canvas.getContext('2d');
+        const fogCanvas = document.createElement('canvas');
+        fogCanvas.width = WORLD_W; fogCanvas.height = WORLD_H;
+        const fogCtx = fogCanvas.getContext('2d');
+
+        function resizeCanvas() {
+            const wrap = document.getElementById('canvasWrap');
+            state.dpr = window.devicePixelRatio || 1;
+            canvas.width = wrap.clientWidth * state.dpr;
+            canvas.height = wrap.clientHeight * state.dpr;
+        }
+
+        function drawDropShadow(x, y, rx, ry, zLift = 0) {
+            const s = clamp(1 - zLift / 95, 0.35, 1);
+            ctx.save();
+            ctx.fillStyle = `rgba(0, 0, 0, ${0.46 * s})`;
+            ctx.beginPath(); ctx.ellipse(x, y + 6, rx * s, ry * s, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        }
+
+        function drawHelmetOverlay(u, r) {
+            const helm = (WEAPONS[u.weapon] || WEAPONS.GREATSWORD).helm;
+            ctx.save();
+            if (helm === "horns") {
+                ctx.fillStyle = "#FDE68A"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.6;
+                [-1, 1].forEach(side => {
+                    ctx.beginPath();
+                    ctx.moveTo(-2, side * (r * 0.72));
+                    ctx.quadraticCurveTo(-8, side * (r + 12), 8, side * (r + 9));
+                    ctx.quadraticCurveTo(3, side * (r * 0.65), -2, side * (r * 0.72));
+                    ctx.fill(); ctx.stroke();
+                });
+            } else if (helm === "knight") {
+                ctx.fillStyle = u.color;
+                ctx.beginPath(); ctx.ellipse(-r * 0.55, 0, 8, 4.5, -0.3, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = "#09090B"; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(r * 0.48, -5); ctx.lineTo(r * 0.48, 5); ctx.stroke();
+            } else if (helm === "ninja") {
+                ctx.strokeStyle = u.color; ctx.lineWidth = 3.5; ctx.lineCap = "round";
+                const wave = Math.sin(state.ticks * 0.22 + u.walkPhase) * 4;
+                ctx.beginPath(); ctx.moveTo(-r * 0.85, -3); ctx.lineTo(-r - 11, -7 + wave);
+                ctx.moveTo(-r * 0.85, 3); ctx.lineTo(-r - 11, 7 + wave); ctx.stroke();
+            } else if (helm === "crown") {
+                ctx.fillStyle = "#FBBF24"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.3;
+                ctx.beginPath();
+                ctx.moveTo(-3, -6); ctx.lineTo(4, -9); ctx.lineTo(2, -3);
+                ctx.lineTo(6, 0); ctx.lineTo(2, 3); ctx.lineTo(4, 9); ctx.lineTo(-3, 6);
+                ctx.closePath(); ctx.fill(); ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawOversizedWeaponRig(u, r) {
+            const w = WEAPONS[u.weapon] || WEAPONS.GREATSWORD;
+            let swingOffset = 0, thrustOffset = 0, isGlowing = false;
+            if (u.windupTimer > 0) {
+                const p = 1 - (u.windupTimer / Math.max(1, u.maxWindup));
+                swingOffset = -u.swingDir * (0.65 + p * 0.65);
+                isGlowing = true;
+            } else if (u.strikeTimer > 0) {
+                const p = 1 - (u.strikeTimer / Math.max(1, u.maxStrike));
+                swingOffset = u.swingDir * (-0.9 + p * 2.15);
+                thrustOffset = Math.sin(p * Math.PI) * 14;
+            } else if (u.recoveryTimer > 0) {
+                swingOffset = u.swingDir * 0.55;
+            }
+
+            ctx.save();
+            ctx.rotate(swingOffset);
+            ctx.translate(thrustOffset, 0);
+            if (isGlowing) { ctx.shadowColor = "#FBBF24"; ctx.shadowBlur = 12; }
+
+            if (u.weapon === "GREATSWORD") {
+                ctx.fillStyle = "#78350F"; ctx.fillRect(r - 4, -2.5, 10, 5);
+                ctx.fillStyle = "#FBBF24"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.5;
+                ctx.fillRect(r + 4, -10, 4.5, 20); ctx.strokeRect(r + 4, -10, 4.5, 20);
+                ctx.fillStyle = isGlowing ? "#FEF08A" : "#E2E8F0";
+                ctx.beginPath();
+                ctx.moveTo(r + 8.5, -5.5); ctx.lineTo(r + 48, -3.5);
+                ctx.lineTo(r + 56, 0); ctx.lineTo(r + 48, 3.5); ctx.lineTo(r + 8.5, 5.5);
+                ctx.closePath(); ctx.fill(); ctx.stroke();
+            } else if (u.weapon === "WARHAMMER") {
+                ctx.fillStyle = "#1E293B"; ctx.strokeStyle = u.lightColor; ctx.lineWidth = 2.2;
+                ctx.beginPath(); ctx.roundRect(r * 0.2, -r - 7, 9, 16, 3); ctx.fill(); ctx.stroke();
+                ctx.fillStyle = "#78350F"; ctx.fillRect(r - 2, -2.5, 34, 5);
+                ctx.fillStyle = isGlowing ? "#FDE047" : "#94A3B8"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.6;
+                ctx.fillRect(r + 24, -13, 13, 26); ctx.strokeRect(r + 24, -13, 13, 26);
+            } else if (u.weapon === "TWIN_DAGGERS") {
+                [-1, 1].forEach(side => {
+                    ctx.save(); ctx.translate(r * 0.55, side * (r * 0.72)); ctx.rotate(side * 0.22);
+                    ctx.fillStyle = "#A7F3D0"; ctx.strokeStyle = "#059669"; ctx.lineWidth = 1.5;
+                    ctx.beginPath(); ctx.moveTo(5, -3.5); ctx.lineTo(27, 0); ctx.lineTo(5, 3.5); ctx.closePath();
+                    ctx.fill(); ctx.stroke(); ctx.restore();
+                });
+            } else if (u.weapon === "THROWING_AXES") {
+                [-1, 1].forEach(side => {
+                    ctx.save(); ctx.translate(r * 0.5, side * (r * 0.75));
+                    ctx.fillStyle = "#78350F"; ctx.fillRect(0, -2, 22, 4);
+                    ctx.fillStyle = "#E2E8F0"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.4;
+                    ctx.beginPath(); ctx.arc(16, side * 4, 9, 0, Math.PI, side < 0); ctx.closePath();
+                    ctx.fill(); ctx.stroke(); ctx.restore();
+                });
+            } else if (u.weapon === "LONGBOW") {
+                const pull = u.windupTimer > 0 ? 8 : 2;
+                ctx.strokeStyle = "#D97706"; ctx.lineWidth = 3.5;
+                ctx.beginPath(); ctx.arc(r + 4, 0, 17, -1.25, 1.25); ctx.stroke();
+                ctx.strokeStyle = "#E2E8F0"; ctx.lineWidth = 1.3;
+                ctx.beginPath();
+                ctx.moveTo(r + 4 + Math.cos(-1.25) * 17, Math.sin(-1.25) * 17);
+                ctx.lineTo(r + 2 - pull, 0);
+                ctx.lineTo(r + 4 + Math.cos(1.25) * 17, Math.sin(1.25) * 17);
+                ctx.stroke();
+            } else if (u.weapon === "ARCANE_STAFF") {
+                ctx.fillStyle = "#581C87"; ctx.fillRect(r * 0.2, -2.5, 42, 5);
+                ctx.fillStyle = u.lightColor;
+                ctx.beginPath(); ctx.arc(r * 0.2 + 45, 0, 7, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        function renderArena() {
+            const w = canvas.width / state.dpr, h = canvas.height / state.dpr;
+            ctx.save();
+            ctx.scale(state.dpr, state.dpr);
+            ctx.fillStyle = "#050408"; ctx.fillRect(0, 0, w, h);
+
+            let sx = 0, sy = 0;
+            if (state.shake > 0.2) {
+                sx = (Math.random() - 0.5) * state.shake; sy = (Math.random() - 0.5) * state.shake;
+                state.shake *= 0.86;
+            } else state.shake = 0;
+
+            ctx.translate(w / 2 + sx, h / 2 + sy);
+            ctx.scale(state.cam.zoom, state.cam.zoom);
+            ctx.translate(-state.cam.x, -state.cam.y);
+
+            // 1. Floor & Persistent Gore Layer
+            ctx.drawImage(decalCanvas, 0, 0);
+
+            // 1B. Bubbling Acid Pools
+            for (const ap of state.acidPools) {
+                ctx.save(); ctx.translate(ap.x, ap.y);
+                ctx.fillStyle = "rgba(16, 185, 129, 0.35)"; ctx.strokeStyle = "#10B981"; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(0, 0, ap.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                ctx.restore();
+            }
+
+            // 2. RAYCASTED VISION CONES, ATTACK RINGS & 360° HEARING RINGS (Underneath Units & Pillars)
+            const selUnit = state.units.find(u => u.id === state.selectedId && u.alive) || state.units.find(u => u.alive);
+            for (const u of state.units) {
+                if (!u.alive) continue;
+                const isSel = (u.id === state.selectedId);
+                const drawCone = (state.visionMode === "cones") || (state.visionMode === "fog" && isSel) || (state.visionMode === "clear" && isSel);
+
+                if (drawCone) {
+                    const poly = computeVisionPolygon(u, isSel ? 48 : 30);
+                    ctx.save();
+                    const grad = ctx.createRadialGradient(u.x, u.y, u.radius, u.x, u.y, u.visionRange);
+                    grad.addColorStop(0, `${u.color}${isSel ? '36' : '1C'}`);
+                    grad.addColorStop(1, `${u.color}03`);
+                    ctx.fillStyle = grad;
+                    ctx.strokeStyle = `${u.color}${isSel ? '88' : '38'}`;
+                    ctx.lineWidth = isSel ? 1.8 : 1.0;
+                    ctx.beginPath();
+                    poly.forEach((pt, idx) => { if (idx === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y); });
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+
+                    // Attack Range Ring & 360° Acoustic Hearing Ring
+                    if (isSel || state.visionMode === "cones") {
+                        ctx.setLineDash([5, 5]);
+                        ctx.strokeStyle = `${u.color}${isSel ? '90' : '40'}`;
+                        ctx.lineWidth = 1.3;
+                        ctx.beginPath(); ctx.arc(u.x, u.y, u.attackRange, 0, Math.PI * 2); ctx.stroke();
+
+                        ctx.setLineDash([2, 6]);
+                        ctx.strokeStyle = isSel ? "rgba(56, 189, 248, 0.55)" : "rgba(148, 163, 184, 0.22)";
+                        ctx.beginPath(); ctx.arc(u.x, u.y, u.hearingRange, 0, Math.PI * 2); ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+                    ctx.restore();
+                }
+
+                // Render `👻 LAST SEEN` Ghost Marker when hunting an enemy who broke Line-of-Sight!
+                if (u.lastSeenGhost && (isSel || state.visionMode === "cones")) {
+                    const g = u.lastSeenGhost;
+                    ctx.save();
+                    ctx.strokeStyle = g.color; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.4;
+                    ctx.beginPath(); ctx.moveTo(u.x, u.y); ctx.lineTo(g.x, g.y); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+                    ctx.beginPath(); ctx.arc(g.x, g.y, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                    ctx.font = "800 9px 'JetBrains Mono', monospace";
+                    ctx.fillStyle = "#FDE047"; ctx.textAlign = "center";
+                    ctx.fillText("👻 LAST SEEN", g.x, g.y - 18);
+                    ctx.restore();
+                }
+            }
+
+            // 3. 2.5D Shrines, Mechanical 3D Spike Grates & Saws
+            for (const h of state.hazards) {
+                ctx.save(); ctx.translate(h.x, h.y);
+                const ready = (h.cd || 0) <= 0;
+                if (h.type === "shrine" || h.type === "haste" || h.type === "berserk") {
+                    const col = h.type === "shrine" ? "#10B981" : h.type === "haste" ? "#38BDF8" : "#F43F5E";
+                    drawDropShadow(0, 7, h.r * 0.9, h.r * 0.5, 0);
+                    ctx.fillStyle = "#1E1B2E"; ctx.strokeStyle = ready ? col : "#475569"; ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(0, 0, h.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                    const bobY = ready ? Math.sin(state.ticks * 0.08 + h.x) * 4 - 6 : 0;
+                    ctx.font = "18px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                    ctx.fillText(h.type === "shrine" ? "💚" : h.type === "haste" ? "⚡" : "🔥", 0, bobY);
+                } else if (h.type === "spike") {
+                    const prog = h.timer / h.period;
+                    const telegraph = prog > 0.60 && prog < 0.82;
+                    const thrust = h.thrust || 0;
+                    if (telegraph) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4);
+                    ctx.fillStyle = "#18181B";
+                    ctx.strokeStyle = thrust > 0.2 ? "#F43F5E" : telegraph ? "#FBBF24" : "#52525B";
+                    ctx.lineWidth = 3.2;
+                    ctx.beginPath(); ctx.arc(0, 0, h.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                    const holes = [{x:0,y:0},{x:-17,y:-12},{x:17,y:-12},{x:-17,y:12},{x:17,y:12},{x:0,y:-21},{x:0,y:21},{x:-22,y:0},{x:22,y:0}];
+                    holes.forEach(hc => {
+                        ctx.fillStyle = "#09090B"; ctx.beginPath(); ctx.arc(hc.x, hc.y, 5, 0, Math.PI * 2); ctx.fill();
+                        const peek = telegraph ? 0.25 : thrust;
+                        if (peek > 0.02) {
+                            const sh = 25 * peek;
+                            ctx.fillStyle = "#E2E8F0"; ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.2;
+                            ctx.beginPath(); ctx.moveTo(hc.x - 4.5, hc.y + 1); ctx.lineTo(hc.x, hc.y - sh); ctx.lineTo(hc.x + 4.5, hc.y + 1); ctx.closePath();
+                            ctx.fill(); ctx.stroke();
+                            if (h.bloodTip > 0) {
+                                ctx.fillStyle = "#E11D48";
+                                ctx.beginPath(); ctx.moveTo(hc.x - 2.4, hc.y - sh * 0.45); ctx.lineTo(hc.x, hc.y - sh); ctx.lineTo(hc.x + 2.4, hc.y - sh * 0.45); ctx.closePath(); ctx.fill();
+                            }
+                        }
+                    });
+                } else if (h.type === "saw") {
+                    drawDropShadow(0, 5, h.r * 0.9, h.r * 0.45, 3);
+                    ctx.rotate(h.angle);
+                    ctx.fillStyle = "#CBD5E1"; ctx.strokeStyle = "#E11D48"; ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    for (let i = 0; i < 18; i++) {
+                        const rad = i % 2 === 0 ? h.r : h.r * 0.7;
+                        const a = (i / 18) * Math.PI * 2;
+                        if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+                        else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+                    }
+                    ctx.closePath(); ctx.fill(); ctx.stroke();
+                }
+                ctx.restore();
+            }
+
+            // 4. Destructible Arena Props
+            for (const pr of state.props) {
+                if (pr.hp <= 0) continue;
+                ctx.save(); ctx.translate(pr.x, pr.y);
+                drawDropShadow(0, 5, pr.r * 0.9, pr.r * 0.5, 0);
+                ctx.fillStyle = pr.hitFlash > 0 ? "#FFFFFF" : pr.type === "keg" ? "#92400E" : pr.type === "amphora" ? "#065F46" : "#1E293B";
+                ctx.strokeStyle = pr.type === "keg" ? "#09090B" : "#10B981"; ctx.lineWidth = 2.2;
+                ctx.beginPath(); ctx.arc(0, 0, pr.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                ctx.font = "13px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                ctx.fillText(pr.type === "keg" ? "💥" : pr.type === "amphora" ? "🏺" : "🧪", 0, 0);
+                ctx.restore();
+            }
+
+            // 5. 2.5D Dungeon Walls & Pillars (Shadowcasters for Vision Cones)
+            for (const wl of state.walls) {
+                ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(wl.x + 6, wl.y + 8, wl.w, wl.h);
+                ctx.fillStyle = "#1E1B2E"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2;
+                ctx.fillRect(wl.x, wl.y, wl.w, wl.h); ctx.strokeRect(wl.x, wl.y, wl.w, wl.h);
+                ctx.fillStyle = "#2E2944"; ctx.fillRect(wl.x + 3, wl.y + 3, wl.w - 6, 8);
+                if (wl.cracks > 0) {
+                    ctx.strokeStyle = "#09090B"; ctx.lineWidth = 2;
+                    const cx = wl.x + wl.w * 0.5, cy = wl.y + wl.h * 0.5;
+                    ctx.beginPath(); ctx.moveTo(cx - 12, cy - 9); ctx.lineTo(cx, cy); ctx.lineTo(cx + 12, cy - 5); ctx.stroke();
+                }
+            }
+
+            // 6. Anatomical Ragdoll Gibs
+            for (const g of state.gibs) {
+                drawDropShadow(g.x, g.y + 4, 7, 3.5, g.z);
+                if (g.type === "intestine" && g.trailHistory.length > 1) {
+                    ctx.save(); ctx.strokeStyle = "#FB7185"; ctx.lineWidth = 4.5; ctx.lineCap = "round";
+                    ctx.beginPath(); ctx.moveTo(g.x, g.y - g.z);
+                    g.trailHistory.forEach(pt => ctx.lineTo(pt.x, pt.y)); ctx.stroke(); ctx.restore();
+                }
+                ctx.save(); ctx.translate(g.x, g.y - g.z); ctx.rotate(g.rot);
+                ctx.fillStyle = g.type === "skull" ? "#F1F5F9" : g.color;
+                ctx.strokeStyle = "#09090B"; ctx.lineWidth = 1.3;
+                ctx.beginPath(); ctx.arc(0, 0, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                ctx.restore();
+            }
+
+            // 7. Weapon Slash Smears
+            for (const s of state.slashes) {
+                ctx.save(); ctx.translate(s.x, s.y);
+                ctx.strokeStyle = s.color; ctx.lineWidth = 12 * (s.life / s.maxLife); ctx.lineCap = "round";
+                ctx.beginPath(); ctx.arc(0, 0, s.r, s.angle - s.arc * 0.5, s.angle + s.arc * 0.5); ctx.stroke();
+                ctx.restore();
+            }
+
+            // 8. Living Gladiators (Filtered by Strict POV Fog of War when active!)
+            for (const u of state.units) {
+                if (!u.alive) continue;
+
+                // In Strict Selected POV Fog mode, hide enemies that are outside the selected unit's Vision/Hearing!
+                if (state.visionMode === "fog" && selUnit && u.teamId !== selUnit.teamId) {
+                    const det = canDetectTarget(selUnit, u);
+                    if (!det.detected) continue;
+                }
+
+                const r = u.radius;
+                if (state.showVectors) {
+                    for (let i = 0; i < NUM_RAYS; i += 2) {
+                        const a = (i / NUM_RAYS) * Math.PI * 2;
+                        const len = 18 + u.raysInterest[i] * 24;
+                        ctx.strokeStyle = u.raysDanger[i] > 0.5 ? "rgba(244,63,94,0.45)" : "rgba(52,211,153,0.36)";
+                        ctx.lineWidth = 1.2;
+                        ctx.beginPath(); ctx.moveTo(u.x, u.y); ctx.lineTo(u.x + Math.cos(a) * len, u.y + Math.sin(a) * len); ctx.stroke();
+                    }
+                    if (u.aimPoint) {
+                        ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = u.lightColor; ctx.lineWidth = 1.4;
+                        ctx.beginPath(); ctx.moveTo(u.x, u.y); ctx.lineTo(u.aimPoint.x, u.aimPoint.y); ctx.stroke();
+                        ctx.setLineDash([]); ctx.strokeStyle = "#FBBF24";
+                        ctx.beginPath(); ctx.arc(u.aimPoint.x, u.aimPoint.y, 6, 0, Math.PI * 2); ctx.stroke();
+                        ctx.restore();
+                    }
+                }
+
+                if (u.id === state.selectedId) {
+                    ctx.save(); ctx.strokeStyle = "#FBBF24"; ctx.lineWidth = 2.2; ctx.setLineDash([6, 4]);
+                    ctx.beginPath(); ctx.arc(u.x, u.y, r + 10, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+                }
+
+                drawDropShadow(u.x, u.y + 4, r * 1.05, r * 0.55, 0);
+
+                ctx.save(); ctx.translate(u.x, u.y); ctx.rotate(u.facing);
+                const stride = Math.sin(u.walkPhase) * 6;
+                ctx.fillStyle = "#0F172A";
+                ctx.beginPath(); ctx.arc(stride, -r * 0.52, 4.5, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(-stride, r * 0.52, 4.5, 0, Math.PI * 2); ctx.fill();
+
+                ctx.fillStyle = u.hitFlash > 0 ? "#FFFFFF" : u.color;
+                ctx.strokeStyle = "#09090B"; ctx.lineWidth = 2.5;
+                ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                drawOversizedWeaponRig(u, r);
+                drawHelmetOverlay(u, r);
+
+                // Expressive Eyes rotated toward headAngle
+                ctx.rotate(normAngle(u.headAngle - u.facing));
+                ctx.fillStyle = "#FFFFFF";
+                ctx.beginPath(); ctx.arc(r * 0.38, -5, 3.8, 0, Math.PI * 2); ctx.arc(r * 0.38, 5, 3.8, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = "#09090B";
+                ctx.beginPath(); ctx.arc(r * 0.46, -5, 1.8, 0, Math.PI * 2); ctx.arc(r * 0.46, 5, 1.8, 0, Math.PI * 2); ctx.fill();
+
+                if (u.parryTicks > 0) {
+                    ctx.strokeStyle = "#38BDF8"; ctx.lineWidth = 4;
+                    ctx.beginPath(); ctx.arc(0, 0, r + 7, -1.1, 1.1); ctx.stroke();
+                }
+                ctx.restore();
+
+                // Crisp State Badge & HP Bar
+                const bw = 48, bh = 5.5, bx = u.x - bw / 2, by = u.y - r - 18;
+                ctx.fillStyle = "rgba(9, 10, 15, 0.88)"; ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+                ctx.fillStyle = u.color; ctx.fillRect(bx, by, bw * clamp(u.hp / u.maxHp, 0, 1), bh);
+
+                ctx.font = "800 9px 'JetBrains Mono', monospace"; ctx.textAlign = "center";
+                const tagText = `${u.name.split(' ')[0]} • ${u.badge}`;
+                const tw = ctx.measureText(tagText).width + 10;
+                ctx.fillStyle = "rgba(15, 13, 24, 0.9)";
+                ctx.fillRect(u.x - tw / 2, by - 14, tw, 12);
+                ctx.fillStyle = u.isHidingBehindPillar ? "#A7F3D0" : "#F8FAFC";
+                ctx.fillText(tagText, u.x, by - 5);
+            }
+
+            // 9. Team-Colored Projectiles
+            for (const p of state.projectiles) {
+                drawDropShadow(p.x, p.y + 8, 7, 3.5, p.z);
+                if (p.trail.length > 1) {
+                    ctx.save(); ctx.strokeStyle = p.color; ctx.lineWidth = 3.5; ctx.globalAlpha = 0.45;
+                    ctx.beginPath(); p.trail.forEach((pt, idx) => { if (idx === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y); });
+                    ctx.stroke(); ctx.restore();
+                }
+                ctx.save(); ctx.translate(p.x, p.y);
+                ctx.fillStyle = p.lightColor; ctx.strokeStyle = p.color; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                ctx.restore();
+            }
+
+            // 10. STRICT SELECTED POV FOG OF WAR OVERLAY + ACOUSTIC FOOTSTEP RIPPLES
+            if (state.visionMode === "fog" && selUnit) {
+                fogCtx.clearRect(0, 0, WORLD_W, WORLD_H);
+                fogCtx.fillStyle = "rgba(4, 3, 9, 0.86)";
+                fogCtx.fillRect(0, 0, WORLD_W, WORLD_H);
+
+                fogCtx.save();
+                fogCtx.globalCompositeOperation = "destination-out";
+                const poly = computeVisionPolygon(selUnit, 56);
+                fogCtx.beginPath();
+                poly.forEach((pt, idx) => { if (idx === 0) fogCtx.moveTo(pt.x, pt.y); else fogCtx.lineTo(pt.x, pt.y); });
+                fogCtx.closePath();
+                fogCtx.fill();
+
+                // Punch out 360° Hearing Circle around selected gladiator
+                const hGrad = fogCtx.createRadialGradient(selUnit.x, selUnit.y, selUnit.radius, selUnit.x, selUnit.y, selUnit.hearingRange);
+                hGrad.addColorStop(0, "rgba(0,0,0,1)");
+                hGrad.addColorStop(0.85, "rgba(0,0,0,0.85)");
+                hGrad.addColorStop(1, "rgba(0,0,0,0)");
+                fogCtx.fillStyle = hGrad;
+                fogCtx.beginPath(); fogCtx.arc(selUnit.x, selUnit.y, selUnit.hearingRange, 0, Math.PI * 2); fogCtx.fill();
+                fogCtx.restore();
+
+                ctx.drawImage(fogCanvas, 0, 0);
+            }
+
+            // Acoustic Footstep Ripples (Visible even inside Fog of War when within hearing proximity!)
+            for (const sr of state.soundRipples) {
+                if (state.visionMode === "fog" && selUnit && dist(selUnit.x, selUnit.y, sr.x, sr.y) > selUnit.hearingRange * 1.45) continue;
+                ctx.save();
+                ctx.strokeStyle = sr.color; ctx.globalAlpha = Math.max(0, sr.alpha); ctx.lineWidth = 1.6;
+                ctx.beginPath(); ctx.arc(sr.x, sr.y, sr.r, 0, Math.PI * 2); ctx.stroke();
+                ctx.restore();
+            }
+
+            // 11. Elastic Arcade Damage Popups
+            for (const pop of state.popups) {
+                ctx.save();
+                ctx.globalAlpha = clamp(pop.life / 16, 0, 1);
+                ctx.font = `900 ${Math.round(13 * pop.size)}px 'Inter', sans-serif`;
+                ctx.textAlign = "center";
+                ctx.lineWidth = 3.5; ctx.strokeStyle = "#09090B";
+                ctx.strokeText(pop.text, pop.x, pop.y);
+                ctx.fillStyle = pop.color; ctx.fillText(pop.text, pop.x, pop.y);
+                ctx.restore();
+            }
+
+            ctx.restore();
+        }
+
+        /***********************************************************************
+         * 10. HEADLESS SIMULATOR, DYNAMIC MATRIX & LIVE CO-EVOLUTION ENGINE
+         ***********************************************************************/
+        function runHeadlessBout(archA, archB, maxTicks = 1250) {
+            const snap = {
+                units: state.units, projectiles: state.projectiles, slashes: state.slashes,
+                hazards: JSON.parse(JSON.stringify(state.hazards)), props: JSON.parse(JSON.stringify(state.props)),
+                acidPools: JSON.parse(JSON.stringify(state.acidPools)), walls: JSON.parse(JSON.stringify(state.walls)), ticks: state.ticks
+            };
+            state.projectiles = []; state.slashes = []; state.acidPools = []; state.ticks = 0;
+            const uA = makeUnitFromBlueprint({ ...archA, teamId: 0 }, 0, 1, 0, false);
+            const uB = makeUnitFromBlueprint({ ...archB, teamId: 1 }, 0, 1, 1, false);
+            state.units = [uA, uB];
+            while (state.ticks < maxTicks && uA.alive && uB.alive) stepSimulation(true, 1.0);
+            const winner = (uA.hp / uA.maxHp) >= (uB.hp / uB.maxHp) ? 0 : 1;
+            state.units = snap.units; state.projectiles = snap.projectiles; state.slashes = snap.slashes;
+            state.hazards = snap.hazards; state.props = snap.props; state.acidPools = snap.acidPools;
+            state.walls = snap.walls; state.ticks = snap.ticks;
+            return { winner };
+        }
+
+        function runMatrixSweep(trialsPerPair = 2, silent = false) {
+            const archs = getAllArchetypes();
+            const matrix = {}, avgWr = {};
+            archs.forEach(a => { matrix[a.id] = {}; });
+            for (let i = 0; i < archs.length; i++) {
+                let rowSum = 0, rowCount = 0;
+                for (let j = 0; j < archs.length; j++) {
+                    if (i === j) { matrix[archs[i].id][archs[j].id] = 50; continue; }
+                    let wins = 0;
+                    for (let t = 0; t < trialsPerPair; t++) {
+                        if (runHeadlessBout(archs[i], archs[j], 1050).winner === 0) wins++;
+                    }
+                    const wr = Math.round((wins / trialsPerPair) * 100);
+                    matrix[archs[i].id][archs[j].id] = wr;
+                    rowSum += wr; rowCount++;
+                }
+                avgWr[archs[i].id] = rowCount > 0 ? Math.round(rowSum / rowCount) : 50;
+            }
+            state.lastMatrix = { matrix, avgWr };
+            document.getElementById('matrixSizeLabel').textContent = `${archs.length}x${archs.length} Pool`;
+
+            const wrap = document.getElementById('matrixTableWrap');
+            let html = `<table class="w-full text-center border-collapse"><thead><tr><th class="p-1 text-left text-slate-400">Build</th>`;
+            archs.forEach(a => { html += `<th class="p-1" title="${a.name}">${a.icon}</th>`; });
+            html += `<th class="p-1 text-amber-300">AVG</th></tr></thead><tbody>`;
+            archs.forEach(row => {
+                html += `<tr class="border-t border-slate-800"><td class="p-1 text-left font-bold truncate max-w-[85px]" title="${row.name}">${row.icon} ${row.name.split(' ')[0]}</td>`;
+                archs.forEach(col => {
+                    const wr = matrix[row.id][col.id];
+                    const bg = row.id === col.id ? "text-slate-600" : wr >= 60 ? "bg-emerald-500/25 text-emerald-300 font-bold" : wr <= 40 ? "bg-rose-500/25 text-rose-300" : "text-slate-300";
+                    html += `<td class="p-1 ${bg}">${wr}</td>`;
+                });
+                html += `<td class="p-1 font-extrabold text-amber-300">${avgWr[row.id]}%</td></tr>`;
+            });
+            html += `</tbody></table>`;
+            wrap.innerHTML = html;
+            if (!silent) showToast(`Updated ${archs.length}x${archs.length} Meta Matrix!`);
+            return { matrix, avgWr };
+        }
+
+        function generateCounterMutant(targetArch, genNum, candidateIdx) {
+            const weaponKeys = Object.keys(WEAPONS);
+            const chosenWeapon = weaponKeys[(genNum + candidateIdx) % weaponKeys.length];
+            const w = WEAPONS[chosenWeapon];
+            const raw = {
+                vitality: 10 + Math.random() * 18, power: 12 + Math.random() * 18,
+                agility: 12 + Math.random() * 18, perception: 12 + Math.random() * 18,
+                armor: 6 + Math.random() * 16, haste: 8 + Math.random() * 16
+            };
+            const sum = Object.values(raw).reduce((s, v) => s + v, 0);
+            const attributes = {};
+            let rem = 100;
+            const keys = Object.keys(raw);
+            keys.forEach((k, idx) => {
+                if (idx === keys.length - 1) attributes[k] = Math.max(5, rem);
+                else { const val = Math.max(5, Math.round((raw[k] / sum) * 100)); attributes[k] = val; rem -= val; }
+            });
+            const isRanged = w.type === "ranged";
+            return {
+                id: `evo_g${genNum}_${Date.now().toString().slice(-3)}_${candidateIdx}`,
+                name: `Gen${genNum} ${chosenWeapon.split('_')[0]} Apex`,
+                icon: isRanged ? "🏹" : "🧬", weapon: chosenWeapon, attributes,
+                strategy: {
+                    idealRangeMin: isRanged ? Math.round(w.range * (0.48 + Math.random() * 0.22)) : 0,
+                    idealRangeMax: isRanged ? Math.round(w.range * 0.88) : w.range - 6,
+                    strafeWeight: Number((0.45 + Math.random() * 0.50).toFixed(2)),
+                    hazardAvoidance: Number((0.72 + Math.random() * 0.26).toFixed(2)),
+                    trapBaiting: Number((0.35 + Math.random() * 0.60).toFixed(2)),
+                    parryReflex: Number((0.35 + Math.random() * 0.60).toFixed(2)),
+                    aimPrediction: Number((0.75 + Math.random() * 0.24).toFixed(2)),
+                    backstabBias: Number((chosenWeapon === "TWIN_DAGGERS" ? 0.92 : 0.30 + Math.random() * 0.55).toFixed(2)),
+                    pillarHideWeight: Number((0.25 + Math.random() * 0.70).toFixed(2)),
+                    stealthAmbush: Number((0.25 + Math.random() * 0.70).toFixed(2))
+                }
+            };
+        }
+
+        function stageLiveEvolutionBout(archRed, archBlue, tagText) {
+            if (!archRed || !archBlue) return;
+            document.getElementById('simRedSelect').value = archRed.id;
+            document.getElementById('simBlueSelect').value = archBlue.id;
+            const fmt = document.getElementById('formatSelect').value;
+            const count = fmt === "1v1" ? 1 : fmt === "2v2" ? 2 : 2;
+            state.blueprints = [];
+            for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(archRed)), id: `r_${i}`, archetypeId: archRed.id, teamId: 0 });
+            for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(archBlue)), id: `b_${i}`, archetypeId: archBlue.id, teamId: 1 });
+            respawnArena();
+            const b = document.getElementById('evoBroadcastBanner');
+            if (b) {
+                b.classList.remove('hidden');
+                document.getElementById('evoBroadcastTag').textContent = tagText || "🧬 NEW CHALLENGER ENTERING THE PIT!";
+                document.getElementById('evoBroadcastTitle').textContent = `👑 ${archRed.icon} ${archRed.name}  VS  ⚡ ${archBlue.icon} ${archBlue.name}`;
+            }
+        }
+
+        function promoteEvolvedChallenger(mutant, apex, wins) {
+            state.archetypes.push(mutant);
+            if (state.archetypes.length > state.autoEvo.maxPoolSize && state.lastMatrix) {
+                const { avgWr } = state.lastMatrix;
+                let worstIdx = -1, worstWr = 999;
+                state.archetypes.forEach((a, idx) => {
+                    if (a.id !== mutant.id && idx >= 4 && (avgWr[a.id] ?? 48) < worstWr) {
+                        worstWr = avgWr[a.id]; worstIdx = idx;
+                    }
+                });
+                if (worstIdx !== -1) state.archetypes.splice(worstIdx, 1);
+            }
+            initElo();
+            state.elo[mutant.id].rating = 1235 + wins * 18;
+            populateMatchupSelects();
+            renderArchetypeStampers();
+            runMatrixSweep(1, true);
+            state.autoEvo.currentChallenger = mutant;
+            const gen = state.autoEvo.generation;
+            document.getElementById('evoGenCount').textContent = `Gen ${gen}`;
+            document.getElementById('evoLastAction').textContent = `Promoted ${mutant.name} vs ${apex.name}`;
+            stageLiveEvolutionBout(apex, mutant, `🧬 GEN ${gen} BREAKTHROUGH — WATCH THE META SHIFT!`);
+        }
+
+        function onLiveArenaBoutFinished(winTeam) {
+            if (!state.autoEvo.active) return;
+            respawnArena();
+        }
+
+        function buildBackgroundEvolutionQueue() {
+            state.autoEvo.generation++;
+            const gen = state.autoEvo.generation;
+            const archs = getAllArchetypes();
+            const { avgWr } = state.lastMatrix || runMatrixSweep(1, true);
+            let apex = archs[0], bestWr = -1;
+            archs.forEach(a => { if ((avgWr[a.id] ?? 50) > bestWr) { bestWr = avgWr[a.id]; apex = a; } });
+            state.autoEvo.currentApex = apex;
+            state.autoEvo.candidateList = [];
+            state.autoEvo.jobQueue = [];
+            for (let c = 0; c < 4; c++) {
+                const mutant = generateCounterMutant(apex, gen, c);
+                state.autoEvo.candidateList.push({ mutant, wins: 0 });
+                state.autoEvo.jobQueue.push({ type: "bout", cIdx: c });
+            }
+            state.autoEvo.jobQueue.push({ type: "finalize" });
+        }
+
+        function processOneEvolutionSlice() {
+            if (!state.autoEvo.active) return;
+            if (state.autoEvo.jobQueue.length === 0) { buildBackgroundEvolutionQueue(); return; }
+            const job = state.autoEvo.jobQueue.shift();
+            document.getElementById('evoProgressBar').style.width = `${Math.round(((5 - state.autoEvo.jobQueue.length) / 5) * 100)}%`;
+            const apex = state.autoEvo.currentApex || state.archetypes[0];
+            if (job.type === "bout") {
+                const entry = state.autoEvo.candidateList[job.cIdx];
+                document.getElementById('evoPhaseLabel').textContent = `Testing ${entry.mutant.name}...`;
+                if (runHeadlessBout(apex, entry.mutant, 900).winner === 1) entry.wins++;
+            } else if (job.type === "finalize") {
+                let best = state.autoEvo.candidateList[0];
+                state.autoEvo.candidateList.forEach(e => { if (e.wins > best.wins) best = e; });
+                if (best) promoteEvolvedChallenger(best.mutant, apex, best.wins);
+            }
+        }
+
+        function toggleContinuousEvolution() {
+            state.autoEvo.active = !state.autoEvo.active;
+            const btn = document.getElementById('toggleAutoEvoBtn');
+            const b = document.getElementById('evoBroadcastBanner');
+            if (state.autoEvo.active) {
+                btn.textContent = "⏸️ Pause Continuous Auto-Evolution Loop";
+                stageLiveEvolutionBout(state.archetypes[0], state.archetypes[1], "👑 LIVE CO-EVOLUTION EXHIBITION");
+                buildBackgroundEvolutionQueue();
+            } else {
+                btn.textContent = "▶️ Start Continuous Auto-Evolution Loop";
+                if (b) b.classList.add('hidden');
+            }
+        }
+
+        /***********************************************************************
+         * 11. UI CONTROLLERS & SYNCHRONIZATION
+         ***********************************************************************/
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg; t.style.opacity = "1";
+            clearTimeout(t._timer); t._timer = setTimeout(() => { t.style.opacity = "0"; }, 2200);
+        }
+
+        function updateLiveHuds() {
+            const alive = state.units.filter(u => u.alive);
+            document.getElementById('aliveBadge').textContent = `${alive.length} Alive`;
+            const list = document.getElementById('rosterList');
+            list.innerHTML = state.units.map(u => {
+                const isSel = u.id === state.selectedId;
+                const pct = Math.round((u.hp / u.maxHp) * 100);
+                return `
+                <div onclick="window.selectGladiator('${u.id}')" class="p-2 rounded-xl border cursor-pointer transition ${isSel ? 'bg-pitcard border-amber-400' : 'bg-pitbg/70 border-pitborder'} ${!u.alive ? 'opacity-40' : ''}">
+                    <div class="flex items-center justify-between text-xs font-bold">
+                        <span class="truncate" style="color:${u.color}">${u.icon} ${u.name}</span>
+                        <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-amber-300">${u.alive ? u.badge : 'DEAD'}</span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden mt-1">
+                        <div class="h-full" style="width:${pct}%;background:${u.color}"></div>
+                    </div>
+                </div>`;
+            }).join('');
+
+            const sel = state.units.find(u => u.id === state.selectedId) || state.units[0];
+            const hud = document.getElementById('selectedHud');
+            if (sel && hud) {
+                hud.innerHTML = `
+                    <div class="flex items-center justify-between border-b border-pitborder pb-1 mb-1">
+                        <span class="font-bold text-xs" style="color:${sel.color}">${sel.icon} ${sel.name}</span>
+                        <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold">${sel.badge}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1 font-mono text-[10px] text-slate-300">
+                        <div>HP: <b class="text-white">${sel.hp}/${sel.maxHp}</b></div>
+                        <div>Vision: <b class="text-emerald-300">${sel.visionRange}px</b></div>
+                        <div>Hearing: <b class="text-sky-300">${sel.hearingRange}px</b></div>
+                        <div>Stealth: <b class="text-amber-300">${Math.round((sel.strategy.pillarHideWeight || 0)*100)}%</b></div>
+                    </div>`;
+            }
+        }
+
+        window.selectGladiator = function(id) {
+            state.selectedId = id;
+            updateLiveHuds();
+            populateForgeFromSelected();
+        };
+
+        function populateForgeFromSelected() {
+            const sel = state.units.find(u => u.id === state.selectedId) || state.units[0];
+            if (!sel) return;
+            document.getElementById('unitNameInput').value = sel.name;
+            document.getElementById('unitWeaponSelect').value = sel.weapon;
+
+            const attrWrap = document.getElementById('attrSliders');
+            const sum = Object.values(sel.attributes).reduce((s, v) => s + v, 0);
+            document.getElementById('budgetBadge').textContent = `${sum} / 100`;
+            attrWrap.innerHTML = Object.entries(sel.attributes).map(([k, v]) => `
+                <div class="flex items-center justify-between text-[11px] font-mono">
+                    <span class="uppercase text-slate-300 w-24">${k}</span>
+                    <input type="range" min="4" max="40" value="${v}" oninput="window.updateUnitAttr('${k}', this.value)" class="flex-1 mx-2">
+                    <span class="w-6 text-right text-amber-300 font-bold">${v}</span>
+                </div>`).join('');
+
+            const dslMeta = [
+                { k: "idealRangeMin", label: "Min Range", min: 0, max: 340, step: 10 },
+                { k: "idealRangeMax", label: "Max Range", min: 40, max: 420, step: 10 },
+                { k: "pillarHideWeight", label: "Pillar Hide / LOS", min: 0, max: 1, step: 0.05 },
+                { k: "stealthAmbush", label: "Stealth Ambush", min: 0, max: 1, step: 0.05 },
+                { k: "strafeWeight", label: "Strafe Orbit", min: 0, max: 1, step: 0.05 },
+                { k: "trapBaiting", label: "Trap Baiting", min: 0, max: 1, step: 0.05 },
+                { k: "parryReflex", label: "Parry Reflex", min: 0, max: 1, step: 0.05 }
+            ];
+            document.getElementById('dslSliders').innerHTML = dslMeta.map(m => `
+                <div class="flex items-center justify-between text-[11px] font-mono">
+                    <span class="text-slate-300 w-28 truncate">${m.label}</span>
+                    <input type="range" min="${m.min}" max="${m.max}" step="${m.step}" value="${sel.strategy[m.k] ?? 0.5}" oninput="window.updateUnitDsl('${m.k}', this.value)" class="flex-1 mx-2">
+                    <span class="w-10 text-right text-emerald-300">${sel.strategy[m.k] ?? 0.5}</span>
+                </div>`).join('');
+
+            document.getElementById('jsonEditor').value = JSON.stringify({
+                name: sel.name, weapon: sel.weapon, attributes: sel.attributes, strategy: sel.strategy
+            }, null, 2);
+        }
+
+        window.updateUnitAttr = function(k, val) {
+            const sel = state.units.find(u => u.id === state.selectedId);
+            if (!sel) return;
+            sel.attributes[k] = Number(val);
+            if (state.blueprints[sel.bpIndex]) state.blueprints[sel.bpIndex].attributes[k] = Number(val);
+            populateForgeFromSelected();
+        };
+
+        window.updateUnitDsl = function(k, val) {
+            const sel = state.units.find(u => u.id === state.selectedId);
+            if (!sel) return;
+            sel.strategy[k] = Number(val);
+            if (state.blueprints[sel.bpIndex]) state.blueprints[sel.bpIndex].strategy[k] = Number(val);
+            populateForgeFromSelected();
+        };
+
+        function renderArchetypeStampers() {
+            const wrap = document.getElementById('archetypeStampers');
+            wrap.innerHTML = getAllArchetypes().map(a => `
+                <button onclick="window.stampArchetype('${a.id}')" class="p-1.5 rounded-lg bg-pitbg hover:bg-slate-800 border border-pitborder text-left text-[11px] font-mono truncate">
+                    ${a.icon} ${a.name}
+                </button>`).join('');
+        }
+
+        window.stampArchetype = function(archId) {
+            const arch = getAllArchetypes().find(a => a.id === archId);
+            const sel = state.units.find(u => u.id === state.selectedId);
+            if (!arch || !sel) return;
+            const bp = state.blueprints[sel.bpIndex];
+            if (bp) {
+                bp.name = arch.name; bp.icon = arch.icon; bp.weapon = arch.weapon;
+                bp.attributes = JSON.parse(JSON.stringify(arch.attributes));
+                bp.strategy = JSON.parse(JSON.stringify(arch.strategy));
+            }
+            respawnArena();
+        };
+
+        function populateMatchupSelects() {
+            const archs = getAllArchetypes();
+            const opts = archs.map(a => `<option value="${a.id}">${a.icon} ${a.name}</option>`).join('');
+            document.getElementById('simRedSelect').innerHTML = opts;
+            document.getElementById('simBlueSelect').innerHTML = opts;
+            if (archs.length > 1) document.getElementById('simBlueSelect').value = archs[1].id;
+            document.getElementById('unitWeaponSelect').innerHTML = Object.entries(WEAPONS).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join('');
+        }
+
+        function renderEloList() {
+            initElo();
+            const sorted = Object.entries(state.elo).sort((a, b) => b[1].rating - a[1].rating);
+            document.getElementById('eloList').innerHTML = sorted.map(([id, rec], i) => `
+                <div class="flex items-center justify-between px-2 py-1 rounded bg-pitbg/80 border border-slate-800/80 text-[11px] font-mono">
+                    <span class="truncate"><b class="text-amber-300">#${i + 1}</b> ${rec.icon} ${rec.name}</span>
+                    <span class="text-amber-300 font-bold">${rec.rating}</span>
+                </div>`).join('');
+        }
+
+        function refreshUI() {
+            updateLiveHuds(); populateMatchupSelects(); renderArchetypeStampers(); populateForgeFromSelected(); renderEloList();
+        }
+
+        function bindEvents() {
+            document.getElementById('formatSelect').onchange = e => buildRosterFromFormat(e.target.value);
+            document.getElementById('mapSelect').onchange = e => { state.mapKey = e.target.value; respawnArena(); };
+            document.getElementById('visionModeSelect').onchange = e => {
+                state.visionMode = e.target.value;
+                showToast(`Vision Mode: ${e.target.options[e.target.selectedIndex].text}`);
+            };
+            document.getElementById('respawnBtn').onclick = respawnArena;
+            document.getElementById('rematchBtn').onclick = respawnArena;
+            document.getElementById('cleanBloodBtn').onclick = () => { paintArenaFloor(); state.gibs = []; respawnArena(); };
+            document.getElementById('randomAllBtn').onclick = () => {
+                const archs = getAllArchetypes();
+                state.blueprints.forEach(bp => {
+                    const pick = archs[Math.floor(Math.random() * archs.length)];
+                    bp.name = pick.name; bp.icon = pick.icon; bp.weapon = pick.weapon;
+                    bp.attributes = JSON.parse(JSON.stringify(pick.attributes));
+                    bp.strategy = JSON.parse(JSON.stringify(pick.strategy));
+                });
+                respawnArena();
+            };
+            document.getElementById('mutateRematchBtn').onclick = () => document.getElementById('randomAllBtn').click();
+
+            document.getElementById('toggleVectorsBtn').onclick = e => {
+                state.showVectors = !state.showVectors;
+                e.target.textContent = `🎯 RAYS: ${state.showVectors ? 'ON' : 'OFF'}`;
+            };
+            document.getElementById('playPauseBtn').onclick = e => {
+                state.running = !state.running;
+                e.target.textContent = state.running ? "⏸" : "▶️";
+            };
+            document.getElementById('stepFrameBtn').onclick = () => {
+                state.running = false; document.getElementById('playPauseBtn').textContent = "▶️";
+                stepSimulation(false, 1.0); renderArena(); updateLiveHuds();
+            };
+            document.querySelectorAll('.spd-btn').forEach(btn => {
+                btn.onclick = () => {
+                    state.simSpeed = Number(btn.dataset.speed);
+                    document.querySelectorAll('.spd-btn').forEach(b => b.className = "spd-btn px-1.5 py-1 rounded-lg text-slate-400");
+                    btn.className = "spd-btn px-1.5 py-1 rounded-lg bg-rose-600 text-white font-bold";
+                };
+            });
+            document.getElementById('sfxBtn').onclick = e => { Sfx.enabled = !Sfx.enabled; e.target.textContent = Sfx.enabled ? "🔊" : "🔇"; };
+
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.className = "tab-btn py-2.5 border-b-2 border-transparent text-slate-400");
+                    btn.className = "tab-btn py-2.5 border-b-2 border-rose-500 text-rose-400";
+                    ['sim', 'forge', 'json'].forEach(t => document.getElementById(`tab-${t}`).classList.add('hidden'));
+                    document.getElementById(`tab-${btn.dataset.tab}`).classList.remove('hidden');
+                };
+            });
+
+            document.getElementById('toggleAutoEvoBtn').onclick = toggleContinuousEvolution;
+            document.getElementById('watchMatchupBtn').onclick = () => {
+                const archs = getAllArchetypes();
+                const red = archs.find(a => a.id === document.getElementById('simRedSelect').value) || archs[0];
+                const blue = archs.find(a => a.id === document.getElementById('simBlueSelect').value) || archs[1];
+                stageLiveEvolutionBout(red, blue, "⚔️ CUSTOM EXHIBITION BOUT");
+            };
+            document.getElementById('run10BoutsBtn').onclick = () => {
+                const archs = getAllArchetypes();
+                const red = archs.find(a => a.id === document.getElementById('simRedSelect').value) || archs[0];
+                const blue = archs.find(a => a.id === document.getElementById('simBlueSelect').value) || archs[1];
+                let rw = 0;
+                for (let i = 0; i < 12; i++) if (runHeadlessBout(red, blue, 1100).winner === 0) rw++;
+                document.getElementById('simSummaryBox').innerHTML = `<b>${red.name}</b> won <b class="text-emerald-300">${rw}/12</b> bouts (${Math.round(rw/12*100)}%) vs <b>${blue.name}</b>.`;
+            };
+            document.getElementById('matrixSweepBtn').onclick = () => runMatrixSweep(2, false);
+            document.getElementById('evolveCounterBtn').onclick = () => {
+                const archs = getAllArchetypes();
+                const red = archs.find(a => a.id === document.getElementById('simRedSelect').value) || archs[0];
+                const mutant = generateCounterMutant(red, state.autoEvo.generation + 1, 0);
+                promoteEvolvedChallenger(mutant, red, 2);
+            };
+            document.getElementById('resetEloBtn').onclick = () => {
+                state.archetypes = JSON.parse(JSON.stringify(BASE_ARCHETYPES));
+                state.elo = {}; initElo(); runMatrixSweep(2, true); refreshUI();
+            };
+
+            // Canvas Selection, Pan & Zoom
+            canvas.addEventListener('mousedown', e => {
+                const rect = canvas.getBoundingClientRect();
+                const wx = (e.clientX - rect.left - rect.width / 2) / state.cam.zoom + state.cam.x;
+                const wy = (e.clientY - rect.top - rect.height / 2) / state.cam.zoom + state.cam.y;
+                const clicked = state.units.find(u => u.alive && dist(wx, wy, u.x, u.y) <= u.radius + 10);
+                if (clicked) { window.selectGladiator(clicked.id); return; }
+                state.cam.drag = true; state.cam.lx = e.clientX; state.cam.ly = e.clientY;
+            });
+            window.addEventListener('mousemove', e => {
+                if (!state.cam.drag) return;
+                state.cam.x -= (e.clientX - state.cam.lx) / state.cam.zoom;
+                state.cam.y -= (e.clientY - state.cam.ly) / state.cam.zoom;
+                state.cam.lx = e.clientX; state.cam.ly = e.clientY;
+            });
+            window.addEventListener('mouseup', () => { state.cam.drag = false; });
+            canvas.addEventListener('wheel', e => {
+                e.preventDefault();
+                state.cam.zoom = clamp(state.cam.zoom * (e.deltaY < 0 ? 1.1 : 0.9), 0.48, 1.85);
+            }, { passive: false });
+        }
+
+        let evoCounter = 0;
+        function animate() {
+            if (state.running) {
+                if (state.simSpeed <= 1) stepSimulation(false, state.simSpeed);
+                else for (let s = 0; s < Math.round(state.simSpeed); s++) stepSimulation(false, 1.0);
+            }
+            if (state.autoEvo.active && (++evoCounter % 8 === 0)) processOneEvolutionSlice();
+            renderArena();
+            requestAnimationFrame(animate);
+        }
+
+        window.onload = () => {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            initElo(); bindEvents();
+            buildRosterFromFormat("2v2");
+            runMatrixSweep(2, true);
+            requestAnimationFrame(animate);
+        };
+    </script>
+</body>
+</html>

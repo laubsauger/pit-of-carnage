@@ -1,0 +1,3185 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PIT OF CARNAGE: Autonomous Gladiator Strategy Pit & ELO League</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                        comic: ['Bangers', 'cursive']
+                    },
+                    colors: {
+                        pitbg: '#07060B',
+                        pitpanel: '#110F18',
+                        pitcard: '#191624',
+                        pitborder: '#2B263D'
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        * { box-sizing: border-box; user-select: none; }
+        body { background: #07060B; color: #F8FAFC; font-family: 'Inter', sans-serif; overflow: hidden; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #0D0B14; }
+        ::-webkit-scrollbar-thumb { background: #332C4A; border-radius: 3px; }
+        input[type="range"] { accent-color: #F43F5E; height: 5px; cursor: pointer; }
+        .gold-glow { box-shadow: 0 0 18px rgba(251, 191, 36, 0.3); }
+        .evo-pulse { animation: evoPulse 1.6s infinite ease-in-out; }
+        @keyframes evoPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.5); }
+            50% { box-shadow: 0 0 16px 4px rgba(192, 132, 252, 0.35); }
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden">
+
+    <!-- TOP COMMAND BAR -->
+    <header class="h-12 bg-pitpanel border-b border-pitborder px-3 flex items-center justify-between gap-2 shrink-0 z-20">
+        <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-600 to-amber-500 flex items-center justify-center font-comic text-xl tracking-wider shadow">⚔️</div>
+            <div>
+                <h1 class="font-comic text-lg tracking-wider bg-gradient-to-r from-rose-400 via-amber-300 to-rose-400 bg-clip-text text-transparent leading-none">PIT OF CARNAGE</h1>
+                <p class="text-[9px] font-mono text-slate-400">60FPS SUB-FRAME PHYSICS • OVERSIZED WEAPONS • INFINITE CO-EVOLUTION</p>
+            </div>
+        </div>
+
+        <!-- Match Format & Map Controls -->
+        <div class="flex items-center gap-1.5 bg-pitbg/90 px-2 py-1 rounded-xl border border-pitborder">
+            <select id="formatSelect" class="bg-pitcard text-xs font-mono font-bold text-amber-300 px-2 py-1 rounded-lg border border-slate-700 focus:outline-none">
+                <option value="1v1">1v1 Duel</option>
+                <option value="2v2" selected>2v2 Squads</option>
+                <option value="3v3">3v3 Warband</option>
+                <option value="4v4">4v4 Carnage</option>
+                <option value="FFA">6-Bot FFA</option>
+            </select>
+            <select id="mapSelect" class="bg-pitcard text-xs font-mono text-slate-200 px-2 py-1 rounded-lg border border-slate-700 focus:outline-none">
+                <option value="crucible">Obsidian Crucible</option>
+                <option value="labyrinth">Sawblade Labyrinth</option>
+                <option value="colosseum">Grand Pillar Pit</option>
+            </select>
+            <button id="respawnBtn" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition">⚔️ Fight!</button>
+            <button id="randomAllBtn" class="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-300 text-xs font-bold transition">🎲 Randomize</button>
+            <button id="cleanBloodBtn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono transition" title="Mop Blood">🧽 Mop</button>
+        </div>
+
+        <!-- Live Team Banner -->
+        <div id="teamBanner" class="hidden xl:flex items-center gap-3 bg-pitbg/80 px-3 py-1 rounded-xl border border-pitborder font-mono text-xs"></div>
+
+        <!-- Visual Overlay Toggles -->
+        <div class="flex items-center gap-1.5">
+            <button id="toggleVectorsBtn" class="px-2.5 py-1 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 text-[11px] font-mono font-bold">🎯 AIM & RAYS: ON</button>
+            <button id="toggleRangesBtn" class="px-2.5 py-1 rounded-lg bg-purple-500/20 border border-purple-400/40 text-purple-300 text-[11px] font-mono font-bold">👁️ RANGES: ON</button>
+            <button id="toggleSfxBtn" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 text-[11px] font-mono">🔊 SFX</button>
+        </div>
+    </header>
+
+    <!-- MAIN 3-COLUMN WORKSPACE -->
+    <div class="flex-1 flex min-h-0 overflow-hidden">
+
+        <!-- LEFT COLUMN: LIVE ROSTER & COLOR-CODED PLAY-BY-PLAY LOG -->
+        <aside class="w-72 bg-pitpanel border-r border-pitborder flex flex-col shrink-0 z-10">
+            <div class="p-2.5 border-b border-pitborder flex items-center justify-between">
+                <span class="text-xs font-mono font-bold uppercase tracking-wider text-slate-300">⚔️ Active Gladiators</span>
+                <button id="mutateSelectedBtn" class="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30">🎲 Mutate Unit</button>
+            </div>
+            <!-- Roster Cards -->
+            <div id="rosterList" class="p-2 space-y-1.5 overflow-y-auto max-h-[52%] border-b border-pitborder"></div>
+
+            <!-- Color-Coded Play-by-Play Log -->
+            <div class="px-2.5 py-1.5 bg-pitbg/60 border-b border-pitborder flex items-center justify-between">
+                <span class="text-[11px] font-mono font-bold uppercase text-rose-400">🩸 Play-by-Play Feed</span>
+                <button id="clearLogBtn" class="text-[10px] font-mono text-slate-500 hover:text-slate-300">Clear</button>
+            </div>
+            <div id="combatLog" class="flex-1 p-2 space-y-1 overflow-y-auto font-mono text-[11px] select-text"></div>
+        </aside>
+
+        <!-- CENTER COLUMN: 2.5D RETINA ARENA CANVAS + BOTTOM SPEED/REPLAY BAR -->
+        <main class="flex-1 flex flex-col min-w-0 bg-pitbg relative">
+            <div id="viewportContainer" class="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing">
+                <canvas id="arenaCanvas" class="block w-full h-full"></canvas>
+
+                <!-- Selected Gladiator Live Telemetry HUD -->
+                <div id="selectedHud" class="absolute top-3 left-3 bg-pitpanel/90 backdrop-blur-md border border-pitborder rounded-xl p-2.5 w-68 pointer-events-none shadow-xl"></div>
+
+                <!-- Continuous Evolution Floating Banner -->
+                <div id="evoBannerHud" class="hidden absolute top-3 right-3 bg-purple-950/90 backdrop-blur-md border border-purple-400/60 rounded-xl px-3 py-2 text-xs font-mono text-purple-200 shadow-xl pointer-events-none evo-pulse">
+                    <div class="flex items-center gap-2 font-bold text-amber-300">
+                        <span>♾️ AUTO-EVOLUTION ACTIVE</span>
+                        <span id="evoGenBadge" class="px-1.5 py-0.5 rounded bg-purple-800 text-white text-[10px]">GEN 1</span>
+                    </div>
+                    <div id="evoStatusHudText" class="text-[10px] text-purple-200 mt-0.5">Breeding challengers...</div>
+                </div>
+
+                <!-- Match Winner Banner Modal -->
+                <div id="winnerBanner" class="hidden absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-20">
+                    <div class="bg-pitpanel border-2 border-amber-400/70 rounded-2xl p-6 text-center max-w-md shadow-2xl gold-glow">
+                        <div class="text-xs font-mono uppercase tracking-widest text-amber-300">Colosseum Victor</div>
+                        <h2 id="winnerTitle" class="font-comic text-4xl tracking-wider text-white mt-1">RED SQUAD</h2>
+                        <p id="winnerSub" class="text-xs font-mono text-slate-300 mt-1 mb-4"></p>
+                        <div class="flex items-center justify-center gap-2">
+                            <button id="rematchModalBtn" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs">⚔️ Run Rematch</button>
+                            <button id="randomModalBtn" class="px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-300 font-bold text-xs">🎲 Random Brawl</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Toast Notification Stack -->
+                <div id="toastStack" class="absolute bottom-4 right-4 space-y-1.5 pointer-events-none z-30"></div>
+            </div>
+
+            <!-- BOTTOM SPEED & REPLAY SCRUBBER BAR -->
+            <footer class="h-11 bg-pitpanel border-t border-pitborder px-3 flex items-center justify-between gap-3 shrink-0">
+                <div class="flex items-center gap-1.5">
+                    <button id="playPauseBtn" class="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold font-mono">⏸ PAUSE</button>
+                    <button id="stepBtn" class="px-2 py-1 rounded-lg bg-pitcard hover:bg-slate-800 border border-slate-700 text-amber-300 text-xs font-mono font-bold" title="Step 1 Frame">+1f</button>
+                </div>
+
+                <!-- True 60FPS Sub-Frame Speed Controls -->
+                <div class="flex items-center gap-1 bg-pitbg px-2 py-1 rounded-lg border border-pitborder font-mono text-xs">
+                    <span class="text-slate-400 text-[10px] mr-1">60FPS SPEED:</span>
+                    <button data-speed="0.1" class="speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">0.1x</button>
+                    <button data-speed="0.25" class="speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">0.25x</button>
+                    <button data-speed="0.5" class="speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">0.5x</button>
+                    <button data-speed="1" class="speed-btn px-2 py-0.5 rounded bg-rose-600/30 text-amber-300 border border-rose-500/40 font-bold">1x</button>
+                    <button data-speed="2" class="speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">2x</button>
+                    <button data-speed="4" class="speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">4x</button>
+                </div>
+
+                <!-- Timeline Scrubber -->
+                <div class="flex-1 flex items-center gap-2 max-w-md">
+                    <span id="tickLabel" class="text-[11px] font-mono text-slate-400 w-16">0.0s</span>
+                    <input id="replaySlider" type="range" min="0" max="0" value="0" class="flex-1">
+                </div>
+            </footer>
+        </main>
+
+        <!-- RIGHT DOCK: 3 TABS (STRATEGY & DSL FORGE, SIM & EVOLVE LAB, LLM JSON) -->
+        <aside class="w-[410px] bg-pitpanel border-l border-pitborder flex flex-col shrink-0 z-10">
+            <!-- Tab Buttons -->
+            <div class="grid grid-cols-3 gap-1 p-2 bg-pitbg/60 border-b border-pitborder">
+                <button data-tab="forge" class="tab-btn py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white">🛠️ DSL Forge</button>
+                <button data-tab="sim" class="tab-btn py-1.5 rounded-lg text-xs font-bold bg-rose-600/25 text-amber-300 border border-rose-500/40">🧬 Sim & Evolve</button>
+                <button data-tab="json" class="tab-btn py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white">🧠 LLM JSON</button>
+            </div>
+
+            <!-- TAB 1: STRATEGY & DSL FORGE -->
+            <div id="tab-forge" class="hidden flex-1 overflow-y-auto p-3 space-y-3">
+                <div>
+                    <div class="text-[10px] font-mono uppercase text-slate-400 mb-1">1-Click Stamp Archetype onto Selected Unit</div>
+                    <div id="archetypeGrid" class="grid grid-cols-2 gap-1.5"></div>
+                </div>
+
+                <!-- Weapon & Active Skill -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-amber-300">Oversized Weapon & Class Rig</span>
+                        <span id="turnRateBadge" class="text-[10px] font-mono text-cyan-300 font-bold">Turn: 4.5 rad/s</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[10px] font-mono text-slate-400">WEAPON RIG</label>
+                            <select id="forgeWeapon" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-slate-700">
+                                <option value="GREATSWORD">🗡️ Claymore Greatsword</option>
+                                <option value="WARHAMMER">🔨 Maul + Tower Shield</option>
+                                <option value="TWIN_DAGGERS">🔪 Venom Twin Kris</option>
+                                <option value="THROWING_AXES">🪓 Dual Whirlwind Axes</option>
+                                <option value="LONGBOW">🏹 Recurve Frost Longbow</option>
+                                <option value="ARCANE_STAFF">🔮 Dragon Arcane Staff</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-mono text-slate-400">ACTIVE SKILL</label>
+                            <select id="forgeSkill" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-slate-700">
+                                <option value="WHIRLWIND">🌪️ 360° Blade Tornado</option>
+                                <option value="DASH">💨 Kiting Vault Dash</option>
+                                <option value="SHADOWSTEP">🌑 Shadowstep Backstab</option>
+                                <option value="SHOCKWAVE">🛡️ Aegis Shield Slam</option>
+                                <option value="BLOODRAGE">🔥 Bloodrage Haste</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 100-Point RPG Attributes -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-white">RPG Attributes (100-Pt Cap)</span>
+                        <button id="balancePtsBtn" class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">Normalize 100</button>
+                    </div>
+                    <div id="attrSliders" class="space-y-1"></div>
+                </div>
+
+                <!-- Continuous Steering & Combat Weights -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-2">
+                    <div class="text-xs font-bold text-cyan-300">16-Ray Steering & Combat DSL Weights</div>
+                    <div id="dslSliders" class="space-y-1.5 text-[11px] font-mono"></div>
+                </div>
+            </div>
+
+            <!-- TAB 2: SIM & EVOLVE LAB (OPEN BY DEFAULT FOR EASY ACCESS) -->
+            <div id="tab-sim" class="flex-1 overflow-y-auto p-3 space-y-3">
+                <!-- CONTINUOUS AUTO-EVOLUTION ENGINE CARD -->
+                <div class="bg-gradient-to-br from-purple-950/70 via-pitcard to-rose-950/50 p-3 rounded-xl border border-purple-500/50 space-y-2 shadow-lg">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                                <span>♾️ Continuous Co-Evolution Lab</span>
+                            </div>
+                            <p class="text-[10px] font-mono text-slate-300">Breeds counters, updates All-vs-All Matrix & prunes weak builds</p>
+                        </div>
+                        <span id="poolCountBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 border border-purple-400/40 text-purple-200 font-bold">6 Pool</span>
+                    </div>
+
+                    <button id="toggleAutoEvoBtn" class="w-full py-2 rounded-xl bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-500 hover:to-rose-500 text-white text-xs font-extrabold tracking-wide shadow transition flex items-center justify-center gap-2">
+                        <span>▶️ Start Continuous Auto-Evolution Loop</span>
+                    </button>
+
+                    <div class="flex items-center justify-between text-[10px] font-mono text-slate-300 pt-0.5">
+                        <label class="flex items-center gap-1.5 cursor-pointer">
+                            <input id="autoSpawnEvoCheck" type="checkbox" checked class="accent-amber-400">
+                            <span>Auto-spawn new Apex matchups in Arena</span>
+                        </label>
+                        <span>Cap: 10 Builds</span>
+                    </div>
+
+                    <!-- Live Evolution Telemetry Box -->
+                    <div id="evoTelemetryBox" class="p-2 rounded-lg bg-pitbg/90 border border-purple-500/30 font-mono text-[10px] space-y-1">
+                        <div class="flex justify-between text-slate-400">
+                            <span id="evoPhaseLabel">Status: Idle (Click Start above)</span>
+                            <span id="evoGenCount" class="text-amber-300 font-bold">Gen 0</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                            <div id="evoProgressBar" class="h-full bg-gradient-to-r from-purple-400 to-amber-400 w-0 transition-all duration-200"></div>
+                        </div>
+                        <div id="evoLastAction" class="text-emerald-300 truncate">Ready to evolve counter-strategies across all weapons.</div>
+                    </div>
+                </div>
+
+                <!-- Manual Matchup & Single Step Controls -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-2">
+                    <div class="text-xs font-bold text-amber-300">⚡ Head-to-Head & Manual Evolution</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[10px] font-mono text-rose-400 font-bold">CHALLENGER RED</label>
+                            <select id="simRedSelect" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-rose-500/40"></select>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-mono text-sky-400 font-bold">CHALLENGER BLUE</label>
+                            <select id="simBlueSelect" class="w-full mt-0.5 bg-pitbg text-xs font-mono p-1.5 rounded border border-sky-500/40"></select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="watchMatchupBtn" class="py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold">👁️ Watch Live</button>
+                        <button id="run10BoutsBtn" class="py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-300 text-xs font-bold">⚡ Sim 10 Bouts</button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 pt-0.5">
+                        <button id="matrixSweepBtn" class="py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 text-cyan-300 text-xs font-bold">📊 Full Matrix (All Builds)</button>
+                        <button id="evolveCounterBtn" class="py-1.5 rounded-lg bg-purple-600/30 hover:bg-purple-600/40 border border-purple-400/50 text-purple-200 text-xs font-bold">🧬 Breed 1 Counter vs Red</button>
+                    </div>
+                    <div id="simResultBox" class="hidden p-2 rounded-lg bg-pitbg border border-slate-800 font-mono text-[11px] space-y-1"></div>
+                </div>
+
+                <!-- Dynamic All-vs-All Win-Rate Heatmap Matrix (Includes Evolved Builds) -->
+                <div id="matrixContainer" class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-cyan-300">📊 Dynamic Meta Matrix (Includes Evolved)</span>
+                        <span id="matrixSubLabel" class="text-[10px] font-mono text-slate-400">Row Win% vs Col</span>
+                    </div>
+                    <div id="matrixTableWrap" class="overflow-x-auto text-[10px] font-mono"></div>
+                </div>
+
+                <!-- ELO Leaderboard -->
+                <div class="bg-pitcard p-2.5 rounded-xl border border-pitborder space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-amber-300">🏆 Live ELO & Evolved Pool Standings</span>
+                        <button id="resetEloBtn" class="text-[10px] font-mono text-slate-400 hover:text-white">Reset Pool</button>
+                    </div>
+                    <div id="eloList" class="space-y-1.5"></div>
+                </div>
+            </div>
+
+            <!-- TAB 3: LLM JSON EDITOR -->
+            <div id="tab-json" class="hidden flex-1 flex flex-col p-3 space-y-2">
+                <div class="text-[11px] font-mono text-slate-400">Edit or paste an LLM-generated Strategy DSL JSON object for the selected gladiator:</div>
+                <textarea id="jsonTextarea" class="flex-1 w-full bg-pitbg text-emerald-300 font-mono text-[11px] p-2.5 rounded-xl border border-pitborder focus:outline-none select-text" spellcheck="false"></textarea>
+                <div class="flex items-center gap-2">
+                    <button id="applyJsonBtn" class="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">✓ Apply JSON to Gladiator</button>
+                    <button id="copyJsonBtn" class="px-3 py-2 rounded-xl bg-pitcard hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono">📋 Copy</button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        /***********************************************************************
+         * 1. CONSTANTS, OVERSIZED WEAPON SPECS, AND 6 INITIAL ARCHETYPES
+         ***********************************************************************/
+        const WORLD_W = 1360;
+        const WORLD_H = 860;
+        const NUM_RAYS = 16;
+        const RAY_ANGLES = Array.from({ length: NUM_RAYS }, (_, i) => (i / NUM_RAYS) * Math.PI * 2);
+
+        const TEAM_COLORS = [
+            { name: "CRIMSON", hex: "#F43F5E", light: "#FDA4AF" },
+            { name: "AZURE",   hex: "#38BDF8", light: "#BAE6FD" },
+            { name: "SOLAR",   hex: "#FBBF24", light: "#FDE68A" },
+            { name: "VENOM",   hex: "#34D399", light: "#A7F3D0" },
+            { name: "VOID",    hex: "#C084FC", light: "#E9D5FF" },
+            { name: "EMBER",   hex: "#FB923C", light: "#FED7AA" }
+        ];
+
+        // 6 Distinct Oversized Weapons with 4-phase animation timings & visual metadata
+        const WEAPONS = {
+            GREATSWORD: {
+                name: "Claymore Greatsword",
+                icon: "🗡️",
+                helm: "horned",
+                type: "melee",
+                range: 82,
+                dmg: 30,
+                cooldown: 42,
+                windup: 14,
+                strikeDuration: 11,
+                recovery: 12,
+                knockback: 10,
+                weight: 1.32,
+                arc: 2.35, // Wide 135-deg cleave
+                smearColor: "#F43F5E"
+            },
+            WARHAMMER: {
+                name: "Spiked Maul & Shield",
+                icon: "🔨",
+                helm: "knight",
+                type: "melee",
+                range: 70,
+                dmg: 26,
+                cooldown: 44,
+                windup: 15,
+                strikeDuration: 12,
+                recovery: 13,
+                knockback: 16,
+                weight: 1.42,
+                arc: 1.65,
+                stunTicks: 34,
+                smearColor: "#FBBF24"
+            },
+            TWIN_DAGGERS: {
+                name: "Venom Twin Kris",
+                icon: "🔪",
+                helm: "ninja",
+                type: "melee",
+                range: 56,
+                dmg: 16,
+                cooldown: 18,
+                windup: 6,
+                strikeDuration: 8,
+                recovery: 6,
+                knockback: 3,
+                weight: 0.65,
+                arc: 1.35,
+                backstabMult: 2.35,
+                smearColor: "#34D399"
+            },
+            THROWING_AXES: {
+                name: "Dual Whirlwind Axes",
+                icon: "🪓",
+                helm: "viking",
+                type: "ranged",
+                range: 265,
+                dmg: 21,
+                cooldown: 26,
+                windup: 8,
+                strikeDuration: 9,
+                recovery: 7,
+                knockback: 6,
+                weight: 0.88,
+                projSpeed: 10.6,
+                projType: "axe",
+                smearColor: "#FB923C"
+            },
+            LONGBOW: {
+                name: "Recurve Frost Longbow",
+                icon: "🏹",
+                helm: "hood",
+                type: "ranged",
+                range: 430,
+                dmg: 20,
+                cooldown: 33,
+                windup: 11,
+                strikeDuration: 8,
+                recovery: 8,
+                knockback: 4,
+                weight: 0.82,
+                projSpeed: 12.2,
+                projType: "arrow",
+                slowTicks: 75,
+                smearColor: "#38BDF8"
+            },
+            ARCANE_STAFF: {
+                name: "Dragon Arcane Staff",
+                icon: "🔮",
+                helm: "wizard",
+                type: "ranged",
+                range: 375,
+                dmg: 25,
+                cooldown: 43,
+                windup: 12,
+                strikeDuration: 10,
+                recovery: 10,
+                knockback: 8,
+                weight: 0.94,
+                projSpeed: 9.6,
+                projType: "fireball",
+                splash: 72,
+                smearColor: "#C084FC"
+            }
+        };
+
+        const BADGE_STYLES = {
+            ATTACK:   { icon: "⚔️", bg: "#E11D48" },
+            KITE:     { icon: "🏹", bg: "#0284C7" },
+            BACKSTAB: { icon: "🩸", bg: "#9333EA" },
+            PARRY:    { icon: "🛡️", bg: "#D97706" },
+            BAIT:     { icon: "🪤", bg: "#059669" },
+            STRAFE:   { icon: "🌀", bg: "#4F46E5" },
+            HEAL:     { icon: "💚", bg: "#10B981" }
+        };
+
+        const BASE_ARCHETYPES = [
+            {
+                id: "berserker",
+                name: "Bloodthirsty Berserker",
+                icon: "🗡️",
+                weapon: "GREATSWORD",
+                skill: "WHIRLWIND",
+                attributes: { vitality: 24, power: 26, agility: 16, perception: 10, armor: 14, haste: 10 },
+                strategy: { idealRangeMin: 20, idealRangeMax: 72, strafeWeight: 0.35, hazardAvoidance: 0.65, trapBaiting: 0.15, parryReflex: 0.20, aimPrediction: 0.75, backstabBias: 0.25 }
+            },
+            {
+                id: "frost_ranger",
+                name: "Deadeye Frost Ranger",
+                icon: "🏹",
+                weapon: "LONGBOW",
+                skill: "DASH",
+                attributes: { vitality: 14, power: 20, agility: 24, perception: 24, armor: 6, haste: 12 },
+                strategy: { idealRangeMin: 210, idealRangeMax: 380, strafeWeight: 0.75, hazardAvoidance: 0.90, trapBaiting: 0.35, parryReflex: 0.15, aimPrediction: 0.98, backstabBias: 0.10 }
+            },
+            {
+                id: "shadow_assassin",
+                name: "Venom Shadow Assassin",
+                icon: "🔪",
+                weapon: "TWIN_DAGGERS",
+                skill: "SHADOWSTEP",
+                attributes: { vitality: 14, power: 22, agility: 30, perception: 12, armor: 6, haste: 16 },
+                strategy: { idealRangeMin: 15, idealRangeMax: 48, strafeWeight: 0.90, hazardAvoidance: 0.85, trapBaiting: 0.20, parryReflex: 0.25, aimPrediction: 0.85, backstabBias: 0.95 }
+            },
+            {
+                id: "parry_duelist",
+                name: "Ironclad Shield Juggernaut",
+                icon: "🔨",
+                weapon: "WARHAMMER",
+                skill: "SHOCKWAVE",
+                attributes: { vitality: 26, power: 20, agility: 12, perception: 10, armor: 24, haste: 8 },
+                strategy: { idealRangeMin: 24, idealRangeMax: 64, strafeWeight: 0.45, hazardAvoidance: 0.80, trapBaiting: 0.45, parryReflex: 0.92, aimPrediction: 0.75, backstabBias: 0.15 }
+            },
+            {
+                id: "pyro_baiter",
+                name: "Pyromancer Trap-Baiter",
+                icon: "🔮",
+                weapon: "ARCANE_STAFF",
+                skill: "DASH",
+                attributes: { vitality: 16, power: 25, agility: 18, perception: 21, armor: 8, haste: 12 },
+                strategy: { idealRangeMin: 175, idealRangeMax: 330, strafeWeight: 0.82, hazardAvoidance: 0.95, trapBaiting: 0.95, parryReflex: 0.25, aimPrediction: 0.95, backstabBias: 0.10 }
+            },
+            {
+                id: "axe_skirmisher",
+                name: "Whirlwind Axe Skirmisher",
+                icon: "🪓",
+                weapon: "THROWING_AXES",
+                skill: "BLOODRAGE",
+                attributes: { vitality: 18, power: 21, agility: 22, perception: 16, armor: 10, haste: 13 },
+                strategy: { idealRangeMin: 125, idealRangeMax: 240, strafeWeight: 0.90, hazardAvoidance: 0.82, trapBaiting: 0.50, parryReflex: 0.30, aimPrediction: 0.92, backstabBias: 0.35 }
+            }
+        ];
+
+        const MAPS = {
+            crucible: {
+                walls: [
+                    { x: 310, y: 190, w: 46, h: 170 },
+                    { x: 1004, y: 190, w: 46, h: 170 },
+                    { x: 310, y: 500, w: 46, h: 170 },
+                    { x: 1004, y: 500, w: 46, h: 170 },
+                    { x: 640, y: 390, w: 80, h: 80 }
+                ],
+                hazards: [
+                    { type: "shrine", x: 680, y: 145, r: 34, cd: 0 },
+                    { type: "shrine", x: 680, y: 715, r: 34, cd: 0 },
+                    { type: "haste",  x: 200, y: 430, r: 30, cd: 0 },
+                    { type: "berserk",x: 1160, y: 430, r: 30, cd: 0 },
+                    { type: "spike",  x: 495, y: 310, r: 38, timer: 20, period: 170 },
+                    { type: "spike",  x: 865, y: 550, r: 38, timer: 95, period: 170 },
+                    { type: "saw",    x: 495, y: 550, r: 34, vx: 0, vy: -2.2, minY: 250, maxY: 610, angle: 0 },
+                    { type: "saw",    x: 865, y: 310, r: 34, vx: 0, vy: 2.2,  minY: 250, maxY: 610, angle: 0 }
+                ]
+            },
+            labyrinth: {
+                walls: [
+                    { x: 450, y: 120, w: 42, h: 240 },
+                    { x: 868, y: 500, w: 42, h: 240 },
+                    { x: 450, y: 520, w: 220, h: 42 },
+                    { x: 690, y: 300, w: 220, h: 42 }
+                ],
+                hazards: [
+                    { type: "shrine", x: 220, y: 200, r: 34, cd: 0 },
+                    { type: "shrine", x: 1140, y: 660, r: 34, cd: 0 },
+                    { type: "berserk",x: 680, y: 430, r: 32, cd: 0 },
+                    { type: "spike",  x: 680, y: 185, r: 40, timer: 0, period: 150 },
+                    { type: "spike",  x: 680, y: 675, r: 40, timer: 75, period: 150 },
+                    { type: "saw",    x: 320, y: 430, r: 35, vx: 2.6, vy: 0, minX: 160, maxX: 560, angle: 0 },
+                    { type: "saw",    x: 1040, y: 430, r: 35, vx: -2.6, vy: 0, minX: 800, maxX: 1200, angle: 0 }
+                ]
+            },
+            colosseum: {
+                walls: [
+                    { x: 420, y: 240, w: 62, h: 62 },
+                    { x: 878, y: 240, w: 62, h: 62 },
+                    { x: 420, y: 558, w: 62, h: 62 },
+                    { x: 878, y: 558, w: 62, h: 62 }
+                ],
+                hazards: [
+                    { type: "shrine", x: 680, y: 430, r: 36, cd: 0 },
+                    { type: "haste",  x: 680, y: 150, r: 30, cd: 0 },
+                    { type: "berserk",x: 680, y: 710, r: 30, cd: 0 },
+                    { type: "spike",  x: 540, y: 430, r: 38, timer: 10, period: 160 },
+                    { type: "spike",  x: 820, y: 430, r: 38, timer: 90, period: 160 }
+                ]
+            }
+        };
+
+        /***********************************************************************
+         * 2. PROCEDURAL WEBAUDIO SFX SYNTHESIZER
+         ***********************************************************************/
+        const Sfx = {
+            ctx: null,
+            enabled: true,
+            play(type) {
+                if (!this.enabled) return;
+                try {
+                    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const now = this.ctx.currentTime;
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    if (type === "hit") {
+                        osc.type = "triangle";
+                        osc.frequency.setValueAtTime(175, now);
+                        osc.frequency.exponentialRampToValueAtTime(42, now + 0.09);
+                        gain.gain.setValueAtTime(0.14, now);
+                        gain.gain.linearRampToValueAtTime(0.01, now + 0.09);
+                        osc.start(now); osc.stop(now + 0.09);
+                    } else if (type === "parry") {
+                        osc.type = "sine";
+                        osc.frequency.setValueAtTime(980, now);
+                        osc.frequency.exponentialRampToValueAtTime(1560, now + 0.15);
+                        gain.gain.setValueAtTime(0.17, now);
+                        gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                        osc.start(now); osc.stop(now + 0.15);
+                    } else if (type === "kill") {
+                        osc.type = "sawtooth";
+                        osc.frequency.setValueAtTime(135, now);
+                        osc.frequency.exponentialRampToValueAtTime(28, now + 0.26);
+                        gain.gain.setValueAtTime(0.22, now);
+                        gain.gain.linearRampToValueAtTime(0.01, now + 0.26);
+                        osc.start(now); osc.stop(now + 0.26);
+                    }
+                } catch (e) {}
+            }
+        };
+
+        /***********************************************************************
+         * 3. GLOBAL STATE & PERSISTENT GORE DECAL CANVAS
+         ***********************************************************************/
+        const decalCanvas = document.createElement('canvas');
+        decalCanvas.width = WORLD_W;
+        decalCanvas.height = WORLD_H;
+        const decalCtx = decalCanvas.getContext('2d');
+
+        const state = {
+            running: true,
+            simSpeed: 1,
+            ticks: 0,
+            hitStop: 0,
+            format: "2v2",
+            mapKey: "crucible",
+            showVectors: true,
+            showRanges: true,
+            selectedId: null,
+            archetypes: JSON.parse(JSON.stringify(BASE_ARCHETYPES)),
+            elo: {},
+            lastMatrix: null,
+            blueprints: [],
+            units: [],
+            walls: [],
+            hazards: [],
+            projectiles: [],
+            slashes: [],
+            gibs: [],
+            popups: [],
+            history: [],
+            cam: { x: WORLD_W / 2, y: WORLD_H / 2, zoom: 0.85, drag: false, lx: 0, ly: 0 },
+            shake: 0,
+            dpr: window.devicePixelRatio || 1,
+            // Continuous Auto-Evolution Loop State
+            autoEvo: {
+                active: false,
+                generation: 0,
+                phase: 0,
+                maxPoolSize: 10,
+                timerId: null
+            }
+        };
+
+        function getAllArchetypes() {
+            return state.archetypes;
+        }
+
+        function initElo() {
+            getAllArchetypes().forEach(a => {
+                if (!state.elo[a.id]) {
+                    state.elo[a.id] = { id: a.id, name: a.name, icon: a.icon, rating: 1200, wins: 0, games: 0 };
+                } else {
+                    state.elo[a.id].name = a.name;
+                    state.elo[a.id].icon = a.icon;
+                }
+            });
+            // Clean up pruned archetypes from ELO table
+            Object.keys(state.elo).forEach(k => {
+                if (!state.archetypes.some(a => a.id === k)) delete state.elo[k];
+            });
+            const badge = document.getElementById('poolCountBadge');
+            if (badge) badge.textContent = `${state.archetypes.length} Pool`;
+        }
+
+        /***********************************************************************
+         * 4. MATH, TURN-RATE PHYSICS, AND QUADRATIC BALLISTIC PREDICTION
+         ***********************************************************************/
+        const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+        function normAngle(a) {
+            while (a > Math.PI) a -= Math.PI * 2;
+            while (a < -Math.PI) a += Math.PI * 2;
+            return a;
+        }
+
+        function stepAngle(curr, target, maxStep) {
+            const diff = normAngle(target - curr);
+            if (Math.abs(diff) <= maxStep) return target;
+            return curr + Math.sign(diff) * maxStep;
+        }
+
+        function getTurnRateRad(attrs, weaponKey) {
+            const w = WEAPONS[weaponKey] || WEAPONS.GREATSWORD;
+            const raw = (2.4 + attrs.agility * 0.145 - attrs.armor * 0.032) / w.weight;
+            return Number(clamp(raw, 1.6, 7.4).toFixed(2));
+        }
+
+        function computeLeadPoint(sx, sy, target, projSpeed, predictionWeight = 0.95) {
+            const dx = target.x - sx;
+            const dy = target.y - sy;
+            const d = Math.hypot(dx, dy);
+            const t = (d / Math.max(4, projSpeed)) * predictionWeight;
+            return {
+                x: clamp(target.x + target.vx * t * 0.92, 48, WORLD_W - 48),
+                y: clamp(target.y + target.vy * t * 0.92, 48, WORLD_H - 48)
+            };
+        }
+
+        function normalizeAttributes(attrs) {
+            const keys = ["vitality", "power", "agility", "perception", "armor", "haste"];
+            let sum = keys.reduce((s, k) => s + Math.max(4, Number(attrs[k] || 10)), 0);
+            const out = {};
+            let running = 0;
+            keys.forEach((k, i) => {
+                if (i === keys.length - 1) out[k] = Math.max(4, 100 - running);
+                else {
+                    out[k] = Math.max(4, Math.round((attrs[k] / sum) * 100));
+                    running += out[k];
+                }
+            });
+            return out;
+        }
+
+        /***********************************************************************
+         * 5. ORGANIC MULTI-LOBED BLOOD SPLATTERS & CRAZY ANATOMICAL GIBS
+         ***********************************************************************/
+        function paintArenaFloor() {
+            decalCtx.fillStyle = "#0B0914";
+            decalCtx.fillRect(0, 0, WORLD_W, WORLD_H);
+
+            decalCtx.strokeStyle = "rgba(255,255,255,0.032)";
+            decalCtx.lineWidth = 1;
+            for (let x = 0; x <= WORLD_W; x += 68) {
+                decalCtx.beginPath(); decalCtx.moveTo(x, 0); decalCtx.lineTo(x, WORLD_H); decalCtx.stroke();
+            }
+            for (let y = 0; y <= WORLD_H; y += 68) {
+                decalCtx.beginPath(); decalCtx.moveTo(0, y); decalCtx.lineTo(WORLD_W, y); decalCtx.stroke();
+            }
+
+            decalCtx.strokeStyle = "rgba(244, 63, 94, 0.14)";
+            decalCtx.lineWidth = 4;
+            decalCtx.beginPath();
+            decalCtx.arc(WORLD_W / 2, WORLD_H / 2, 225, 0, Math.PI * 2);
+            decalCtx.stroke();
+        }
+
+        // Organic pooling blood blobs + satellite droplets + high-velocity arterial mist (never overly streaky!)
+        function paintBloodSplatter(x, y, angle, intensity = 1) {
+            decalCtx.save();
+            decalCtx.translate(x, y);
+
+            // 1. Central irregular organic puddle (overlapping rounded lobes)
+            const poolR = (4.5 + Math.random() * 5.5) * Math.min(1.8, 0.65 + intensity * 0.45);
+            const lobes = 4 + Math.floor(Math.random() * 4);
+            decalCtx.fillStyle = "rgba(127, 17, 22, 0.82)";
+            decalCtx.beginPath();
+            for (let i = 0; i < lobes; i++) {
+                const la = (i / lobes) * Math.PI * 2 + Math.random() * 0.5;
+                const lr = poolR * (0.65 + Math.random() * 0.55);
+                const lx = Math.cos(la) * (poolR * 0.35);
+                const ly = Math.sin(la) * (poolR * 0.35);
+                decalCtx.moveTo(lx + lr, ly);
+                decalCtx.arc(lx, ly, lr, 0, Math.PI * 2);
+            }
+            decalCtx.fill();
+
+            // Inner bright crimson wet core
+            decalCtx.fillStyle = "rgba(190, 24, 35, 0.75)";
+            decalCtx.beginPath();
+            decalCtx.arc(0, 0, poolR * 0.62, 0, Math.PI * 2);
+            decalCtx.fill();
+
+            // 2. Perimeter round/teardrop satellite droplets
+            const drops = Math.min(14, Math.floor(4 + intensity * 5));
+            for (let i = 0; i < drops; i++) {
+                const isDirectional = i < drops * 0.55;
+                const spread = isDirectional
+                    ? angle + (Math.random() - 0.5) * 0.95
+                    : Math.random() * Math.PI * 2;
+                const distOut = poolR * 0.8 + Math.random() * (isDirectional ? 32 * intensity : 16);
+                const dx = Math.cos(spread) * distOut;
+                const dy = Math.sin(spread) * distOut;
+                const dr = 1.4 + Math.random() * 3.4;
+
+                decalCtx.save();
+                decalCtx.translate(dx, dy);
+                decalCtx.rotate(spread);
+                decalCtx.fillStyle = Math.random() > 0.4 ? "rgba(153, 27, 27, 0.82)" : "rgba(220, 38, 38, 0.78)";
+                decalCtx.beginPath();
+                // Moderate organic teardrop elongation (1.0x to 1.65x max so it never looks like thin laser lines)
+                const stretch = isDirectional && intensity > 1.0 ? 1.15 + Math.random() * 0.55 : 1.0 + Math.random() * 0.25;
+                decalCtx.ellipse(0, 0, dr * stretch, dr, 0, 0, Math.PI * 2);
+                decalCtx.fill();
+                decalCtx.restore();
+            }
+
+            decalCtx.restore();
+        }
+
+        // Explode defeated units into 10 hilarious 2.5D anatomical ragdoll pieces!
+        function spawnGibExplosion(victim, hitAngle) {
+            paintBloodSplatter(victim.x, victim.y, hitAngle, 2.5);
+            const parts = [
+                "skull", "jaw", "ribcage", "heart",
+                "weapon_arm", "eyeball", "eyeball",
+                "intestine", "leg", "boot"
+            ];
+            parts.forEach((t, idx) => {
+                const spread = hitAngle + (Math.random() - 0.5) * 2.2 + (idx - 4) * 0.15;
+                const spd = 2.8 + Math.random() * 6.8;
+                state.gibs.push({
+                    type: t,
+                    x: victim.x + (Math.random() - 0.5) * 8,
+                    y: victim.y + (Math.random() - 0.5) * 8,
+                    z: 10 + Math.random() * 14,
+                    vx: Math.cos(spread) * spd,
+                    vy: Math.sin(spread) * spd,
+                    vz: 4.5 + Math.random() * 6.5,
+                    rot: Math.random() * Math.PI * 2,
+                    vrot: (Math.random() - 0.5) * 0.38,
+                    color: victim.color,
+                    weaponKey: victim.weaponKey,
+                    bounces: 0,
+                    settled: false,
+                    trailHistory: [{ x: victim.x, y: victim.y }]
+                });
+            });
+        }
+
+        /***********************************************************************
+         * 6. GLADIATOR CREATION & MATCH SPAWNING
+         ***********************************************************************/
+        function makeUnitFromBlueprint(bp, idx, totalInTeam, teamId, isFFA) {
+            const attrs = normalizeAttributes(bp.attributes);
+            const w = WEAPONS[bp.weapon] || WEAPONS.GREATSWORD;
+            const pal = TEAM_COLORS[teamId % TEAM_COLORS.length];
+
+            let sx = 160, sy = WORLD_H / 2, facing = 0;
+            if (isFFA) {
+                const a = (idx / totalInTeam) * Math.PI * 2;
+                sx = WORLD_W / 2 + Math.cos(a) * 320;
+                sy = WORLD_H / 2 + Math.sin(a) * 250;
+                facing = a + Math.PI;
+            } else {
+                const leftSide = teamId === 0;
+                sx = leftSide ? 150 : WORLD_W - 150;
+                const span = 380;
+                const offset = totalInTeam === 1 ? 0 : ((idx / (totalInTeam - 1)) - 0.5) * span;
+                sy = WORLD_H / 2 + offset;
+                facing = leftSide ? 0 : Math.PI;
+            }
+
+            const maxHp = Math.round(150 + attrs.vitality * 8.5);
+            const turnRateRad = getTurnRateRad(attrs, bp.weapon);
+
+            return {
+                id: bp.id || `unit_${teamId}_${idx}`,
+                bpIndex: idx,
+                archetypeId: bp.archetypeId || bp.id,
+                name: bp.name,
+                icon: w.icon,
+                teamId,
+                teamName: pal.name,
+                color: pal.hex,
+                lightColor: pal.light,
+                weaponKey: bp.weapon,
+                skill: bp.skill || "DASH",
+                attributes: attrs,
+                strategy: JSON.parse(JSON.stringify(bp.strategy)),
+                x: sx,
+                y: sy,
+                z: 0,
+                vx: 0,
+                vy: 0,
+                // Smoothed steering vector so units don't jitter left-right
+                smoothSteerX: Math.cos(facing),
+                smoothSteerY: Math.sin(facing),
+                facing,
+                desiredFacing: facing,
+                turnRateRad,
+                maxTurnTick: turnRateRad / 60,
+                radius: Math.round(15.5 + attrs.vitality * 0.18 + attrs.armor * 0.14),
+                hp: maxHp,
+                maxHp,
+                alive: true,
+                moveSpeed: 2.2 + attrs.agility * 0.068 - attrs.armor * 0.015,
+                attackRange: Math.round(w.range + (w.type === "ranged" ? attrs.perception * 2.2 : 0)),
+                visionRange: Math.round(290 + attrs.perception * 9),
+                atkCd: 0,
+                skillCd: 40,
+                // 4-Phase Weapon State Machine
+                windup: 0,
+                maxWindup: w.windup,
+                strikeTimer: 0,
+                maxStrike: w.strikeDuration || 10,
+                recoveryTimer: 0,
+                swingDir: 1, // Alternates for Twin Daggers / Dual Axes
+                whirlwindTicks: 0,
+                parryTicks: 0,
+                parryCd: 0,
+                stunTicks: 0,
+                slowTicks: 0,
+                hasteTicks: 0,
+                berserkTicks: 0,
+                hitFlash: 0,
+                eyePop: 0,
+                walkPhase: Math.random() * 6,
+                strafeDir: Math.random() > 0.5 ? 1 : -1,
+                badge: "ATTACK",
+                speech: "",
+                speechTimer: 0,
+                speechCd: 0,
+                aimPoint: null,
+                raysInterest: new Array(NUM_RAYS).fill(0),
+                raysDanger: new Array(NUM_RAYS).fill(0),
+                kills: 0,
+                dmgDealt: 0
+            };
+        }
+
+        function buildRosterFromFormat(fmt) {
+            state.format = fmt;
+            const archs = getAllArchetypes();
+            state.blueprints = [];
+
+            if (fmt === "FFA") {
+                for (let i = 0; i < 6; i++) {
+                    const a = JSON.parse(JSON.stringify(archs[i % archs.length]));
+                    a.id = `u_ffa_${i}`;
+                    a.archetypeId = archs[i % archs.length].id;
+                    a.teamId = i;
+                    state.blueprints.push(a);
+                }
+            } else {
+                const count = fmt === "1v1" ? 1 : fmt === "2v2" ? 2 : fmt === "3v3" ? 3 : 4;
+                for (let t = 0; t < 2; t++) {
+                    for (let i = 0; i < count; i++) {
+                        const pick = archs[(t * 2 + i) % archs.length];
+                        const a = JSON.parse(JSON.stringify(pick));
+                        a.id = `u_${t}_${i}`;
+                        a.archetypeId = pick.id;
+                        a.teamId = t;
+                        state.blueprints.push(a);
+                    }
+                }
+            }
+            respawnArena();
+        }
+
+        function respawnArena() {
+            const m = MAPS[state.mapKey] || MAPS.crucible;
+            state.walls = JSON.parse(JSON.stringify(m.walls));
+            state.hazards = JSON.parse(JSON.stringify(m.hazards));
+            state.projectiles = [];
+            state.slashes = [];
+            state.gibs = [];
+            state.popups = [];
+            state.history = [];
+            state.ticks = 0;
+            document.getElementById('winnerBanner').classList.add('hidden');
+            paintArenaFloor();
+
+            const isFFA = state.format === "FFA";
+            const teamCounts = {};
+            state.blueprints.forEach(b => { teamCounts[b.teamId] = (teamCounts[b.teamId] || 0) + 1; });
+            const teamSlot = {};
+
+            state.units = state.blueprints.map((bp, idx) => {
+                const tid = bp.teamId;
+                const slot = teamSlot[tid] || 0;
+                teamSlot[tid] = slot + 1;
+                const u = makeUnitFromBlueprint(bp, isFFA ? idx : slot, isFFA ? state.blueprints.length : teamCounts[tid], tid, isFFA);
+                u.bpIndex = idx;
+                return u;
+            });
+
+            if (!state.selectedId || !state.units.some(u => u.id === state.selectedId)) {
+                state.selectedId = state.units[0]?.id || null;
+            }
+            refreshUI();
+        }
+
+        /***********************************************************************
+         * 7. 16-RAY CONTEXT STEERING WITH SMOOTH VECTOR DAMPING
+         ***********************************************************************/
+        function chooseTarget(u, enemies) {
+            let best = null;
+            let bestScore = -1e9;
+            for (const e of enemies) {
+                const d = dist(u.x, u.y, e.x, e.y);
+                const hpMissing = 1 - (e.hp / e.maxHp);
+                const angleBehind = Math.atan2(u.y - e.y, u.x - e.x);
+                const isBehind = Math.abs(normAngle(angleBehind - (e.facing + Math.PI))) < 1.05 ? 1 : 0;
+                const score = -d * 0.55 + hpMissing * 130 + isBehind * u.strategy.backstabBias * 185;
+                if (score > bestScore) { bestScore = score; best = e; }
+            }
+            return best;
+        }
+
+        function compute16RaySteering(u, target, dt = 1) {
+            const strat = u.strategy;
+            const dToTarget = dist(u.x, u.y, target.x, target.y);
+            const angleToTarget = Math.atan2(target.y - u.y, target.x - u.x);
+
+            // Smooth periodic strafe direction switch (less twitchy)
+            if (Math.random() < 0.004 * dt) {
+                u.strafeDir *= -1;
+            }
+
+            let shrineGoal = null;
+            if (u.hp / u.maxHp < 0.48) {
+                shrineGoal = state.hazards.find(h => h.type === "shrine" && h.cd <= 0);
+            }
+
+            let baitGoal = null;
+            if (strat.trapBaiting > 0.55 && dToTarget < 280) {
+                const nearTrap = state.hazards.find(h => (h.type === "spike" || h.type === "saw") && dist(target.x, target.y, h.x, h.y) < 220);
+                if (nearTrap) {
+                    const trapDir = Math.atan2(nearTrap.y - target.y, nearTrap.x - target.x);
+                    baitGoal = {
+                        x: nearTrap.x + Math.cos(trapDir) * 85,
+                        y: nearTrap.y + Math.sin(trapDir) * 85
+                    };
+                }
+            }
+
+            if (u.parryTicks > 0) u.badge = "PARRY";
+            else if (shrineGoal) u.badge = "HEAL";
+            else if (baitGoal) u.badge = "BAIT";
+            else if (dToTarget < strat.idealRangeMin) u.badge = "KITE";
+            else if (strat.backstabBias > 0.65 && dToTarget < 140) u.badge = "BACKSTAB";
+            else if (strat.strafeWeight > 0.72 && dToTarget <= strat.idealRangeMax) u.badge = "STRAFE";
+            else u.badge = "ATTACK";
+
+            let desAngle = angleToTarget;
+            if (shrineGoal) {
+                desAngle = Math.atan2(shrineGoal.y - u.y, shrineGoal.x - u.x);
+            } else if (baitGoal) {
+                desAngle = Math.atan2(baitGoal.y - u.y, baitGoal.x - u.x);
+            } else if (strat.backstabBias > 0.65 && dToTarget < 155) {
+                const backX = target.x + Math.cos(target.facing + Math.PI) * 40;
+                const backY = target.y + Math.sin(target.facing + Math.PI) * 40;
+                desAngle = Math.atan2(backY - u.y, backX - u.x);
+            } else if (dToTarget < strat.idealRangeMin) {
+                desAngle = angleToTarget + Math.PI + u.strafeDir * 0.42 * strat.strafeWeight;
+            } else if (dToTarget > strat.idealRangeMax) {
+                desAngle = angleToTarget + u.strafeDir * 0.30 * strat.strafeWeight;
+            } else {
+                desAngle = angleToTarget + (Math.PI / 2) * u.strafeDir;
+            }
+
+            let fx = 0, fy = 0;
+            for (let i = 0; i < NUM_RAYS; i++) {
+                const ra = RAY_ANGLES[i];
+                const rx = Math.cos(ra);
+                const ry = Math.sin(ra);
+
+                let interest = Math.max(0, Math.cos(ra - desAngle));
+
+                for (const h of state.hazards) {
+                    if ((h.type === "haste" || h.type === "berserk") && h.cd <= 0) {
+                        const hd = dist(u.x, u.y, h.x, h.y);
+                        if (hd < 170) {
+                            const ha = Math.atan2(h.y - u.y, h.x - u.x);
+                            interest = Math.max(interest, Math.max(0, Math.cos(ra - ha)) * 0.85);
+                        }
+                    }
+                }
+
+                let danger = 0;
+                const lookDist = 66;
+                const px = u.x + rx * lookDist;
+                const py = u.y + ry * lookDist;
+
+                if (px < 48 || px > WORLD_W - 48 || py < 48 || py > WORLD_H - 48) {
+                    danger = Math.max(danger, 0.92);
+                }
+                for (const w of state.walls) {
+                    if (px > w.x - 18 && px < w.x + w.w + 18 && py > w.y - 18 && py < w.y + w.h + 18) {
+                        danger = Math.max(danger, 0.95);
+                    }
+                }
+                for (const h of state.hazards) {
+                    if (h.type === "saw" || (h.type === "spike" && h.timer > h.period * 0.52)) {
+                        const hd = dist(px, py, h.x, h.y);
+                        if (hd < h.r + 36) {
+                            danger = Math.max(danger, strat.hazardAvoidance * 0.98);
+                        }
+                    }
+                }
+
+                u.raysInterest[i] = interest;
+                u.raysDanger[i] = danger;
+
+                const net = Math.max(0, interest - danger * 1.18);
+                fx += rx * net;
+                fy += ry * net;
+            }
+
+            const mag = Math.hypot(fx, fy) || 1;
+            const rawX = fx / mag;
+            const rawY = fy / mag;
+
+            // Smooth steering vector damping so movement is fluid and never jerks erratically
+            const blend = clamp(0.16 * dt, 0.02, 0.45);
+            u.smoothSteerX += (rawX - u.smoothSteerX) * blend;
+            u.smoothSteerY += (rawY - u.smoothSteerY) * blend;
+            const smMag = Math.hypot(u.smoothSteerX, u.smoothSteerY) || 1;
+            return { fx: u.smoothSteerX / smMag, fy: u.smoothSteerY / smMag };
+        }
+
+        /***********************************************************************
+         * 8. JUICY ARCADE POPUPS, HIT-STOP & COMBAT MECHANICS
+         ***********************************************************************/
+        let popupAlternateSide = 1;
+        function addPopup(x, y, text, color = "#FFFFFF", scale = 1.0, isCrit = false) {
+            popupAlternateSide *= -1;
+            state.popups.push({
+                x: x + popupAlternateSide * (6 + Math.random() * 10),
+                y: y - 24,
+                vx: popupAlternateSide * (1.2 + Math.random() * 1.6),
+                vy: -(3.6 + Math.random() * 1.4) * (isCrit ? 1.25 : 1),
+                text,
+                color,
+                targetScale: scale,
+                age: 0,
+                life: isCrit ? 54 : 44,
+                maxLife: isCrit ? 54 : 44,
+                isCrit
+            });
+        }
+
+        function triggerSpeech(u, text) {
+            if (u.speechCd > 0) return;
+            u.speech = text;
+            u.speechTimer = 55;
+            u.speechCd = 200;
+        }
+
+        function logEvent(html) {
+            const box = document.getElementById('combatLog');
+            if (!box) return;
+            const div = document.createElement('div');
+            div.className = "px-2 py-1 rounded bg-pitcard/90 border border-slate-800/80 leading-tight";
+            div.innerHTML = `<span class="text-slate-500">[${(state.ticks / 60).toFixed(1)}s]</span> ${html}`;
+            box.prepend(div);
+            while (box.children.length > 40) box.lastChild.remove();
+        }
+
+        function applyDamage(attacker, victim, rawDmg, hitAngle, knockback, tag = "", headless = false) {
+            if (!victim.alive) return;
+
+            // 1. Check Tower Shield / Parry Stance Reflection!
+            if (victim.parryTicks > 0 && attacker && attacker.id !== victim.id) {
+                victim.parryTicks = 0;
+                attacker.stunTicks = 40;
+                const reflectDmg = Math.round(rawDmg * 0.65);
+                attacker.hp = Math.max(1, attacker.hp - reflectDmg);
+                if (!headless) {
+                    Sfx.play("parry");
+                    state.hitStop = 3.5;
+                    addPopup(victim.x, victim.y, `🛡️ PARRIED! STUNNED!`, "#FDE047", 1.35, true);
+                    triggerSpeech(victim, "PARRIED!");
+                }
+                return;
+            }
+
+            // 2. Check Backstab Angle Multiplier
+            let mult = 1;
+            let finalTag = tag;
+            let isSpecialCrit = false;
+            if (attacker && attacker.id !== victim.id) {
+                const behindDiff = Math.abs(normAngle(hitAngle - victim.facing));
+                if (behindDiff < 1.05) {
+                    const bsMult = WEAPONS[attacker.weaponKey]?.backstabMult || 1.5;
+                    mult *= bsMult;
+                    finalTag = "🗡️ BACKSTAB!";
+                    isSpecialCrit = true;
+                    if (!headless) triggerSpeech(attacker, "BACKSTAB!");
+                } else if (rawDmg >= 28 && Math.random() < 0.25) {
+                    mult *= 1.35;
+                    finalTag = finalTag || "💥 CRIT!";
+                    isSpecialCrit = true;
+                }
+            }
+
+            if (tag.includes("SPIKE") || tag.includes("SAW")) isSpecialCrit = true;
+
+            // Armor mitigation
+            const mitigation = 1 - clamp(victim.attributes.armor * 0.016, 0, 0.48);
+            const dmg = Math.max(3, Math.round(rawDmg * mult * mitigation));
+
+            victim.hp -= dmg;
+            victim.hitFlash = 7;
+            if (isSpecialCrit || dmg >= 28) victim.eyePop = 18;
+
+            victim.vx += Math.cos(hitAngle) * knockback * 0.55;
+            victim.vy += Math.sin(hitAngle) * knockback * 0.55;
+
+            if (attacker) attacker.dmgDealt += dmg;
+
+            if (!headless) {
+                Sfx.play("hit");
+                if (isSpecialCrit) state.hitStop = 2.5;
+                paintBloodSplatter(victim.x, victim.y, hitAngle, isSpecialCrit ? 1.55 : 0.85);
+                const popScale = clamp(0.95 + (dmg / 32) * 0.45, 0.95, 1.65);
+                const popColor = finalTag.includes("BACKSTAB")
+                    ? "#E879F9"
+                    : finalTag.includes("FROST")
+                        ? "#38BDF8"
+                        : isSpecialCrit
+                            ? "#FBBF24"
+                            : "#F8FAFC";
+                addPopup(
+                    victim.x,
+                    victim.y,
+                    finalTag ? `${finalTag} -${dmg}` : `-${dmg}`,
+                    popColor,
+                    popScale,
+                    isSpecialCrit
+                );
+            }
+
+            if (victim.hp <= 0) {
+                victim.hp = 0;
+                victim.alive = false;
+                if (attacker && attacker.id !== victim.id) attacker.kills++;
+                if (!headless) {
+                    Sfx.play("kill");
+                    state.shake = 12;
+                    state.hitStop = 4.5;
+                    addPopup(victim.x, victim.y - 12, `💀 EXECUTED!`, "#F43F5E", 1.5, true);
+                    spawnGibExplosion(victim, hitAngle);
+                    const killerHtml = attacker
+                        ? `<b style="color:${attacker.color}">${attacker.name}</b>`
+                        : `<b class="text-rose-400">ARENA HAZARD</b>`;
+                    const victimHtml = `<b style="color:${victim.color}">${victim.name}</b>`;
+                    logEvent(`💀 ${killerHtml} obliterated ${victimHtml}! <span class="text-amber-300">${finalTag}</span>`);
+                }
+            }
+        }
+
+        function triggerActiveSkill(u, target, headless = false) {
+            u.skillCd = Math.round(205 - u.attributes.haste * 3.1);
+            if (u.skill === "WHIRLWIND") {
+                u.whirlwindTicks = 28;
+                if (!headless) {
+                    state.slashes.push({ x: u.x, y: u.y, r: 90, angle: 0, arc: Math.PI * 2, color: u.color, life: 16, maxLife: 16 });
+                    triggerSpeech(u, "BLADE TORNADO!");
+                }
+                state.units.forEach(o => {
+                    if (o.alive && o.teamId !== u.teamId && dist(u.x, u.y, o.x, o.y) <= 92 + o.radius) {
+                        const a = Math.atan2(o.y - u.y, o.x - u.x);
+                        applyDamage(u, o, 25 + u.attributes.power * 0.55, a, 12, "🌪️ WHIRLWIND", headless);
+                    }
+                });
+            } else if (u.skill === "SHADOWSTEP") {
+                const behindX = clamp(target.x + Math.cos(target.facing + Math.PI) * 36, 55, WORLD_W - 55);
+                const behindY = clamp(target.y + Math.sin(target.facing + Math.PI) * 36, 55, WORLD_H - 55);
+                u.x = behindX;
+                u.y = behindY;
+                u.facing = target.facing;
+                u.desiredFacing = target.facing;
+                if (!headless) {
+                    addPopup(u.x, u.y, "🌑 SHADOWSTEP!", "#C084FC", 1.2, true);
+                    triggerSpeech(u, "BEHIND YOU!");
+                }
+            } else if (u.skill === "DASH") {
+                const away = Math.atan2(u.y - target.y, u.x - target.x);
+                u.vx += Math.cos(away) * 14;
+                u.vy += Math.sin(away) * 14;
+                u.hasteTicks = 65;
+                if (!headless) addPopup(u.x, u.y, "💨 VAULT DASH!", "#38BDF8", 1.15);
+            } else if (u.skill === "SHOCKWAVE") {
+                u.parryTicks = 48;
+                if (!headless) {
+                    state.slashes.push({ x: u.x, y: u.y, r: 96, angle: 0, arc: Math.PI * 2, color: "#FBBF24", life: 16, maxLife: 16 });
+                    triggerSpeech(u, "SHIELD SLAM!");
+                }
+                state.units.forEach(o => {
+                    if (o.alive && o.teamId !== u.teamId && dist(u.x, u.y, o.x, o.y) <= 96 + o.radius) {
+                        const a = Math.atan2(o.y - u.y, o.x - u.x);
+                        o.stunTicks = 36;
+                        applyDamage(u, o, 19, a, 16, "⚡ SHIELD SLAM", headless);
+                    }
+                });
+            } else if (u.skill === "BLOODRAGE") {
+                u.berserkTicks = 145;
+                u.hasteTicks = 145;
+                if (!headless) {
+                    addPopup(u.x, u.y, "🔥 BLOODRAGE!", "#F43F5E", 1.25, true);
+                    triggerSpeech(u, "BLOOD FOR THE PIT!");
+                }
+            }
+        }
+
+        function fireWeaponAttack(u, headless = false) {
+            const w = WEAPONS[u.weaponKey] || WEAPONS.GREATSWORD;
+            const dmgBonus = 1 + u.attributes.power * 0.024 + (u.berserkTicks > 0 ? 0.35 : 0);
+            const finalDmg = Math.round(w.dmg * dmgBonus);
+            u.swingDir *= -1;
+
+            if (w.type === "melee") {
+                if (!headless) {
+                    state.slashes.push({
+                        x: u.x,
+                        y: u.y,
+                        r: u.attackRange + 6,
+                        angle: u.facing,
+                        arc: w.arc || 1.6,
+                        color: w.smearColor || u.color,
+                        weaponKey: u.weaponKey,
+                        swingDir: u.swingDir,
+                        life: 13,
+                        maxLife: 13
+                    });
+                }
+                for (const o of state.units) {
+                    if (!o.alive || o.teamId === u.teamId) continue;
+                    const d = dist(u.x, u.y, o.x, o.y);
+                    if (d <= u.attackRange + o.radius + 4) {
+                        const angToEnemy = Math.atan2(o.y - u.y, o.x - u.x);
+                        if (Math.abs(normAngle(angToEnemy - u.facing)) <= (w.arc || 1.6) * 0.62) {
+                            if (w.stunTicks) o.stunTicks = Math.max(o.stunTicks, w.stunTicks);
+                            applyDamage(u, o, finalDmg, angToEnemy, w.knockback, "", headless);
+                        }
+                    }
+                }
+            } else {
+                state.projectiles.push({
+                    ownerId: u.id,
+                    teamId: u.teamId,
+                    color: u.color,
+                    lightColor: u.lightColor,
+                    projType: w.projType,
+                    x: u.x + Math.cos(u.facing) * (u.radius + 12),
+                    y: u.y + Math.sin(u.facing) * (u.radius + 12),
+                    z: 14,
+                    vx: Math.cos(u.facing) * w.projSpeed,
+                    vy: Math.sin(u.facing) * w.projSpeed,
+                    angle: u.facing,
+                    spin: 0,
+                    dmg: finalDmg,
+                    knockback: w.knockback,
+                    slowTicks: w.slowTicks || 0,
+                    splash: w.splash || 0,
+                    traveled: 0,
+                    maxDist: u.attackRange + 60,
+                    trail: []
+                });
+            }
+        }
+
+        /***********************************************************************
+         * 9. TRUE 60FPS SUB-FRAME CONTINUOUS PHYSICS ENGINE (`dt` SCALED)
+         ***********************************************************************/
+        function resolveWallCollisions(u) {
+            u.x = clamp(u.x, u.radius + 16, WORLD_W - u.radius - 16);
+            u.y = clamp(u.y, u.radius + 16, WORLD_H - u.radius - 16);
+            for (const w of state.walls) {
+                const cx = clamp(u.x, w.x, w.x + w.w);
+                const cy = clamp(u.y, w.y, w.y + w.h);
+                const dx = u.x - cx;
+                const dy = u.y - cy;
+                const d = Math.hypot(dx, dy);
+                if (d < u.radius && d > 0.001) {
+                    const overlap = u.radius - d;
+                    u.x += (dx / d) * overlap;
+                    u.y += (dy / d) * overlap;
+                }
+            }
+        }
+
+        // Accepts continuous sub-frame `dt` (e.g. 0.1, 0.25, 0.5, 1.0) so slow-mo runs at silky 60FPS!
+        function stepSimulation(headless = false, dt = 1.0) {
+            if (!headless && state.hitStop > 0) {
+                state.hitStop = Math.max(0, state.hitStop - dt);
+                dt *= 0.12; // Dramatic brief slow-mo impact frame on crits/parries/kills
+            }
+
+            const prevTickFloor = Math.floor(state.ticks);
+            state.ticks += dt;
+            const currTickFloor = Math.floor(state.ticks);
+            const crossedTick = currTickFloor > prevTickFloor;
+
+            const alive = state.units.filter(u => u.alive);
+            const aliveTeams = [...new Set(alive.map(u => u.teamId))];
+
+            // Check match completion
+            if (!headless && aliveTeams.length <= 1 && state.ticks > 10) {
+                const winTeam = aliveTeams[0];
+                const banner = document.getElementById('winnerBanner');
+                if (banner.classList.contains('hidden')) {
+                    banner.classList.remove('hidden');
+                    const winners = alive.filter(u => u.teamId === winTeam);
+                    const pal = TEAM_COLORS[(winTeam ?? 0) % TEAM_COLORS.length];
+                    document.getElementById('winnerTitle').textContent = winners.length
+                        ? `${pal.name} VICTORY!`
+                        : `MUTUAL CARNAGE DRAW!`;
+                    document.getElementById('winnerSub').textContent = winners.length
+                        ? `Survivors: ${winners.map(w => w.name).join(', ')} in ${(state.ticks / 60).toFixed(1)}s`
+                        : `Nobody survived the Pit!`;
+
+                    if (winners.length) {
+                        initElo();
+                        state.units.forEach(u => {
+                            const rec = state.elo[u.archetypeId];
+                            if (rec) {
+                                rec.games++;
+                                if (u.teamId === winTeam) { rec.wins++; rec.rating += 12; }
+                                else { rec.rating = Math.max(850, rec.rating - 10); }
+                            }
+                        });
+                        renderEloList();
+                    }
+                }
+            }
+
+            // 1. Update Arena Hazards & Shrines smoothly with dt
+            for (const h of state.hazards) {
+                if (h.cd > 0) h.cd = Math.max(0, h.cd - dt);
+                if (h.type === "spike") {
+                    const prevTimer = h.timer;
+                    h.timer = (h.timer + dt) % h.period;
+                    const triggerPoint = h.period * 0.88;
+                    if (prevTimer < triggerPoint && h.timer >= triggerPoint) {
+                        for (const u of alive) {
+                            if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                                const a = Math.atan2(u.y - h.y, u.x - h.x);
+                                applyDamage(null, u, 36, a, 12, "🪤 SPIKE BAITED!", headless);
+                            }
+                        }
+                    }
+                } else if (h.type === "saw") {
+                    h.x += (h.vx || 0) * dt;
+                    h.y += (h.vy || 0) * dt;
+                    h.angle += 0.25 * dt;
+                    if (h.minX && (h.x < h.minX || h.x > h.maxX)) h.vx *= -1;
+                    if (h.minY && (h.y < h.minY || h.y > h.maxY)) h.vy *= -1;
+                    if (crossedTick && currTickFloor % 12 === 0) {
+                        for (const u of alive) {
+                            if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                                const a = Math.atan2(u.y - h.y, u.x - h.x);
+                                applyDamage(null, u, 22, a, 14, "⚙️ SAWBLADE!", headless);
+                            }
+                        }
+                    }
+                } else if (h.cd <= 0) {
+                    for (const u of alive) {
+                        if (dist(u.x, u.y, h.x, h.y) <= h.r + u.radius) {
+                            if (h.type === "shrine" && u.hp < u.maxHp * 0.9) {
+                                const heal = Math.round(u.maxHp * 0.42);
+                                u.hp = Math.min(u.maxHp, u.hp + heal);
+                                h.cd = 320;
+                                if (!headless) addPopup(u.x, u.y, `💚 +${heal} HP`, "#34D399", 1.2);
+                                break;
+                            } else if (h.type === "haste") {
+                                u.hasteTicks = 200;
+                                h.cd = 340;
+                                if (!headless) addPopup(u.x, u.y, `⚡ 2X SPEED!`, "#38BDF8", 1.2);
+                                break;
+                            } else if (h.type === "berserk") {
+                                u.berserkTicks = 200;
+                                h.cd = 340;
+                                if (!headless) addPopup(u.x, u.y, `🔥 RAGE +35%!`, "#F43F5E", 1.2);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Update Living Gladiators with continuous `dt`
+            for (const u of alive) {
+                if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
+                if (u.skillCd > 0) u.skillCd = Math.max(0, u.skillCd - dt);
+                if (u.parryTicks > 0) u.parryTicks = Math.max(0, u.parryTicks - dt);
+                if (u.parryCd > 0) u.parryCd = Math.max(0, u.parryCd - dt);
+                if (u.slowTicks > 0) u.slowTicks = Math.max(0, u.slowTicks - dt);
+                if (u.hasteTicks > 0) u.hasteTicks = Math.max(0, u.hasteTicks - dt);
+                if (u.berserkTicks > 0) u.berserkTicks = Math.max(0, u.berserkTicks - dt);
+                if (u.hitFlash > 0) u.hitFlash = Math.max(0, u.hitFlash - dt);
+                if (u.eyePop > 0) u.eyePop = Math.max(0, u.eyePop - dt);
+                if (u.speechTimer > 0) u.speechTimer = Math.max(0, u.speechTimer - dt);
+                if (u.speechCd > 0) u.speechCd = Math.max(0, u.speechCd - dt);
+                if (u.whirlwindTicks > 0) u.whirlwindTicks = Math.max(0, u.whirlwindTicks - dt);
+
+                const damp = Math.pow(0.78, dt);
+
+                if (u.stunTicks > 0) {
+                    u.stunTicks = Math.max(0, u.stunTicks - dt);
+                    u.x += u.vx * dt;
+                    u.y += u.vy * dt;
+                    u.vx *= damp;
+                    u.vy *= damp;
+                    resolveWallCollisions(u);
+                    continue;
+                }
+
+                // 4-Phase Weapon Animation Timers: WINDUP -> STRIKE -> RECOVERY -> IDLE
+                if (u.windup > 0) {
+                    u.windup -= dt;
+                    if (u.windup <= 0) {
+                        u.windup = 0;
+                        const w = WEAPONS[u.weaponKey] || WEAPONS.GREATSWORD;
+                        u.strikeTimer = w.strikeDuration || 10;
+                        u.maxStrike = u.strikeTimer;
+                        u.recoveryTimer = w.recovery || 10;
+                        fireWeaponAttack(u, headless);
+                    }
+                } else if (u.strikeTimer > 0) {
+                    u.strikeTimer = Math.max(0, u.strikeTimer - dt);
+                } else if (u.recoveryTimer > 0) {
+                    u.recoveryTimer = Math.max(0, u.recoveryTimer - dt);
+                }
+
+                const enemies = alive.filter(e => e.teamId !== u.teamId);
+                const target = chooseTarget(u, enemies);
+
+                if (target) {
+                    const d = dist(u.x, u.y, target.x, target.y);
+                    const w = WEAPONS[u.weaponKey];
+
+                    if (u.parryCd <= 0 && d < 120 && target.windup > 0 && Math.random() < u.strategy.parryReflex * dt) {
+                        u.parryTicks = 30;
+                        u.parryCd = 135;
+                    }
+
+                    if (u.skillCd <= 0 && d < 260) {
+                        triggerActiveSkill(u, target, headless);
+                    }
+
+                    const steer = compute16RaySteering(u, target, dt);
+                    const speedMult = (u.hasteTicks > 0 ? 1.45 : 1) * (u.slowTicks > 0 ? 0.62 : 1) * (u.windup > 0 && w.type === "melee" ? 0.55 : 1);
+                    u.vx += steer.fx * u.moveSpeed * speedMult * 0.24 * dt;
+                    u.vy += steer.fy * u.moveSpeed * speedMult * 0.24 * dt;
+
+                    if (w.type === "ranged") {
+                        u.aimPoint = computeLeadPoint(u.x, u.y, target, w.projSpeed, u.strategy.aimPrediction);
+                        u.desiredFacing = Math.atan2(u.aimPoint.y - u.y, u.aimPoint.x - u.x);
+                    } else {
+                        u.aimPoint = { x: target.x, y: target.y };
+                        u.desiredFacing = Math.atan2(target.y - u.y, target.x - u.x);
+                    }
+
+                    const turnPenalty = (u.windup > 0 || u.strikeTimer > 0) && w.type === "melee" ? 0.42 : 1.0;
+                    u.facing = stepAngle(u.facing, u.desiredFacing, u.maxTurnTick * turnPenalty * dt);
+
+                    const aimError = Math.abs(normAngle(u.desiredFacing - u.facing));
+                    if (u.windup <= 0 && u.strikeTimer <= 0 && u.atkCd <= 0 && d <= u.attackRange + target.radius && aimError < 0.68) {
+                        u.windup = w.windup;
+                        u.maxWindup = w.windup;
+                        u.atkCd = Math.max(10, Math.round(w.cooldown * (1 - u.attributes.haste * 0.014)));
+                    }
+                }
+
+                u.x += u.vx * dt;
+                u.y += u.vy * dt;
+                u.vx *= damp;
+                u.vy *= damp;
+                u.walkPhase += Math.hypot(u.vx, u.vy) * 0.19 * dt;
+                resolveWallCollisions(u);
+            }
+
+            // Unit-vs-Unit Soft Collision Separation
+            for (let i = 0; i < alive.length; i++) {
+                for (let j = i + 1; j < alive.length; j++) {
+                    const a = alive[i], b = alive[j];
+                    const dx = b.x - a.x, dy = b.y - a.y;
+                    const d = Math.hypot(dx, dy);
+                    const minD = a.radius + b.radius;
+                    if (d < minD && d > 0.01) {
+                        const push = (minD - d) * 0.45 * Math.min(1, dt);
+                        a.x -= (dx / d) * push; a.y -= (dy / d) * push;
+                        b.x += (dx / d) * push; b.y += (dy / d) * push;
+                    }
+                }
+            }
+
+            // 3. Update Team-Colored Projectiles smoothly with dt
+            for (let i = state.projectiles.length - 1; i >= 0; i--) {
+                const p = state.projectiles[i];
+                if (!headless) {
+                    p.trail.unshift({ x: p.x, y: p.y });
+                    if (p.trail.length > 9) p.trail.pop();
+                }
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.spin += 0.42 * dt;
+                p.traveled += Math.hypot(p.vx, p.vy) * dt;
+
+                let hit = p.traveled >= p.maxDist || p.x < 20 || p.x > WORLD_W - 20 || p.y < 20 || p.y > WORLD_H - 20;
+                if (!hit) {
+                    for (const w of state.walls) {
+                        if (p.x >= w.x && p.x <= w.x + w.w && p.y >= w.y && p.y <= w.y + w.h) {
+                            hit = true; break;
+                        }
+                    }
+                }
+                if (!hit) {
+                    for (const u of alive) {
+                        if (u.teamId !== p.teamId && dist(p.x, p.y, u.x, u.y) <= u.radius + 9) {
+                            const shooter = state.units.find(x => x.id === p.ownerId);
+                            if (p.slowTicks) u.slowTicks = Math.max(u.slowTicks, p.slowTicks);
+                            if (p.splash > 0) {
+                                if (!headless) state.slashes.push({ x: p.x, y: p.y, r: p.splash, angle: 0, arc: Math.PI * 2, color: p.color, life: 14, maxLife: 14 });
+                                alive.forEach(v => {
+                                    if (v.teamId !== p.teamId && dist(p.x, p.y, v.x, v.y) <= p.splash + v.radius) {
+                                        applyDamage(shooter, v, p.dmg, p.angle, p.knockback, "🔥 FIREBALL", headless);
+                                    }
+                                });
+                            } else {
+                                applyDamage(shooter, u, p.dmg, p.angle, p.knockback, p.slowTicks ? "❄️ FROST" : "", headless);
+                            }
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                if (hit) state.projectiles.splice(i, 1);
+            }
+
+            if (headless) return;
+
+            // 4. Visual Slashes, Crazy Ragdoll Gibs & Elastic Popups (all scaled by dt!)
+            for (let i = state.slashes.length - 1; i >= 0; i--) {
+                state.slashes[i].life -= dt;
+                if (state.slashes[i].life <= 0) state.slashes.splice(i, 1);
+            }
+
+            for (const g of state.gibs) {
+                if (g.settled) continue;
+                g.x += g.vx * dt;
+                g.y += g.vy * dt;
+                g.z += g.vz * dt;
+                g.vz -= 0.44 * dt;
+                g.rot += g.vrot * dt;
+
+                if (g.type === "intestine" && Math.random() < 0.45 * dt) {
+                    g.trailHistory.unshift({ x: g.x, y: g.y });
+                    if (g.trailHistory.length > 7) g.trailHistory.pop();
+                }
+
+                if (g.z <= 0) {
+                    g.z = 0;
+                    g.vz *= -0.46;
+                    g.vx *= Math.pow(0.62, dt);
+                    g.vy *= Math.pow(0.62, dt);
+                    g.bounces++;
+                    if (g.bounces <= 3) paintBloodSplatter(g.x, g.y, g.rot, 0.38);
+                    if (Math.hypot(g.vx, g.vy) < 0.28 && Math.abs(g.vz) < 0.8) g.settled = true;
+                }
+            }
+
+            for (let i = state.popups.length - 1; i >= 0; i--) {
+                const pop = state.popups[i];
+                pop.age += dt;
+                pop.x += pop.vx * dt;
+                pop.y += pop.vy * dt;
+                pop.vy += 0.16 * dt;
+                pop.life -= dt;
+                if (pop.life <= 0) state.popups.splice(i, 1);
+            }
+
+            if (crossedTick && currTickFloor % 6 === 0) {
+                state.history.push({
+                    ticks: state.ticks,
+                    units: JSON.parse(JSON.stringify(state.units))
+                });
+                if (state.history.length > 240) state.history.shift();
+                const slider = document.getElementById('replaySlider');
+                slider.max = state.history.length - 1;
+                slider.value = state.history.length - 1;
+            }
+
+            if (crossedTick && currTickFloor % 8 === 0) {
+                document.getElementById('tickLabel').textContent = `${(state.ticks / 60).toFixed(1)}s`;
+                updateRosterCards();
+                updateTeamBanner();
+                updateSelectedHud();
+            }
+        }
+
+        /***********************************************************************
+         * 10. OVERSIZED WEAPON, HELMET & 2.5D RETINA ARENA RENDERER
+         ***********************************************************************/
+        const canvas = document.getElementById('arenaCanvas');
+        const ctx = canvas.getContext('2d');
+        let viewW = 900, viewH = 600;
+
+        function resizeCanvas() {
+            const vp = document.getElementById('viewportContainer');
+            viewW = vp.clientWidth;
+            viewH = vp.clientHeight;
+            state.dpr = window.devicePixelRatio || 1;
+            canvas.width = viewW * state.dpr;
+            canvas.height = viewH * state.dpr;
+            const fitZoom = Math.min((viewW - 40) / WORLD_W, (viewH - 40) / WORLD_H);
+            state.cam.zoom = clamp(fitZoom, 0.55, 1.15);
+        }
+
+        function drawDropShadow(x, y, rx, ry, z = 0) {
+            const s = Math.max(0.45, 1 - z * 0.02);
+            ctx.fillStyle = "rgba(2, 1, 6, 0.55)";
+            ctx.beginPath();
+            ctx.ellipse(x, y + ry * 0.65, rx * s, ry * s, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Renders oversized, unmistakable 2.5D weapons with 4-phase animation (IDLE, WINDUP, STRIKE, RECOVERY)
+        function drawOversizedWeaponRig(u) {
+            const wKey = u.weaponKey;
+            const r = u.radius;
+            const windupRatio = u.windup > 0 ? (1 - u.windup / Math.max(1, u.maxWindup)) : 0;
+            const strikeRatio = u.strikeTimer > 0 ? (1 - u.strikeTimer / Math.max(1, u.maxStrike)) : 0;
+
+            ctx.save();
+
+            // 360 Whirlwind Blade Tornado Ring
+            if (u.whirlwindTicks > 0) {
+                ctx.save();
+                ctx.rotate(state.ticks * 0.45);
+                ctx.strokeStyle = u.color;
+                ctx.lineWidth = 5;
+                ctx.setLineDash([18, 10]);
+                ctx.beginPath();
+                ctx.arc(0, 0, r + 32, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+            }
+
+            if (wKey === "GREATSWORD") {
+                // Huge Two-Handed Broad Claymore
+                let rot = 0.55; // Idle held at side
+                if (u.windup > 0) rot = 0.55 + windupRatio * 1.15; // Cocked way back
+                else if (u.strikeTimer > 0) rot = 1.70 - strikeRatio * 3.1; // Massive 175-deg cleave across front
+                else if (u.recoveryTimer > 0) rot = -1.4 + (1 - u.recoveryTimer / 12) * 1.95;
+
+                ctx.rotate(rot);
+                // Pommel & Hilt
+                ctx.fillStyle = "#78350F";
+                ctx.fillRect(r * 0.25, -3, 10, 6);
+                // Wide golden crossguard
+                ctx.fillStyle = "#FBBF24";
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.8;
+                ctx.fillRect(r * 0.25 + 9, -13, 5, 26);
+                ctx.strokeRect(r * 0.25 + 9, -13, 5, 26);
+
+                // Giant broad steel blade with blood fuller groove
+                ctx.fillStyle = u.windup > 0 ? "#FEF08A" : "#E2E8F0";
+                ctx.beginPath();
+                ctx.moveTo(r * 0.25 + 14, -7.5);
+                ctx.lineTo(r + 48, -5.5);
+                ctx.lineTo(r + 60, 0);
+                ctx.lineTo(r + 48, 5.5);
+                ctx.lineTo(r * 0.25 + 14, 7.5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Crimson fuller blood groove
+                ctx.fillStyle = u.color;
+                ctx.fillRect(r * 0.25 + 18, -2, 30, 4);
+
+            } else if (wKey === "WARHAMMER") {
+                // Off-hand Heavy Tower Shield (Front-left, raises in front during Parry!)
+                ctx.save();
+                const shieldAngle = u.parryTicks > 0 ? 0 : -0.75;
+                const shieldDist = u.parryTicks > 0 ? r + 8 : r * 0.85;
+                ctx.rotate(shieldAngle);
+                ctx.fillStyle = u.parryTicks > 0 ? "#FDE047" : "#334155";
+                ctx.strokeStyle = "#FBBF24";
+                ctx.lineWidth = 2.5;
+                ctx.fillRect(shieldDist - 5, -14, 9, 28);
+                ctx.strokeRect(shieldDist - 5, -14, 9, 28);
+                ctx.restore();
+
+                // Main-hand Giant Spiked Iron Maul
+                let rot = 0.65;
+                if (u.windup > 0) rot = 0.65 + windupRatio * 1.1;
+                else if (u.strikeTimer > 0) rot = 1.75 - strikeRatio * 2.6;
+                ctx.rotate(rot);
+
+                // Long iron-shod shaft
+                ctx.fillStyle = "#92400E";
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.8;
+                ctx.fillRect(r * 0.3, -2.5, r + 32, 5);
+                ctx.strokeRect(r * 0.3, -2.5, r + 32, 5);
+
+                // Heavy twin-faced hammer block + spike
+                const hx = r + 24;
+                ctx.fillStyle = u.windup > 0 ? "#FDE047" : "#64748B";
+                ctx.fillRect(hx, -14, 15, 28);
+                ctx.strokeRect(hx, -14, 15, 28);
+                // Top & bottom crushing flanges
+                ctx.fillStyle = u.color;
+                ctx.fillRect(hx - 2, -16, 19, 4);
+                ctx.fillRect(hx - 2, 12, 19, 4);
+
+            } else if (wKey === "TWIN_DAGGERS") {
+                // Dual Curved Venom/Bleed Kris Daggers held in BOTH hands!
+                [-1, 1].forEach(side => {
+                    ctx.save();
+                    let rot = side * 0.52;
+                    if (u.windup > 0) rot = side * (0.52 + windupRatio * 0.65);
+                    else if (u.strikeTimer > 0) rot = side * (1.15 - strikeRatio * 2.1);
+                    ctx.rotate(rot);
+
+                    ctx.fillStyle = "#1E293B";
+                    ctx.fillRect(r * 0.4, side * 4 - 2, 7, 4);
+
+                    // Curved glowing assassin blade
+                    ctx.fillStyle = "#34D399";
+                    ctx.strokeStyle = "#09090B";
+                    ctx.lineWidth = 1.6;
+                    ctx.beginPath();
+                    ctx.moveTo(r * 0.4 + 7, side * 4 - 4);
+                    ctx.quadraticCurveTo(r + 18, side * 10, r + 30, side * 2);
+                    ctx.quadraticCurveTo(r + 16, side * 2, r * 0.4 + 7, side * 4 + 4);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.restore();
+                });
+
+            } else if (wKey === "THROWING_AXES") {
+                // Dual Bearded Viking Battle-Axes in both hands
+                [-1, 1].forEach(side => {
+                    ctx.save();
+                    let rot = side * 0.6;
+                    if (u.windup > 0 && side === 1) rot = 0.6 + windupRatio * 0.9;
+                    else if (u.strikeTimer > 0 && side === 1) rot = 1.5 - strikeRatio * 2.0;
+                    ctx.rotate(rot);
+
+                    ctx.fillStyle = "#78350F";
+                    ctx.strokeStyle = "#09090B";
+                    ctx.lineWidth = 1.6;
+                    ctx.fillRect(r * 0.35, -2, 24, 4);
+
+                    // Broad curved crescent axe head
+                    ctx.fillStyle = "#E2E8F0";
+                    ctx.beginPath();
+                    ctx.arc(r * 0.35 + 20, side * 6, 11, side > 0 ? -0.4 : -2.7, side > 0 ? 2.7 : 0.4);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.restore();
+                });
+
+            } else if (wKey === "LONGBOW") {
+                // Large Recurve Composite Bow held in front + taut dynamic bowstring
+                const bowX = r * 0.55;
+                const pullBack = u.windup > 0 ? windupRatio * 15 : 0;
+
+                // Bowstring
+                ctx.strokeStyle = "#E2E8F0";
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.moveTo(bowX + 4, -22);
+                ctx.lineTo(bowX - pullBack, 0);
+                ctx.lineTo(bowX + 4, 22);
+                ctx.stroke();
+
+                // Recurve Bow Limbs
+                ctx.strokeStyle = "#D97706";
+                ctx.lineWidth = 4.2;
+                ctx.beginPath();
+                ctx.arc(bowX - 2, 0, 23, -Math.PI * 0.44, Math.PI * 0.44);
+                ctx.stroke();
+
+                // Nocked Frost Arrow visibly pulled back during windup!
+                if (u.windup > 0 || u.atkCd < 14) {
+                    ctx.strokeStyle = u.color;
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    ctx.moveTo(bowX - pullBack, 0);
+                    ctx.lineTo(bowX + 26 - pullBack * 0.5, 0);
+                    ctx.stroke();
+                    ctx.fillStyle = "#38BDF8";
+                    ctx.beginPath();
+                    ctx.moveTo(bowX + 32 - pullBack * 0.5, 0);
+                    ctx.lineTo(bowX + 23 - pullBack * 0.5, -4.5);
+                    ctx.lineTo(bowX + 23 - pullBack * 0.5, 4.5);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+            } else if (wKey === "ARCANE_STAFF") {
+                // Ornate Dragon Staff with glowing crystal orb & orbiting arcane halo
+                ctx.save();
+                ctx.rotate(0.28);
+                ctx.fillStyle = "#581C87";
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.8;
+                ctx.fillRect(r * 0.2, -2.5, r + 32, 5);
+                ctx.strokeRect(r * 0.2, -2.5, r + 32, 5);
+
+                const orbX = r + 34;
+                const orbR = u.windup > 0 ? 8 + windupRatio * 5 : 7.5;
+                // Glowing Arcane Orb
+                ctx.fillStyle = u.windup > 0 ? "#FDE047" : "#C084FC";
+                ctx.beginPath();
+                ctx.arc(orbX, 0, orbR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+
+                // Orbiting Rune Ring
+                ctx.strokeStyle = u.color;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.arc(orbX, 0, orbR + 5, state.ticks * 0.1, state.ticks * 0.1 + Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+            }
+
+            ctx.restore();
+        }
+
+        // Renders distinct headgear silhouettes per weapon class so archetypes read at a glance
+        function drawClassHelmet(u) {
+            const helm = WEAPONS[u.weaponKey]?.helm || "horned";
+            const hr = u.radius * 0.62;
+
+            if (helm === "horned") {
+                // Curved Berserker Bull Horns
+                ctx.fillStyle = "#E2E8F0";
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.6;
+                [-1, 1].forEach(s => {
+                    ctx.beginPath();
+                    ctx.moveTo(-2, s * hr * 0.75);
+                    ctx.quadraticCurveTo(4, s * (hr + 11), 13, s * (hr + 5));
+                    ctx.quadraticCurveTo(5, s * (hr + 4), 2, s * hr * 0.65);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                });
+            } else if (helm === "knight") {
+                // Steel Greathelm Visor + Team Plume Crest
+                ctx.fillStyle = u.color;
+                ctx.beginPath();
+                ctx.ellipse(-6, 0, 7, 3.5, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = "#475569";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(0, 0, hr * 0.92, -0.8, 0.8);
+                ctx.stroke();
+            } else if (helm === "ninja") {
+                // Dark Assassin Cowl & Trailing Headband Tails
+                ctx.strokeStyle = u.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(-hr, -2);
+                ctx.lineTo(-hr - 11 - Math.sin(u.walkPhase) * 3, -6);
+                ctx.moveTo(-hr, 2);
+                ctx.lineTo(-hr - 11 + Math.cos(u.walkPhase) * 3, 6);
+                ctx.stroke();
+            } else if (helm === "hood") {
+                // Ranger Pointed Forest Cowl
+                ctx.fillStyle = u.color;
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.arc(0, 0, hr * 1.02, Math.PI * 0.55, -Math.PI * 0.55);
+                ctx.lineTo(-hr - 7, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            } else if (helm === "wizard") {
+                // Arcane Crown / Pointed Brim
+                ctx.fillStyle = "#FBBF24";
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                ctx.moveTo(2, -5);
+                ctx.lineTo(8, -3);
+                ctx.lineTo(4, 0);
+                ctx.lineTo(8, 3);
+                ctx.lineTo(2, 5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+
+        function renderArena() {
+            ctx.save();
+            ctx.scale(state.dpr, state.dpr);
+            ctx.fillStyle = "#06050A";
+            ctx.fillRect(0, 0, viewW, viewH);
+
+            let sx = 0, sy = 0;
+            if (state.shake > 0.2) {
+                sx = (Math.random() - 0.5) * state.shake;
+                sy = (Math.random() - 0.5) * state.shake;
+                state.shake *= 0.85;
+            }
+
+            ctx.translate(viewW / 2 + sx, viewH / 2 + sy);
+            ctx.scale(state.cam.zoom, state.cam.zoom);
+            ctx.translate(-state.cam.x, -state.cam.y);
+
+            // 1. Floor & Organic Gore Layer
+            ctx.drawImage(decalCanvas, 0, 0);
+
+            // 2. Shrines, Spike Traps & Saws
+            for (const h of state.hazards) {
+                ctx.save();
+                ctx.translate(h.x, h.y);
+                const ready = (h.cd || 0) <= 0;
+
+                if (h.type === "shrine" || h.type === "haste" || h.type === "berserk") {
+                    const col = h.type === "shrine" ? "#10B981" : h.type === "haste" ? "#38BDF8" : "#F43F5E";
+                    ctx.fillStyle = ready ? `${col}33` : "rgba(30,41,59,0.35)";
+                    ctx.strokeStyle = ready ? col : "#475569";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, h.r, 0, Math.PI * 2);
+                    ctx.fill(); ctx.stroke();
+
+                    ctx.font = "20px sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    const icon = h.type === "shrine" ? "💚" : h.type === "haste" ? "⚡" : "🔥";
+                    ctx.fillText(icon, 0, 0);
+
+                    ctx.font = "800 10px 'JetBrains Mono', monospace";
+                    ctx.fillStyle = ready ? "#F8FAFC" : "#94A3B8";
+                    const label = ready
+                        ? (h.type === "shrine" ? "+42% HP" : h.type === "haste" ? "2X HASTE" : "+35% RAGE")
+                        : `CD ${Math.ceil(h.cd / 60)}s`;
+                    ctx.fillText(label, 0, h.r + 12);
+                } else if (h.type === "spike") {
+                    const prog = h.timer / h.period;
+                    const hot = prog > 0.72;
+                    ctx.fillStyle = "#18181B";
+                    ctx.strokeStyle = hot ? "#F43F5E" : "#52525B";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(0, 0, h.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                    ctx.fillStyle = hot ? "rgba(244,63,94,0.45)" : "rgba(251,191,36,0.18)";
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.arc(0, 0, h.r - 3, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+                    ctx.closePath(); ctx.fill();
+
+                    // Physical iron spike teeth popping out when hot
+                    if (hot) {
+                        ctx.fillStyle = "#E2E8F0";
+                        for (let a = 0; a < Math.PI * 2; a += Math.PI / 3) {
+                            ctx.beginPath();
+                            ctx.arc(Math.cos(a) * 16, Math.sin(a) * 16, 4.5, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+
+                    ctx.font = "800 9px 'JetBrains Mono', monospace";
+                    ctx.textAlign = "center";
+                    ctx.fillStyle = hot ? "#FDA4AF" : "#A1A1AA";
+                    ctx.fillText(hot ? "🔺 SPIKES!" : "⚙️ TRAP", 0, h.r + 12);
+                } else if (h.type === "saw") {
+                    drawDropShadow(0, 5, h.r * 0.9, h.r * 0.45, 3);
+                    ctx.rotate(h.angle);
+                    ctx.fillStyle = "#CBD5E1";
+                    ctx.strokeStyle = "#E11D48";
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    for (let i = 0; i < 20; i++) {
+                        const rad = i % 2 === 0 ? h.r : h.r * 0.72;
+                        const a = (i / 20) * Math.PI * 2;
+                        if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+                        else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+                    }
+                    ctx.closePath(); ctx.fill(); ctx.stroke();
+                }
+                ctx.restore();
+            }
+
+            // 3. 2.5D Dungeon Walls
+            for (const w of state.walls) {
+                ctx.fillStyle = "rgba(0,0,0,0.52)";
+                ctx.fillRect(w.x + 6, w.y + 8, w.w, w.h);
+                ctx.fillStyle = "#1E1B2E";
+                ctx.strokeStyle = "#475569";
+                ctx.lineWidth = 2;
+                ctx.fillRect(w.x, w.y, w.w, w.h);
+                ctx.strokeRect(w.x, w.y, w.w, w.h);
+                ctx.fillStyle = "#2E2944";
+                ctx.fillRect(w.x + 3, w.y + 3, w.w - 6, 8);
+            }
+
+            // 4. Crazy Anatomical Ragdoll Gibs
+            for (const g of state.gibs) {
+                drawDropShadow(g.x, g.y + 5, 8, 4, g.z);
+
+                // Squirming intestine chain trail
+                if (g.type === "intestine" && g.trailHistory.length > 1) {
+                    ctx.save();
+                    ctx.strokeStyle = "#FB7185";
+                    ctx.lineWidth = 5;
+                    ctx.lineCap = "round";
+                    ctx.beginPath();
+                    ctx.moveTo(g.x, g.y - g.z);
+                    g.trailHistory.forEach(pt => ctx.lineTo(pt.x, pt.y));
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                ctx.save();
+                ctx.translate(g.x, g.y - g.z);
+                ctx.rotate(g.rot);
+                if (g.type === "skull") {
+                    ctx.fillStyle = "#F1F5F9";
+                    ctx.strokeStyle = "#0F172A";
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath(); ctx.arc(0, 0, 7.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                    ctx.fillStyle = "#0F172A";
+                    ctx.fillRect(-3.5, -2, 2.5, 2.5);
+                    ctx.fillRect(1.5, -2, 2.5, 2.5);
+                } else if (g.type === "jaw") {
+                    ctx.strokeStyle = "#E2E8F0";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI); ctx.stroke();
+                } else if (g.type === "ribcage") {
+                    ctx.strokeStyle = "#F1F5F9";
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(-6, -4); ctx.lineTo(6, -4);
+                    ctx.moveTo(-6, 0); ctx.lineTo(6, 0);
+                    ctx.moveTo(-6, 4); ctx.lineTo(6, 4);
+                    ctx.stroke();
+                } else if (g.type === "heart") {
+                    ctx.fillStyle = "#E11D48";
+                    ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+                } else if (g.type === "eyeball") {
+                    ctx.fillStyle = "#FFFFFF";
+                    ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = "#0284C7";
+                    ctx.beginPath(); ctx.arc(1.2, 0, 2, 0, Math.PI * 2); ctx.fill();
+                } else if (g.type === "weapon_arm") {
+                    ctx.fillStyle = g.color;
+                    ctx.fillRect(-6, -3, 12, 6);
+                    ctx.fillStyle = "#CBD5E1";
+                    ctx.fillRect(4, -2, 16, 4);
+                } else {
+                    ctx.fillStyle = g.color;
+                    ctx.strokeStyle = "#09090B";
+                    ctx.lineWidth = 1.2;
+                    ctx.fillRect(-7, -3.5, 14, 7);
+                    ctx.strokeRect(-7, -3.5, 14, 7);
+                }
+                ctx.restore();
+            }
+
+            // 5. Multi-Layered Directional Weapon Slash Smears
+            for (const s of state.slashes) {
+                const ratio = clamp(s.life / s.maxLife, 0, 1);
+                ctx.save();
+                ctx.globalAlpha = ratio * 0.9;
+                // Outer colored weapon smear
+                ctx.strokeStyle = s.color;
+                ctx.lineWidth = 14 * ratio;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.r, s.angle - s.arc / 2, s.angle + s.arc / 2);
+                ctx.stroke();
+
+                // Hot white inner blade core
+                ctx.strokeStyle = "#FFFFFF";
+                ctx.lineWidth = 5 * ratio;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.r + 2, s.angle - s.arc * 0.42, s.angle + s.arc * 0.42);
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // 6. Team-Colored Projectiles
+            for (const p of state.projectiles) {
+                drawDropShadow(p.x, p.y + 11, 8, 4, p.z);
+                if (p.trail.length > 1) {
+                    ctx.save();
+                    ctx.strokeStyle = p.color;
+                    ctx.lineWidth = 4.5;
+                    ctx.globalAlpha = 0.55;
+                    ctx.beginPath();
+                    ctx.moveTo(p.x, p.y);
+                    p.trail.forEach(t => ctx.lineTo(t.x, t.y));
+                    ctx.stroke();
+                    ctx.restore();
+                }
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.projType === "axe" ? p.spin : p.angle);
+                ctx.fillStyle = p.color;
+                ctx.strokeStyle = "#FFFFFF";
+                ctx.lineWidth = 1.6;
+                if (p.projType === "arrow") {
+                    ctx.beginPath();
+                    ctx.moveTo(16, 0); ctx.lineTo(-12, -4.5); ctx.lineTo(-9, 0); ctx.lineTo(-12, 4.5);
+                    ctx.closePath(); ctx.fill(); ctx.stroke();
+                } else if (p.projType === "fireball") {
+                    ctx.beginPath(); ctx.arc(0, 0, 9.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                } else {
+                    // Spinning Double-Headed Throwing Axe
+                    ctx.beginPath();
+                    ctx.arc(0, -5, 8, 0.3, Math.PI - 0.3);
+                    ctx.arc(0, 5, 8, -Math.PI + 0.3, -0.3);
+                    ctx.closePath(); ctx.fill(); ctx.stroke();
+                }
+                ctx.restore();
+            }
+
+            // 7. Living Gladiators
+            for (const u of state.units) {
+                if (!u.alive) continue;
+                const isSel = u.id === state.selectedId;
+
+                if (state.showRanges && isSel) {
+                    ctx.save();
+                    ctx.strokeStyle = `${u.color}88`;
+                    ctx.lineWidth = 1.6;
+                    ctx.setLineDash([6, 6]);
+                    ctx.beginPath(); ctx.arc(u.x, u.y, u.attackRange, 0, Math.PI * 2); ctx.stroke();
+                    ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
+                    ctx.beginPath(); ctx.arc(u.x, u.y, u.strategy.idealRangeMin, 0, Math.PI * 2); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.restore();
+                }
+
+                if (state.showVectors) {
+                    if (u.aimPoint && (isSel || WEAPONS[u.weaponKey].type === "ranged")) {
+                        ctx.save();
+                        ctx.strokeStyle = `${u.color}99`;
+                        ctx.lineWidth = 1.5;
+                        ctx.setLineDash([4, 4]);
+                        ctx.beginPath(); ctx.moveTo(u.x, u.y); ctx.lineTo(u.aimPoint.x, u.aimPoint.y); ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.strokeStyle = "#FBBF24";
+                        ctx.beginPath(); ctx.arc(u.aimPoint.x, u.aimPoint.y, 7, 0, Math.PI * 2); ctx.stroke();
+                        ctx.restore();
+                    }
+                    if (isSel) {
+                        for (let r = 0; r < NUM_RAYS; r++) {
+                            const a = RAY_ANGLES[r];
+                            const il = u.raysInterest[r] * 24;
+                            const dl = u.raysDanger[r] * 24;
+                            if (il > 2) {
+                                ctx.strokeStyle = "rgba(52,211,153,0.65)";
+                                ctx.beginPath();
+                                ctx.moveTo(u.x + Math.cos(a) * u.radius, u.y + Math.sin(a) * u.radius);
+                                ctx.lineTo(u.x + Math.cos(a) * (u.radius + il), u.y + Math.sin(a) * (u.radius + il));
+                                ctx.stroke();
+                            }
+                            if (dl > 2) {
+                                ctx.strokeStyle = "rgba(244,63,94,0.75)";
+                                ctx.beginPath();
+                                ctx.moveTo(u.x + Math.cos(a) * u.radius, u.y + Math.sin(a) * u.radius);
+                                ctx.lineTo(u.x + Math.cos(a) * (u.radius + dl), u.y + Math.sin(a) * (u.radius + dl));
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                }
+
+                // Grounded Drop Shadow & Team Ring
+                drawDropShadow(u.x, u.y + u.radius * 0.55, u.radius * 1.15, u.radius * 0.58, u.z);
+
+                ctx.save();
+                ctx.translate(u.x, u.y);
+
+                // Crisp Team Ground Identification Ring
+                ctx.strokeStyle = `${u.color}AA`;
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.ellipse(0, u.radius * 0.45, u.radius * 1.05, u.radius * 0.48, 0, 0, Math.PI * 2);
+                ctx.stroke();
+
+                if (isSel) {
+                    ctx.strokeStyle = "#FBBF24";
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath(); ctx.arc(0, 0, u.radius + 7, 0, Math.PI * 2); ctx.stroke();
+                }
+
+                if (u.parryTicks > 0) {
+                    ctx.fillStyle = "rgba(250, 204, 21, 0.28)";
+                    ctx.strokeStyle = "#FDE047";
+                    ctx.lineWidth = 2.8;
+                    ctx.beginPath(); ctx.arc(0, 0, u.radius + 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                }
+
+                ctx.rotate(u.facing);
+
+                // Striding Boots
+                const stride = Math.sin(u.walkPhase) * 6.5;
+                ctx.fillStyle = "#1E293B";
+                ctx.fillRect(stride - 4, -u.radius * 0.78, 8.5, 5.5);
+                ctx.fillRect(-stride - 4, u.radius * 0.78 - 5.5, 8.5, 5.5);
+
+                // Shoulders & Armor Pauldrons
+                ctx.fillStyle = u.hitFlash > 0 ? "#FFFFFF" : u.color;
+                ctx.strokeStyle = "#09090B";
+                ctx.lineWidth = 2.2;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, u.radius * 0.84, u.radius * 1.08, 0, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+
+                // Heavy Armor Pauldrons if Armor >= 14
+                if (u.attributes.armor >= 14) {
+                    ctx.fillStyle = "#64748B";
+                    ctx.fillRect(-5, -u.radius * 1.05, 10, 6);
+                    ctx.strokeRect(-5, -u.radius * 1.05, 10, 6);
+                    ctx.fillRect(-5, u.radius * 1.05 - 6, 10, 6);
+                    ctx.strokeRect(-5, u.radius * 1.05 - 6, 10, 6);
+                }
+
+                // Oversized Animated Weapon Rig
+                drawOversizedWeaponRig(u);
+
+                // Head & Expressive Cartoon Eyes
+                ctx.fillStyle = "#F8FAFC";
+                ctx.beginPath(); ctx.arc(0, 0, u.radius * 0.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                // Distinct Class Helmet Silhouette
+                drawClassHelmet(u);
+
+                const eyeR = u.eyePop > 0 ? 4.4 : 2.6;
+                [-3.8, 3.8].forEach(ey => {
+                    ctx.fillStyle = "#FFFFFF";
+                    ctx.beginPath(); ctx.arc(u.radius * 0.3, ey, eyeR, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = "#09090B";
+                    ctx.beginPath(); ctx.arc(u.radius * 0.36, ey, eyeR * 0.55, 0, Math.PI * 2); ctx.fill();
+                });
+
+                ctx.restore();
+
+                // Overhead HP Bar & Crisp Action Pill Badge
+                const bw = 52, bh = 5.5;
+                const bx = u.x - bw / 2, by = u.y - u.radius - 21;
+                ctx.fillStyle = "#09090B";
+                ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+                ctx.fillStyle = u.color;
+                ctx.fillRect(bx, by, bw * (u.hp / u.maxHp), bh);
+
+                const bMeta = BADGE_STYLES[u.badge] || BADGE_STYLES.ATTACK;
+                const badgeTxt = `${bMeta.icon} ${u.badge}`;
+                ctx.font = "800 9px 'JetBrains Mono', monospace";
+                const tw = ctx.measureText(badgeTxt).width + 10;
+                ctx.fillStyle = bMeta.bg;
+                ctx.fillRect(u.x - tw / 2, by - 15, tw, 13);
+                ctx.fillStyle = "#FFFFFF";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(badgeTxt, u.x, by - 8.5);
+
+                if (u.speechTimer > 0 && u.speech) {
+                    ctx.font = "900 10px 'Inter', sans-serif";
+                    const sw = ctx.measureText(u.speech).width + 12;
+                    ctx.fillStyle = "#FEF08A";
+                    ctx.fillRect(u.x - sw / 2, by - 32, sw, 14);
+                    ctx.fillStyle = "#09090B";
+                    ctx.fillText(u.speech, u.x, by - 25);
+                }
+            }
+
+            // 8. Elastic Pop-In Arcade Damage Popups
+            for (const pop of state.popups) {
+                const lifeRatio = clamp(pop.life / pop.maxLife, 0, 1);
+                // Elastic overshoot scale on first 8 frames
+                const elastic = pop.age < 7
+                    ? 0.5 + (pop.age / 7) * 0.85
+                    : pop.age < 12
+                        ? 1.35 - ((pop.age - 7) / 5) * 0.35
+                        : 1.0;
+                const finalScale = pop.targetScale * elastic;
+
+                ctx.save();
+                ctx.globalAlpha = Math.min(1, lifeRatio * 1.45);
+                ctx.font = `900 ${Math.round(16 * finalScale)}px 'Bangers', cursive`;
+                ctx.textAlign = "center";
+                ctx.lineJoin = "round";
+
+                // Crisp drop shadow + thick black comic outline
+                ctx.fillStyle = "rgba(0,0,0,0.75)";
+                ctx.fillText(pop.text, pop.x + 2, pop.y + 3);
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 4.2;
+                ctx.strokeText(pop.text, pop.x, pop.y);
+                ctx.fillStyle = pop.color;
+                ctx.fillText(pop.text, pop.x, pop.y);
+                ctx.restore();
+            }
+
+            ctx.restore();
+        }
+
+        /***********************************************************************
+         * 11. DYNAMIC ALL-VS-ALL MATRIX (INCLUDES EVOLVED BUILDS) & CONTINUOUS AUTO-EVOLUTION
+         ***********************************************************************/
+        function runHeadlessBout(archA, archB, maxTicks = 1350) {
+            const snapshot = {
+                units: state.units,
+                projectiles: state.projectiles,
+                slashes: state.slashes,
+                hazards: JSON.parse(JSON.stringify(state.hazards)),
+                ticks: state.ticks
+            };
+
+            state.projectiles = [];
+            state.slashes = [];
+            state.ticks = 0;
+            const uA = makeUnitFromBlueprint({ ...archA, teamId: 0 }, 0, 1, 0, false);
+            const uB = makeUnitFromBlueprint({ ...archB, teamId: 1 }, 0, 1, 1, false);
+            state.units = [uA, uB];
+
+            while (state.ticks < maxTicks && uA.alive && uB.alive) {
+                stepSimulation(true, 1.0);
+            }
+
+            const winner = (uA.hp / uA.maxHp) >= (uB.hp / uB.maxHp) ? 0 : 1;
+            const result = { winner, ticks: state.ticks, dmgA: uA.dmgDealt, dmgB: uB.dmgDealt };
+
+            state.units = snapshot.units;
+            state.projectiles = snapshot.projectiles;
+            state.slashes = snapshot.slashes;
+            state.hazards = snapshot.hazards;
+            state.ticks = snapshot.ticks;
+            return result;
+        }
+
+        function simSelected10Bouts() {
+            const redId = document.getElementById('simRedSelect').value;
+            const blueId = document.getElementById('simBlueSelect').value;
+            const archs = getAllArchetypes();
+            const red = archs.find(a => a.id === redId) || archs[0];
+            const blue = archs.find(a => a.id === blueId) || archs[1];
+
+            initElo();
+            let redWins = 0;
+            for (let i = 0; i < 10; i++) {
+                const res = runHeadlessBout(red, blue);
+                const rA = state.elo[red.id], rB = state.elo[blue.id];
+                rA.games++; rB.games++;
+                if (res.winner === 0) {
+                    redWins++; rA.wins++; rA.rating += 12; rB.rating = Math.max(850, rB.rating - 10);
+                } else {
+                    rB.wins++; rB.rating += 12; rA.rating = Math.max(850, rA.rating - 10);
+                }
+            }
+
+            const box = document.getElementById('simResultBox');
+            box.classList.remove('hidden');
+            box.innerHTML = `
+                <div class="text-amber-300 font-bold">⚡ 10 HEADLESS BOUTS COMPLETE</div>
+                <div class="text-rose-300">🔴 ${red.name}: <b>${redWins}W (${redWins * 10}%)</b></div>
+                <div class="text-sky-300">🔵 ${blue.name}: <b>${10 - redWins}W (${(10 - redWins) * 10}%)</b></div>
+            `;
+            renderEloList();
+            showToast(`Simulated 10 bouts: ${red.name} ${redWins} - ${10 - redWins} ${blue.name}`);
+        }
+
+        // Evaluates ALL current archetypes (including newly evolved builds!) in the All-vs-All Matrix
+        function runMatrixSweep(trialsPerPair = 2, silent = false) {
+            const archs = getAllArchetypes();
+            initElo();
+            const matrix = {};
+            const avgWr = {};
+            archs.forEach(a => { matrix[a.id] = {}; });
+
+            for (let i = 0; i < archs.length; i++) {
+                let totalWins = 0;
+                let totalGames = 0;
+                for (let j = 0; j < archs.length; j++) {
+                    if (i === j) {
+                        matrix[archs[i].id][archs[j].id] = 50;
+                        continue;
+                    }
+                    let wins = 0;
+                    for (let k = 0; k < trialsPerPair; k++) {
+                        const r = runHeadlessBout(archs[i], archs[j], 1100);
+                        if (r.winner === 0) wins++;
+                    }
+                    const wr = Math.round((wins / trialsPerPair) * 100);
+                    matrix[archs[i].id][archs[j].id] = wr;
+                    totalWins += wins;
+                    totalGames += trialsPerPair;
+
+                    state.elo[archs[i].id].games += trialsPerPair;
+                    state.elo[archs[i].id].wins += wins;
+                    state.elo[archs[i].id].rating += Math.round(((wins / trialsPerPair) - 0.5) * 18);
+                }
+                avgWr[archs[i].id] = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 50;
+            }
+
+            state.lastMatrix = { matrix, avgWr };
+            renderMatrixTable();
+            renderEloList();
+            if (!silent) showToast(`Evaluated All-vs-All Matrix across all ${archs.length} builds!`);
+            return { matrix, avgWr };
+        }
+
+        function renderMatrixTable() {
+            if (!state.lastMatrix) return;
+            const { matrix, avgWr } = state.lastMatrix;
+            const archs = getAllArchetypes();
+            const wrap = document.getElementById('matrixTableWrap');
+            document.getElementById('matrixSubLabel').textContent = `${archs.length}x${archs.length} Pool`;
+
+            let html = `<table class="w-full border-collapse text-center"><thead><tr><th class="p-1 border border-slate-800 text-left">Build</th>`;
+            archs.forEach((a, idx) => {
+                html += `<th class="p-1 border border-slate-800" title="${a.name}">${a.icon}${idx + 1}</th>`;
+            });
+            html += `<th class="p-1 border border-slate-800 text-amber-300">AVG</th></tr></thead><tbody>`;
+
+            archs.forEach((row, rIdx) => {
+                const shortName = row.name.length > 13 ? row.name.slice(0, 13) + "…" : row.name;
+                html += `<tr><td class="p-1 border border-slate-800 text-left font-bold whitespace-nowrap" title="${row.name}">${row.icon}${rIdx + 1} ${shortName}</td>`;
+                archs.forEach(col => {
+                    const v = matrix[row.id]?.[col.id] ?? 50;
+                    const bg = row.id === col.id
+                        ? "rgba(30,41,59,0.35)"
+                        : v >= 65
+                            ? "rgba(16,185,129,0.32)"
+                            : v <= 35
+                                ? "rgba(244,63,94,0.32)"
+                                : "rgba(51,65,85,0.22)";
+                    html += `<td class="p-1 border border-slate-800" style="background:${bg}">${row.id === col.id ? '—' : v + '%'}</td>`;
+                });
+                const avg = avgWr[row.id] ?? 50;
+                const avgColor = avg >= 55 ? "#34D399" : avg <= 45 ? "#F43F5E" : "#FBBF24";
+                html += `<td class="p-1 border border-slate-800 font-extrabold" style="color:${avgColor}">${avg}%</td></tr>`;
+            });
+            html += `</tbody></table>`;
+            wrap.innerHTML = html;
+        }
+
+        // Generates a mutated challenger designed to counter `targetArch`
+        function generateCounterMutant(targetArch, genNumber, candidateIdx) {
+            const weaponKeys = Object.keys(WEAPONS);
+            const skills = ["WHIRLWIND", "DASH", "SHADOWSTEP", "SHOCKWAVE", "BLOODRAGE"];
+            const wk = weaponKeys[(genNumber + candidateIdx) % weaponKeys.length];
+            const wSpec = WEAPONS[wk];
+            const isRanged = wSpec.type === "ranged";
+
+            const prefixes = ["Apex", "Neo", "Omega", "Hyper", "Void", "Vortex", "Iron", "grim"];
+            const prefix = prefixes[(genNumber + candidateIdx) % prefixes.length];
+            const cleanTarget = targetArch.name.replace(/^(Apex|Neo|Omega|Hyper|Void|Vortex|Iron|grim)\s+/i, '').split(' ')[0];
+
+            return {
+                id: `evo_g${genNumber}_${candidateIdx}_${Date.now().toString().slice(-3)}`,
+                name: `${prefix} Anti-${cleanTarget} G${genNumber}`,
+                icon: wSpec.icon,
+                weapon: wk,
+                skill: skills[Math.floor(Math.random() * skills.length)],
+                attributes: normalizeAttributes({
+                    vitality: 12 + Math.random() * 18,
+                    power: 16 + Math.random() * 18,
+                    agility: 14 + Math.random() * 20,
+                    perception: isRanged ? 18 + Math.random() * 12 : 8 + Math.random() * 8,
+                    armor: isRanged ? 6 + Math.random() * 10 : 12 + Math.random() * 16,
+                    haste: 10 + Math.random() * 16
+                }),
+                strategy: {
+                    idealRangeMin: isRanged ? Math.round(160 + Math.random() * 80) : Math.round(15 + Math.random() * 20),
+                    idealRangeMax: isRanged ? Math.round(280 + Math.random() * 110) : Math.round(52 + Math.random() * 26),
+                    strafeWeight: Number((0.45 + Math.random() * 0.52).toFixed(2)),
+                    hazardAvoidance: Number((0.82 + Math.random() * 0.16).toFixed(2)),
+                    trapBaiting: Number((0.25 + Math.random() * 0.72).toFixed(2)),
+                    parryReflex: Number((0.25 + Math.random() * 0.70).toFixed(2)),
+                    aimPrediction: Number((0.88 + Math.random() * 0.22).toFixed(2)),
+                    backstabBias: wk === "TWIN_DAGGERS" ? 0.95 : Number((0.15 + Math.random() * 0.75).toFixed(2))
+                },
+                isEvolved: true
+            };
+        }
+
+        function evolveCounterStrategy(targetOverride = null, silent = false) {
+            const archs = getAllArchetypes();
+            const redId = document.getElementById('simRedSelect').value;
+            const target = targetOverride || archs.find(a => a.id === redId) || archs[0];
+
+            state.autoEvo.generation++;
+            const gen = state.autoEvo.generation;
+
+            let bestMutant = null;
+            let bestScore = -1;
+
+            for (let c = 0; c < 6; c++) {
+                const mutant = generateCounterMutant(target, gen, c);
+                let winsVsTarget = 0;
+                for (let t = 0; t < 3; t++) {
+                    if (runHeadlessBout(target, mutant, 1150).winner === 1) winsVsTarget++;
+                }
+                // Also test against 2 random pool members so it isn't overly brittle
+                let fieldWins = 0;
+                for (let f = 0; f < 2; f++) {
+                    const opp = archs[(c + f) % archs.length];
+                    if (runHeadlessBout(opp, mutant, 1100).winner === 1) fieldWins++;
+                }
+                const score = winsVsTarget * 2 + fieldWins;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMutant = { mutant, winsVsTarget, fieldWins };
+                }
+            }
+
+            if (bestMutant) {
+                const { mutant, winsVsTarget } = bestMutant;
+                state.archetypes.push(mutant);
+
+                // If pool exceeds max cap, prune the lowest-performing evolved mutant (keep diversity!)
+                if (state.archetypes.length > state.autoEvo.maxPoolSize && state.lastMatrix) {
+                    const { avgWr } = state.lastMatrix;
+                    let worstIdx = -1;
+                    let worstWr = 999;
+                    state.archetypes.forEach((a, idx) => {
+                        if (a.id !== mutant.id && idx >= 4) { // Keep core variety
+                            const wr = avgWr[a.id] ?? 48;
+                            if (wr < worstWr) { worstWr = wr; worstIdx = idx; }
+                        }
+                    });
+                    if (worstIdx !== -1) {
+                        state.archetypes.splice(worstIdx, 1);
+                    }
+                }
+
+                initElo();
+                state.elo[mutant.id].rating = 1230 + winsVsTarget * 18;
+                populateMatchupSelects();
+                document.getElementById('simBlueSelect').value = mutant.id;
+                renderArchetypeStampers();
+
+                // Immediately re-evaluate the Full Meta Matrix so the new build appears in the table!
+                runMatrixSweep(2, true);
+
+                if (!silent) {
+                    const box = document.getElementById('simResultBox');
+                    box.classList.remove('hidden');
+                    box.innerHTML = `
+                        <div class="text-purple-300 font-bold">🧬 GEN ${gen} COUNTER EVOLVED & ADDED TO MATRIX!</div>
+                        <div class="text-emerald-300">Bred: <b>${mutant.icon} ${mutant.name}</b></div>
+                        <div class="text-amber-300">Avg Matrix Win-Rate: <b>${state.lastMatrix?.avgWr[mutant.id] ?? 55}%</b></div>
+                    `;
+                    showToast(`Evolved ${mutant.name} & updated Full Matrix!`);
+                }
+                return mutant;
+            }
+            return null;
+        }
+
+        // Non-blocking Continuous Co-Evolution Loop (Runs until user clicks Pause)
+        function stepContinuousEvolution() {
+            if (!state.autoEvo.active) return;
+
+            const phaseLabel = document.getElementById('evoPhaseLabel');
+            const progBar = document.getElementById('evoProgressBar');
+            const lastAct = document.getElementById('evoLastAction');
+            const genCount = document.getElementById('evoGenCount');
+            const hudGen = document.getElementById('evoGenBadge');
+            const hudTxt = document.getElementById('evoStatusHudText');
+
+            // Step 1: Ensure Matrix is evaluated to find the #1 Apex Champion
+            const { avgWr } = state.lastMatrix || runMatrixSweep(2, true);
+            const archs = getAllArchetypes();
+            let apex = archs[0];
+            let bestWr = -1;
+            archs.forEach(a => {
+                const w = avgWr[a.id] ?? 50;
+                if (w > bestWr) { bestWr = w; apex = a; }
+            });
+
+            phaseLabel.textContent = `Targeting Apex: ${apex.icon} ${apex.name} (${bestWr}%)`;
+            progBar.style.width = "55%";
+
+            // Step 2: Breed a counter-mutant against the current Apex Champion
+            const newMutant = evolveCounterStrategy(apex, true);
+            const gen = state.autoEvo.generation;
+            genCount.textContent = `Gen ${gen}`;
+            hudGen.textContent = `GEN ${gen}`;
+            progBar.style.width = "100%";
+
+            if (newMutant) {
+                const newWr = state.lastMatrix?.avgWr[newMutant.id] ?? 50;
+                const msg = `Bred ${newMutant.icon} ${newMutant.name} (${newWr}% Avg WR vs Pool)`;
+                lastAct.textContent = msg;
+                hudTxt.textContent = `${msg} • Next cycle in 2.2s`;
+                logEvent(`🧬 <b>AUTO-EVO GEN ${gen}:</b> Bred <b class="text-purple-300">${newMutant.icon} ${newMutant.name}</b> (${newWr}% Matrix WR) vs Apex <b>${apex.name}</b>!`);
+
+                // Optionally spawn the new Challenger vs the Apex Champion in the live arena!
+                if (document.getElementById('autoSpawnEvoCheck').checked) {
+                    document.getElementById('simRedSelect').value = apex.id;
+                    document.getElementById('simBlueSelect').value = newMutant.id;
+                    const fmt = document.getElementById('formatSelect').value;
+                    const count = fmt === "1v1" ? 1 : fmt === "2v2" ? 2 : fmt === "3v3" ? 3 : 2;
+                    state.blueprints = [];
+                    for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(apex)), id: `r_${i}`, archetypeId: apex.id, teamId: 0 });
+                    for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(newMutant)), id: `b_${i}`, archetypeId: newMutant.id, teamId: 1 });
+                    respawnArena();
+                }
+            }
+
+            state.autoEvo.timerId = setTimeout(() => {
+                if (state.autoEvo.active) {
+                    progBar.style.width = "20%";
+                    stepContinuousEvolution();
+                }
+            }, 2200);
+        }
+
+        function toggleContinuousEvolution() {
+            state.autoEvo.active = !state.autoEvo.active;
+            const btn = document.getElementById('toggleAutoEvoBtn');
+            const hud = document.getElementById('evoBannerHud');
+            const phaseLabel = document.getElementById('evoPhaseLabel');
+
+            if (state.autoEvo.active) {
+                btn.innerHTML = `<span>⏸️ Pause Continuous Auto-Evolution Loop</span>`;
+                btn.className = "w-full py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold tracking-wide shadow transition flex items-center justify-center gap-2";
+                hud.classList.remove('hidden');
+                showToast("Continuous Auto-Evolution started!");
+                stepContinuousEvolution();
+            } else {
+                if (state.autoEvo.timerId) clearTimeout(state.autoEvo.timerId);
+                btn.innerHTML = `<span>▶️ Resume Continuous Auto-Evolution Loop</span>`;
+                btn.className = "w-full py-2 rounded-xl bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-500 hover:to-rose-500 text-white text-xs font-extrabold tracking-wide shadow transition flex items-center justify-center gap-2";
+                hud.classList.add('hidden');
+                phaseLabel.textContent = "Status: Paused";
+                showToast("Continuous Auto-Evolution paused.");
+            }
+        }
+
+        /***********************************************************************
+         * 12. UI CONTROLLERS & SYNCHRONIZATION
+         ***********************************************************************/
+        function showToast(msg) {
+            const stack = document.getElementById('toastStack');
+            const el = document.createElement('div');
+            el.className = "bg-pitpanel/95 border border-amber-400/60 text-amber-200 px-3 py-1.5 rounded-xl text-xs font-mono shadow-lg";
+            el.textContent = msg;
+            stack.appendChild(el);
+            setTimeout(() => el.remove(), 2600);
+        }
+
+        function updateTeamBanner() {
+            const banner = document.getElementById('teamBanner');
+            const map = {};
+            state.units.forEach(u => {
+                if (!map[u.teamId]) map[u.teamId] = { alive: 0, total: 0, color: u.color, name: u.teamName };
+                map[u.teamId].total++;
+                if (u.alive) map[u.teamId].alive++;
+            });
+            banner.innerHTML = Object.values(map).map(t =>
+                `<span style="color:${t.color}" class="font-bold">${t.name}: ${t.alive}/${t.total}</span>`
+            ).join('<span class="text-slate-600">vs</span>');
+        }
+
+        function updateRosterCards() {
+            const list = document.getElementById('rosterList');
+            list.innerHTML = state.units.map(u => {
+                const isSel = u.id === state.selectedId;
+                const pct = Math.max(0, Math.round((u.hp / u.maxHp) * 100));
+                const bMeta = BADGE_STYLES[u.badge] || BADGE_STYLES.ATTACK;
+                const wName = WEAPONS[u.weaponKey]?.name.split(' ')[0] || u.weaponKey;
+                return `
+                    <div onclick="window.selectUnit('${u.id}')" class="p-2 rounded-xl cursor-pointer border transition ${isSel ? 'bg-rose-950/35 border-amber-400' : 'bg-pitcard border-pitborder hover:border-slate-600'} ${!u.alive ? 'opacity-45' : ''}">
+                        <div class="flex items-center justify-between gap-1">
+                            <div class="flex items-center gap-1.5 truncate">
+                                <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${u.color}"></span>
+                                <span class="text-xs font-bold text-white truncate">${u.icon} ${u.name}</span>
+                            </div>
+                            <span class="text-[9px] font-mono px-1.5 py-0.5 rounded text-white font-bold" style="background:${bMeta.bg}">${bMeta.icon} ${u.badge}</span>
+                        </div>
+                        <div class="mt-1.5 h-1.5 w-full bg-slate-900 rounded-full overflow-hidden">
+                            <div class="h-full" style="width:${pct}%; background:${u.color}"></div>
+                        </div>
+                        <div class="mt-1 flex justify-between text-[10px] font-mono text-slate-400">
+                            <span>HP ${u.hp}/${u.maxHp}</span>
+                            <span class="text-cyan-300">${wName} • ${u.turnRateRad}r/s</span>
+                            <span class="text-amber-300">${u.kills}K • ${u.dmgDealt}D</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateSelectedHud() {
+            const u = state.units.find(x => x.id === state.selectedId);
+            const hud = document.getElementById('selectedHud');
+            if (!u || !hud) return;
+            const wSpec = WEAPONS[u.weaponKey];
+            hud.innerHTML = `
+                <div class="flex items-center justify-between border-b border-slate-800 pb-1 mb-1">
+                    <span class="text-xs font-bold text-white truncate">${u.icon} ${u.name}</span>
+                    <span class="text-[10px] font-mono text-amber-300">${u.badge}</span>
+                </div>
+                <div class="text-[10px] font-mono text-rose-300 mb-1">${wSpec.name} • Skill: ${u.skill}</div>
+                <div class="grid grid-cols-2 gap-1 text-[10px] font-mono text-slate-300">
+                    <div>Turn: <b class="text-cyan-300">${u.turnRateRad} rad/s</b></div>
+                    <div>Lead: <b class="text-emerald-300">${u.strategy.aimPrediction}</b></div>
+                    <div>Range: <b class="text-rose-300">${u.strategy.idealRangeMin}-${u.strategy.idealRangeMax}</b></div>
+                    <div>Parry: <b class="text-amber-300">${u.strategy.parryReflex}</b></div>
+                </div>
+            `;
+        }
+
+        function syncForgePanel() {
+            const u = state.units.find(x => x.id === state.selectedId);
+            if (!u) return;
+            const bp = state.blueprints[u.bpIndex];
+
+            document.getElementById('forgeWeapon').value = bp.weapon;
+            document.getElementById('forgeSkill').value = bp.skill;
+            document.getElementById('turnRateBadge').textContent = `Turn: ${u.turnRateRad} rad/s`;
+
+            const attrKeys = ["vitality", "power", "agility", "perception", "armor", "haste"];
+            document.getElementById('attrSliders').innerHTML = attrKeys.map(k => `
+                <div class="flex items-center gap-2 text-[10px] font-mono">
+                    <span class="w-20 uppercase text-slate-300">${k}</span>
+                    <input type="range" min="4" max="42" value="${bp.attributes[k]}" oninput="window.setAttr('${k}', this.value)" class="flex-1">
+                    <span class="w-6 text-right text-amber-300 font-bold">${bp.attributes[k]}</span>
+                </div>
+            `).join('');
+
+            const dslSpecs = [
+                { key: "idealRangeMin", label: "Min Sweet-Spot", min: 15, max: 320, step: 5 },
+                { key: "idealRangeMax", label: "Max Sweet-Spot", min: 45, max: 420, step: 5 },
+                { key: "aimPrediction", label: "Ballistic Lead", min: 0, max: 1.2, step: 0.05 },
+                { key: "strafeWeight",  label: "Strafe Dance",   min: 0, max: 1, step: 0.05 },
+                { key: "trapBaiting",   label: "Trap Baiting",   min: 0, max: 1, step: 0.05 },
+                { key: "parryReflex",   label: "Parry Reflex",   min: 0, max: 1, step: 0.05 },
+                { key: "backstabBias",  label: "Backstab Bias",  min: 0, max: 1, step: 0.05 }
+            ];
+            document.getElementById('dslSliders').innerHTML = dslSpecs.map(s => `
+                <div class="flex items-center gap-2">
+                    <span class="w-28 text-slate-300">${s.label}</span>
+                    <input type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${bp.strategy[s.key]}" oninput="window.setDsl('${s.key}', this.value)" class="flex-1">
+                    <span class="w-9 text-right text-cyan-300 font-bold">${bp.strategy[s.key]}</span>
+                </div>
+            `).join('');
+
+            document.getElementById('jsonTextarea').value = JSON.stringify({
+                name: bp.name,
+                weapon: bp.weapon,
+                skill: bp.skill,
+                attributes: bp.attributes,
+                strategy: bp.strategy
+            }, null, 2);
+        }
+
+        function applyBlueprintToLiveUnit(bpIndex) {
+            const bp = state.blueprints[bpIndex];
+            const u = state.units[bpIndex];
+            if (!bp || !u) return;
+            u.name = bp.name;
+            u.weaponKey = bp.weapon;
+            u.skill = bp.skill;
+            u.icon = WEAPONS[bp.weapon].icon;
+            u.attributes = JSON.parse(JSON.stringify(bp.attributes));
+            u.strategy = JSON.parse(JSON.stringify(bp.strategy));
+            u.turnRateRad = getTurnRateRad(u.attributes, u.weaponKey);
+            u.maxTurnTick = u.turnRateRad / 60;
+            u.radius = Math.round(15.5 + u.attributes.vitality * 0.18 + u.attributes.armor * 0.14);
+            u.attackRange = Math.round(WEAPONS[u.weaponKey].range + (WEAPONS[u.weaponKey].type === "ranged" ? u.attributes.perception * 2.2 : 0));
+            syncForgePanel();
+            updateRosterCards();
+            updateSelectedHud();
+        }
+
+        window.selectUnit = function(id) {
+            state.selectedId = id;
+            updateRosterCards();
+            updateSelectedHud();
+            syncForgePanel();
+        };
+
+        window.setAttr = function(k, val) {
+            const u = state.units.find(x => x.id === state.selectedId);
+            if (!u) return;
+            state.blueprints[u.bpIndex].attributes[k] = Number(val);
+            applyBlueprintToLiveUnit(u.bpIndex);
+        };
+
+        window.setDsl = function(k, val) {
+            const u = state.units.find(x => x.id === state.selectedId);
+            if (!u) return;
+            state.blueprints[u.bpIndex].strategy[k] = Number(val);
+            applyBlueprintToLiveUnit(u.bpIndex);
+        };
+
+        window.stampArchetype = function(archId) {
+            const u = state.units.find(x => x.id === state.selectedId);
+            const arch = getAllArchetypes().find(a => a.id === archId);
+            if (!u || !arch) return;
+            const bp = state.blueprints[u.bpIndex];
+            bp.name = arch.name;
+            bp.archetypeId = arch.id;
+            bp.weapon = arch.weapon;
+            bp.skill = arch.skill;
+            bp.attributes = JSON.parse(JSON.stringify(arch.attributes));
+            bp.strategy = JSON.parse(JSON.stringify(arch.strategy));
+            applyBlueprintToLiveUnit(u.bpIndex);
+            showToast(`Stamped ${arch.icon} ${arch.name}`);
+        };
+
+        function renderArchetypeStampers() {
+            const grid = document.getElementById('archetypeGrid');
+            grid.innerHTML = getAllArchetypes().map(a => `
+                <button onclick="window.stampArchetype('${a.id}')" class="p-1.5 rounded-lg bg-pitcard hover:bg-slate-800 border border-pitborder text-left flex items-center gap-1.5 truncate">
+                    <span>${a.icon}</span>
+                    <span class="text-[10px] font-bold text-slate-200 truncate">${a.name}</span>
+                </button>
+            `).join('');
+        }
+
+        function populateMatchupSelects() {
+            const sA = document.getElementById('simRedSelect');
+            const sB = document.getElementById('simBlueSelect');
+            const prevA = sA.value;
+            const prevB = sB.value;
+            const archs = getAllArchetypes();
+            const html = archs.map(a => `<option value="${a.id}">${a.icon} ${a.name}</option>`).join('');
+            sA.innerHTML = html;
+            sB.innerHTML = html;
+            sA.value = archs.some(a => a.id === prevA) ? prevA : archs[0].id;
+            sB.value = archs.some(a => a.id === prevB) ? prevB : (archs[1]?.id || archs[0].id);
+        }
+
+        function renderEloList() {
+            initElo();
+            const box = document.getElementById('eloList');
+            const sorted = Object.values(state.elo).sort((a, b) => b.rating - a.rating);
+            box.innerHTML = sorted.map((r, i) => {
+                const wr = r.games > 0 ? Math.round((r.wins / r.games) * 100) : 50;
+                const avgMat = state.lastMatrix?.avgWr[r.id];
+                return `
+                    <div onclick="window.stampArchetype('${r.id}')" class="p-2 rounded-lg bg-pitbg border border-slate-800 flex items-center justify-between cursor-pointer hover:border-slate-600">
+                        <div class="flex items-center gap-2 truncate">
+                            <span class="text-[10px] font-mono text-amber-400 font-bold">#${i + 1}</span>
+                            <span>${r.icon}</span>
+                            <div class="truncate">
+                                <div class="text-xs font-bold text-white truncate">${r.name}</div>
+                                <div class="text-[9px] font-mono text-slate-400">${r.wins}W/${r.games}G (${wr}%)${avgMat !== undefined ? ` • Matrix AVG: <b class="text-cyan-300">${avgMat}%</b>` : ''}</div>
+                            </div>
+                        </div>
+                        <span class="font-mono text-xs font-extrabold text-amber-300">${r.rating}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function refreshUI() {
+            updateTeamBanner();
+            updateRosterCards();
+            updateSelectedHud();
+            renderArchetypeStampers();
+            populateMatchupSelects();
+            renderEloList();
+            syncForgePanel();
+        }
+
+        /***********************************************************************
+         * 13. EVENT LISTENERS & TRUE 60FPS SUB-FRAME ANIMATION LOOP
+         ***********************************************************************/
+        function bindEvents() {
+            document.getElementById('formatSelect').onchange = e => buildRosterFromFormat(e.target.value);
+            document.getElementById('mapSelect').onchange = e => { state.mapKey = e.target.value; respawnArena(); };
+            document.getElementById('respawnBtn').onclick = () => respawnArena();
+            document.getElementById('rematchModalBtn').onclick = () => respawnArena();
+            document.getElementById('cleanBloodBtn').onclick = () => { state.gibs = []; paintArenaFloor(); showToast("Floor mopped clean!"); };
+
+            const randomizeAll = () => {
+                const archs = getAllArchetypes();
+                state.blueprints.forEach(bp => {
+                    const pick = archs[Math.floor(Math.random() * archs.length)];
+                    bp.name = pick.name;
+                    bp.archetypeId = pick.id;
+                    bp.weapon = pick.weapon;
+                    bp.skill = pick.skill;
+                    bp.attributes = JSON.parse(JSON.stringify(pick.attributes));
+                    bp.strategy = JSON.parse(JSON.stringify(pick.strategy));
+                });
+                respawnArena();
+            };
+            document.getElementById('randomAllBtn').onclick = randomizeAll;
+            document.getElementById('randomModalBtn').onclick = randomizeAll;
+
+            document.getElementById('mutateSelectedBtn').onclick = () => {
+                const u = state.units.find(x => x.id === state.selectedId);
+                if (!u) return;
+                const archs = getAllArchetypes();
+                const pick = archs[Math.floor(Math.random() * archs.length)];
+                window.stampArchetype(pick.id);
+            };
+
+            document.getElementById('toggleVectorsBtn').onclick = e => {
+                state.showVectors = !state.showVectors;
+                e.currentTarget.textContent = `🎯 AIM & RAYS: ${state.showVectors ? 'ON' : 'OFF'}`;
+            };
+            document.getElementById('toggleRangesBtn').onclick = e => {
+                state.showRanges = !state.showRanges;
+                e.currentTarget.textContent = `👁️ RANGES: ${state.showRanges ? 'ON' : 'OFF'}`;
+            };
+            document.getElementById('toggleSfxBtn').onclick = e => {
+                Sfx.enabled = !Sfx.enabled;
+                e.currentTarget.textContent = Sfx.enabled ? "🔊 SFX" : "🔇 MUTE";
+            };
+            document.getElementById('clearLogBtn').onclick = () => { document.getElementById('combatLog').innerHTML = ''; };
+
+            // Speed & Play/Pause
+            document.getElementById('playPauseBtn').onclick = e => {
+                state.running = !state.running;
+                e.currentTarget.textContent = state.running ? "⏸ PAUSE" : "▶ PLAY";
+            };
+            document.getElementById('stepBtn').onclick = () => {
+                state.running = false;
+                document.getElementById('playPauseBtn').textContent = "▶ PLAY";
+                stepSimulation(false, 1.0);
+                renderArena();
+            };
+            document.querySelectorAll('.speed-btn').forEach(btn => {
+                btn.onclick = () => {
+                    state.simSpeed = parseFloat(btn.dataset.speed);
+                    document.querySelectorAll('.speed-btn').forEach(b => b.className = "speed-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white");
+                    btn.className = "speed-btn px-2 py-0.5 rounded bg-rose-600/30 text-amber-300 border border-rose-500/40 font-bold";
+                };
+            });
+
+            // Replay Scrubber
+            document.getElementById('replaySlider').oninput = e => {
+                const snap = state.history[Number(e.target.value)];
+                if (snap) {
+                    state.running = false;
+                    document.getElementById('playPauseBtn').textContent = "▶ PLAY";
+                    state.ticks = snap.ticks;
+                    state.units = JSON.parse(JSON.stringify(snap.units));
+                    renderArena();
+                }
+            };
+
+            // Right Tabs
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const tab = btn.dataset.tab;
+                    ['forge', 'sim', 'json'].forEach(t => document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab));
+                    document.querySelectorAll('.tab-btn').forEach(b => b.className = "tab-btn py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white");
+                    btn.className = "tab-btn py-1.5 rounded-lg text-xs font-bold bg-rose-600/25 text-amber-300 border border-rose-500/40";
+                };
+            });
+
+            // Forge Controls
+            document.getElementById('forgeWeapon').onchange = e => {
+                const u = state.units.find(x => x.id === state.selectedId);
+                if (!u) return;
+                state.blueprints[u.bpIndex].weapon = e.target.value;
+                applyBlueprintToLiveUnit(u.bpIndex);
+            };
+            document.getElementById('forgeSkill').onchange = e => {
+                const u = state.units.find(x => x.id === state.selectedId);
+                if (!u) return;
+                state.blueprints[u.bpIndex].skill = e.target.value;
+                applyBlueprintToLiveUnit(u.bpIndex);
+            };
+            document.getElementById('balancePtsBtn').onclick = () => {
+                const u = state.units.find(x => x.id === state.selectedId);
+                if (!u) return;
+                state.blueprints[u.bpIndex].attributes = normalizeAttributes(state.blueprints[u.bpIndex].attributes);
+                applyBlueprintToLiveUnit(u.bpIndex);
+            };
+
+            // Sim & Continuous Auto-Evolution Lab Buttons
+            document.getElementById('toggleAutoEvoBtn').onclick = toggleContinuousEvolution;
+            document.getElementById('watchMatchupBtn').onclick = () => {
+                const redId = document.getElementById('simRedSelect').value;
+                const blueId = document.getElementById('simBlueSelect').value;
+                const archs = getAllArchetypes();
+                const red = archs.find(a => a.id === redId) || archs[0];
+                const blue = archs.find(a => a.id === blueId) || archs[1];
+                const fmt = document.getElementById('formatSelect').value;
+                const count = fmt === "1v1" ? 1 : fmt === "2v2" ? 2 : fmt === "3v3" ? 3 : 2;
+                state.blueprints = [];
+                for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(red)), id: `r_${i}`, archetypeId: red.id, teamId: 0 });
+                for (let i = 0; i < count; i++) state.blueprints.push({ ...JSON.parse(JSON.stringify(blue)), id: `b_${i}`, archetypeId: blue.id, teamId: 1 });
+                respawnArena();
+                showToast(`Watching ${red.name} vs ${blue.name}!`);
+            };
+            document.getElementById('run10BoutsBtn').onclick = simSelected10Bouts;
+            document.getElementById('matrixSweepBtn').onclick = () => runMatrixSweep(2, false);
+            document.getElementById('evolveCounterBtn').onclick = () => evolveCounterStrategy(null, false);
+            document.getElementById('resetEloBtn').onclick = () => {
+                state.archetypes = JSON.parse(JSON.stringify(BASE_ARCHETYPES));
+                state.elo = {};
+                initElo();
+                runMatrixSweep(2, true);
+                refreshUI();
+                showToast("Reset to 6 base archetypes & refreshed Matrix!");
+            };
+
+            // JSON Editor
+            document.getElementById('applyJsonBtn').onclick = () => {
+                try {
+                    const parsed = JSON.parse(document.getElementById('jsonTextarea').value);
+                    const u = state.units.find(x => x.id === state.selectedId);
+                    if (!u) return;
+                    const bp = state.blueprints[u.bpIndex];
+                    if (parsed.name) bp.name = parsed.name;
+                    if (parsed.weapon && WEAPONS[parsed.weapon]) bp.weapon = parsed.weapon;
+                    if (parsed.skill) bp.skill = parsed.skill;
+                    if (parsed.attributes) bp.attributes = normalizeAttributes(parsed.attributes);
+                    if (parsed.strategy) Object.assign(bp.strategy, parsed.strategy);
+                    applyBlueprintToLiveUnit(u.bpIndex);
+                    showToast("Applied custom Strategy JSON!");
+                } catch (err) {
+                    showToast("Invalid JSON syntax!");
+                }
+            };
+            document.getElementById('copyJsonBtn').onclick = () => {
+                const ta = document.getElementById('jsonTextarea');
+                ta.select();
+                document.execCommand('copy');
+                showToast("Strategy JSON copied to clipboard!");
+            };
+
+            // Canvas Mouse Click & Drag Camera
+            const vp = document.getElementById('viewportContainer');
+            vp.addEventListener('mousedown', e => {
+                const rect = canvas.getBoundingClientRect();
+                const mx = e.clientX - rect.left;
+                const my = e.clientY - rect.top;
+                const wx = (mx - viewW / 2) / state.cam.zoom + state.cam.x;
+                const wy = (my - viewH / 2) / state.cam.zoom + state.cam.y;
+
+                const hit = state.units.find(u => u.alive && dist(wx, wy, u.x, u.y) <= u.radius + 12);
+                if (hit) { window.selectUnit(hit.id); return; }
+
+                state.cam.drag = true;
+                state.cam.lx = e.clientX;
+                state.cam.ly = e.clientY;
+            });
+            window.addEventListener('mousemove', e => {
+                if (!state.cam.drag) return;
+                state.cam.x -= (e.clientX - state.cam.lx) / state.cam.zoom;
+                state.cam.y -= (e.clientY - state.cam.ly) / state.cam.zoom;
+                state.cam.lx = e.clientX;
+                state.cam.ly = e.clientY;
+            });
+            window.addEventListener('mouseup', () => { state.cam.drag = false; });
+            vp.addEventListener('wheel', e => {
+                e.preventDefault();
+                state.cam.zoom = clamp(state.cam.zoom * (e.deltaY < 0 ? 1.1 : 0.9), 0.45, 1.8);
+            }, { passive: false });
+        }
+
+        // True 60FPS Sub-Frame Continuous Loop:
+        // At 0.1x, 0.25x, 0.5x, 1x, 2x, 4x, physics runs every single 60Hz frame with smooth `dt`!
+        function animate() {
+            if (state.running) {
+                if (state.simSpeed <= 1) {
+                    stepSimulation(false, state.simSpeed);
+                } else {
+                    const steps = Math.round(state.simSpeed);
+                    for (let s = 0; s < steps; s++) stepSimulation(false, 1.0);
+                }
+            }
+            renderArena();
+            requestAnimationFrame(animate);
+        }
+
+        window.onload = () => {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            initElo();
+            bindEvents();
+            buildRosterFromFormat("2v2");
+            // Run initial baseline All-vs-All Matrix so the heatmap is populated immediately
+            runMatrixSweep(2, true);
+            requestAnimationFrame(animate);
+        };
+    </script>
+</body>
+</html>
