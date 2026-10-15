@@ -1,16 +1,18 @@
 // Owned by: ui
 import { useEffect, useRef, useState } from 'react';
-import type { GameController, OverlayState } from '../../core';
-import { EyeIcon } from '../icons';
+import { DEFAULT_VIEW_SETTINGS } from '../../core';
+import type { GameController, ViewSettings } from '../../core';
+import { GearIcon } from '../icons';
+import { VIEW_GROUPS } from '../view';
+import type { ViewItem } from '../view';
 
-const CONES: { value: OverlayState['cones']; label: string }[] = [
-  { value: 'off', label: 'Off' },
-  { value: 'selected', label: 'Selected' },
-  { value: 'all', label: 'All' },
-];
+type Set = (patch: Partial<ViewSettings>) => void;
 
-/** Overlay toggles: vision cones, steering ring, names, fog of war. */
-export function ViewMenu({ controller, overlay }: { controller: GameController; overlay: OverlayState }) {
+/**
+ * The View popover behind a small gear in the top bar, clear of the arena. Every display setting
+ * with its shortcut; the controller merges, persists and applies each change.
+ */
+export function ViewMenu({ controller, view }: { controller: GameController; view: ViewSettings }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
@@ -33,37 +35,98 @@ export function ViewMenu({ controller, overlay }: { controller: GameController; 
     };
   }, [open]);
 
+  const set: Set = (patch) => controller.setView(patch);
+  const isDefault = (Object.keys(DEFAULT_VIEW_SETTINGS) as (keyof ViewSettings)[]).every((k) => view[k] === DEFAULT_VIEW_SETTINGS[k]);
+
   return (
-    <div ref={root} style={{ position: 'relative' }}>
-      <button type="button" className="btn btn-sm btn-quiet" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <EyeIcon /> View
+    <div ref={root} className="view-menu">
+      <button
+        type="button"
+        className="btn btn-sm btn-quiet"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen(!open)}
+        title="Display settings: tags, cones, fog, gore, sound"
+      >
+        <GearIcon /> View
       </button>
       {open ? (
-        <div className="hud-panel menu" role="dialog" aria-label="View options">
-          <div className="field">
-            <span>Vision cones</span>
-            <div className="seg" role="group">
-              {CONES.map((c) => (
-                <button key={c.value} type="button" aria-pressed={overlay.cones === c.value} onClick={() => controller.setOverlay({ cones: c.value })}>
-                  {c.label}
-                </button>
+        <div className="hud-panel menu view-pop" role="dialog" aria-label="View settings">
+          {VIEW_GROUPS.map((g) => (
+            <section key={g.title} className="vs-group">
+              <h3>{g.title}</h3>
+              {g.items.map((item) => (
+                <Row key={item.key} item={item} view={view} set={set} />
               ))}
-            </div>
+            </section>
+          ))}
+          <div className="vs-foot">
+            <span className="faint">Letters toggle while you watch.</span>
+            <button type="button" className="linkish" disabled={isDefault} onClick={() => set({ ...DEFAULT_VIEW_SETTINGS })}>
+              Reset to defaults
+            </button>
           </div>
-          <label className="check">
-            <input type="checkbox" checked={overlay.rings} onChange={(e) => controller.setOverlay({ rings: e.target.checked })} />
-            Steering ring and target line
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={overlay.names} onChange={(e) => controller.setOverlay({ names: e.target.checked })} />
-            Name tags
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={overlay.fog} onChange={(e) => controller.setOverlay({ fog: e.target.checked })} />
-            Fog of war from the selected fighter
-          </label>
         </div>
       ) : null}
     </div>
   );
+}
+
+function Key({ k, title }: { k?: string; title?: string }) {
+  return k ? <kbd title={title ?? `Shortcut: ${k}`}>{k}</kbd> : <span />;
+}
+
+function Row({ item, view, set }: { item: ViewItem; view: ViewSettings; set: Set }) {
+  switch (item.kind) {
+    case 'toggle':
+      return (
+        <label className="vs-row">
+          <span className="vs-label">
+            {item.label}
+            {item.hint ? <small>{item.hint}</small> : null}
+          </span>
+          <input type="checkbox" className="switch" checked={view[item.key]} onChange={(e) => set({ [item.key]: e.target.checked })} />
+          <Key k={item.shortcut} />
+        </label>
+      );
+    case 'choice':
+      return (
+        <div className="vs-row">
+          <span className="vs-label">{item.label}</span>
+          <div className="seg" role="group" aria-label={item.label}>
+            {item.options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                aria-pressed={view[item.key] === o.value}
+                onClick={() => set({ [item.key]: o.value } as Partial<ViewSettings>)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <Key k={item.shortcut} title={item.shortcut ? `${item.shortcut} steps through these` : undefined} />
+        </div>
+      );
+    case 'volume':
+      // Not a <label>: the Watch screen keeps focus off labelled HUD controls, and a slider needs it to drag.
+      return (
+        <div className="vs-row">
+          <span className="vs-label">
+            {item.label} <span className="num faint">{view.volume > 0 ? `${Math.round(view.volume * 100)}%` : 'muted'}</span>
+          </span>
+          <input
+            type="range"
+            className="range vs-range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={view.volume}
+            aria-label="Volume"
+            onChange={(e) => set({ volume: Number(e.target.value) })}
+          />
+          <Key k={item.shortcut} title={item.shortcut ? `${item.shortcut} mutes and unmutes` : undefined} />
+        </div>
+      );
+  }
 }

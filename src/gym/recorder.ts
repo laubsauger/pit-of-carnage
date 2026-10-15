@@ -4,7 +4,9 @@
  *
  * Per tick it counts, for every living fighter, the running behaviour, whether an enemy sees it
  * (`FighterState.seen`) and whether it stands in shadow. From events it collects kills (with both
- * behaviours), damage by source, attacks started, attacks that landed, skill uses and parries.
+ * behaviours), damage by source, attacks started, attacks that landed, skill uses, parries,
+ * power-ups taken and the kills landed while one ran, when and why sudden death started, and the
+ * judges' scorecards. Guard trips come from the sim's result (each brain's last `Decision`).
  *
  * Attack accounting:
  * - `swing` starts an attack (the sim emits it for melee swings and ranged shots alike).
@@ -14,21 +16,24 @@
  *   (direct hit or splash). Matching by projectile keeps overlapping arrows apart.
  */
 
-import { WEAPONS, strategyKey } from '../core';
+import { PICKUP_RULES, WEAPONS, strategyKey } from '../core';
 import type {
   DamageSource,
   FighterReport,
   FighterState,
   GameEvent,
+  JudgedFighter,
   KillRecord,
   MatchConfig,
   MatchReport,
   MatchResult,
+  PickupKind,
   ReportRosterEntry,
   Strategy,
+  SuddenDeathReason,
   WorldState,
 } from '../core';
-import { matchFindings, type FindingContext } from './findings';
+import { POWER_UPS, matchFindings, type FindingContext } from './findings';
 import { round } from './format';
 
 type Tally = {
@@ -48,6 +53,10 @@ type Tally = {
   parries: number;
   /** The current melee swing has not damaged an enemy yet. */
   swingOpen: boolean;
+  pickupsTaken: Partial<Record<PickupKind, number>>;
+  /** First tick a pedestal power-up of each kind no longer runs (the sim counts buffs down at the start of each tick). */
+  buffUntil: Partial<Record<PickupKind, number>>;
+  killsWhileBuffed: Partial<Record<PickupKind, number>>;
 };
 
 function definedBehaviours(s: Strategy): string[] {
@@ -81,10 +90,14 @@ export class MatchRecorder {
   private readonly tallies = new Map<string, Tally>();
   private readonly kills: KillRecord[] = [];
   private readonly projectileOwner = new Map<string, string>();
+  private suddenDeathStart: { tick: number; reason: SuddenDeathReason } | null = null;
+  private judges: JudgedFighter[] | null = null;
 
   constructor(config: MatchConfig, state: WorldState, ctx: FindingContext = {}) {
     this.config = config;
-    this.ctx = ctx;
+    // The pedestals of this match's map, unless the caller knows better: lets findings say nobody went for them.
+    const pedestals = [...new Set(state.pickups.map((p) => p.kind))];
+    this.ctx = { mapPickups: () => pedestals, ...ctx };
     for (const f of state.fighters) {
       const entrant = config.entrants.find((e) => e.id === f.entrantId);
       if (!entrant) throw new Error(`MatchRecorder: fighter ${f.id} has no entrant ${f.entrantId} in the config.`);
@@ -116,6 +129,9 @@ export class MatchRecorder {
         skillUses: 0,
         parries: 0,
         swingOpen: false,
+        pickupsTaken: {},
+        buffUntil: {},
+        killsWhileBuffed: {},
       });
     }
   }
@@ -177,7 +193,26 @@ export class MatchRecorder {
           if (t) t.parries++;
           break;
         }
-        case 'kill':
+        case 'pickup': {
+          const t = this.tallies.get(ev.fighterId);
+          if (!t || (ev.kind !== 'haste' && ev.kind !== 'berserk')) break;
+          t.pickupsTaken[ev.kind] = (t.pickupsTaken[ev.kind] ?? 0) + 1;
+          t.buffUntil[ev.kind] = ev.tick + PICKUP_RULES[ev.kind].durationTicks;
+          break;
+        }
+        case 'sudden_death':
+          this.suddenDeathStart = { tick: ev.tick, reason: ev.reason };
+          break;
+        case 'judges_decision':
+          this.judges = ev.survivors.map((j) => ({ ...j }));
+          break;
+        case 'kill': {
+          const killer = ev.killerId && ev.killerId !== ev.victimId ? this.tallies.get(ev.killerId) : undefined;
+          if (killer) {
+            for (const kind of POWER_UPS) {
+              if (ev.tick < (killer.buffUntil[kind] ?? -1)) killer.killsWhileBuffed[kind] = (killer.killsWhileBuffed[kind] ?? 0) + 1;
+            }
+          }
           this.kills.push({
             tick: ev.tick,
             killerId: ev.killerId,
@@ -190,6 +225,7 @@ export class MatchRecorder {
             victimBehaviour: ev.victimBehaviour,
           });
           break;
+        }
         default:
           break;
       }
@@ -208,7 +244,8 @@ export class MatchRecorder {
       t.ticksAlive++;
       if (f.seen) t.ticksSeen++;
       if (f.inShadow) t.ticksInShadow++;
-      t.behaviourTicks[f.behaviour] = (t.behaviourTicks[f.behaviour] ?? 0) + 1;
+      // Before its first think a fighter has no behaviour yet (empty name); that time is not a choice.
+      if (f.behaviour) t.behaviourTicks[f.behaviour] = (t.behaviourTicks[f.behaviour] ?? 0) + 1;
     }
   }
 
@@ -239,6 +276,9 @@ export class MatchRecorder {
         hitsLanded: t.hitsLanded,
         skillUses: t.skillUses,
         parries: t.parries,
+        pickupsTaken: { ...t.pickupsTaken },
+        killsWhileBuffed: { ...t.killsWhileBuffed },
+        guardTrips: (res?.guardTrips ?? []).map((g) => ({ ...g })).sort((a, b) => b.count - a.count),
       };
     });
 
@@ -246,14 +286,19 @@ export class MatchRecorder {
       seed: this.config.seed,
       mapId: result.mapId,
       format: this.config.format,
+      timeLimitTicks: this.config.timeLimitTicks,
+      suddenDeath: this.config.suddenDeath,
+      friendlyFire: this.config.friendlyFire,
       ticks: result.ticks,
+      ending: opts.capped ? 'capped' : result.ending,
+      suddenDeathStart: this.suddenDeathStart ? { ...this.suddenDeathStart } : null,
       roster: this.roster.map((r) => ({ ...r })),
       placements,
       kills: [...this.kills],
       fighters,
       findings: [],
     };
-    report.findings = matchFindings(report, { ...this.ctx, capped: opts.capped });
+    report.findings = matchFindings(report, { ...this.ctx, capped: opts.capped, judges: this.judges ?? undefined });
     return report;
   }
 }

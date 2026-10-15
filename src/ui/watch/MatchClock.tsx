@@ -32,7 +32,8 @@ export function MatchClock({ controller, snap }: { controller: GameController; s
     <div className="clock">
       <button
         type="button"
-        className={`play${paused ? ' paused' : ''}`}
+        className={`play${paused && !finished ? ' paused' : ''}`}
+        disabled={finished}
         onClick={() => controller.setPaused(!paused)}
         aria-label={paused ? 'Play (Space)' : 'Pause (Space)'}
         title={paused ? 'Play (Space)' : 'Pause (Space)'}

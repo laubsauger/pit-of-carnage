@@ -1,22 +1,42 @@
 import { describe, expect, it } from 'vitest';
 import { STEER_DIRS, TICK_HZ } from '../core';
-import type { FeedItem, UiFighter } from '../core';
+import type { FeedItem, TimelineMark, UiFighter } from '../core';
 import {
   FEED_FADE_TICKS,
   FEED_HOLD_TICKS,
   KILL_LEAD_IN_TICKS,
+  MARK_GAP_PX,
+  MARK_KINDS,
+  SCRUB_SLOP_PX,
+  clusterAt,
+  clusterMarks,
+  clusterSeekTick,
   cycleFighter,
+  deathTick,
   feedOpacity,
-  markNear,
+  filterMarks,
+  hoverCardPosition,
+  isLive,
+  laneMarks,
+  markForFeed,
+  nextFollow,
   ringPoint,
   scoreBars,
   seekTickForMark,
+  scrubMove,
+  scrubStart,
+  scrubTarget,
+  scrubTick,
   segmentFeedText,
   sortScoreboard,
   tickAtRatio,
   timelineDomain,
   visibleFeed,
 } from './hud';
+
+function mark(tick: number, kind: TimelineMark['kind'], actorId: string | null = null, targetId: string | null = null): TimelineMark {
+  return { tick, kind, actorId, targetId, text: '', actorBehaviour: null, targetBehaviour: null };
+}
 
 function fighter(id: string, patch: Partial<UiFighter> = {}): UiFighter {
   return {
@@ -147,19 +167,136 @@ describe('timeline', () => {
     expect(tickAtRatio(-1, 5400, 600)).toBe(0);
   });
 
-  it('prefers a kill over a nearby big hit when clicking marks', () => {
-    const marks = [
-      { tick: 1000, kind: 'big_hit' as const },
-      { tick: 1010, kind: 'kill' as const },
-    ];
-    expect(markNear(marks, 1001, 20)?.kind).toBe('kill');
-    expect(markNear(marks, 1200, 20)).toBeNull();
+  it('prefers a kill over a nearby big hit when clicking a busy moment', () => {
+    // 5400 ticks over 900 px: 6 ticks per px, so these two share a cluster.
+    const [c] = clusterMarks([mark(1000, 'big_hit'), mark(1010, 'kill')], 5400, 900);
+    expect(c.marks[0].kind).toBe('kill');
+    expect(clusterSeekTick(c)).toBe(1010 - KILL_LEAD_IN_TICKS);
+    expect(clusterAt([c], c.x + 2, 6)).toBe(c);
+    expect(clusterAt([c], c.x + 40, 6)).toBeNull();
   });
 
   it('jumps to a lead-in before a kill, so you see the fight and not just the corpse', () => {
-    expect(seekTickForMark({ tick: 1000, kind: 'kill' })).toBe(1000 - KILL_LEAD_IN_TICKS);
-    expect(seekTickForMark({ tick: 30, kind: 'kill' })).toBe(0);
-    expect(seekTickForMark({ tick: 1000, kind: 'dismember' })).toBe(1000 - TICK_HZ / 2);
+    expect(seekTickForMark(mark(1000, 'kill'))).toBe(1000 - KILL_LEAD_IN_TICKS);
+    expect(seekTickForMark(mark(30, 'kill'))).toBe(0);
+    expect(seekTickForMark(mark(1000, 'dismember'))).toBe(1000 - TICK_HZ / 2);
+  });
+});
+
+describe('timeline marks', () => {
+  const marks = [
+    mark(100, 'big_hit', 'gary', 'brenda'),
+    mark(400, 'pickup', 'brenda', null),
+    mark(900, 'dismember', 'doug', 'gary'),
+    mark(1200, 'kill', 'brenda', 'gary'),
+    mark(5400, 'sudden_death'),
+  ];
+
+  it("shows only one fighter's moments, what they did and what was done to them, when a fighter is picked", () => {
+    expect(filterMarks(marks, 'gary', MARK_KINDS).map((m) => m.tick)).toEqual([100, 900, 1200, 5400]);
+    expect(filterMarks(marks, 'doug', MARK_KINDS).map((m) => m.tick)).toEqual([900, 5400]);
+  });
+
+  it('keeps sudden death under any fighter filter, because it explains the deaths that follow', () => {
+    expect(filterMarks(marks, 'nobody', MARK_KINDS).map((m) => m.kind)).toEqual(['sudden_death']);
+  });
+
+  it('hides the event types switched off in the legend', () => {
+    expect(filterMarks(marks, null, ['kill', 'pickup']).map((m) => m.kind)).toEqual(['pickup', 'kill']);
+  });
+
+  it("gives each fighter a lane of their own moments that ends where they died", () => {
+    expect(laneMarks(marks, 'gary').map((m) => m.tick)).toEqual([100, 900, 1200]);
+    expect(deathTick(marks, 'gary')).toBe(1200);
+    expect(deathTick(marks, 'brenda')).toBeNull();
+  });
+
+  it('never draws two clusters closer than the gap, and loses no mark doing it', () => {
+    const busy = Array.from({ length: 40 }, (_, i) => mark(1000 + i * 7, i % 3 === 0 ? 'kill' : 'big_hit'));
+    for (const width of [320, 900, 1600]) {
+      const clusters = clusterMarks(busy, 5400, width);
+      for (let i = 1; i < clusters.length; i++) expect(clusters[i].x - clusters[i - 1].x).toBeGreaterThanOrEqual(MARK_GAP_PX);
+      expect(clusters.flatMap((c) => c.marks).length).toBe(busy.length);
+    }
+  });
+
+  it('keeps a quiet match unclustered, one mark per moment', () => {
+    expect(clusterMarks(marks, 5400, 900).map((c) => c.marks.length)).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it('starts a click on a busy moment at its earliest lead-in, so the whole moment plays', () => {
+    const [c] = clusterMarks([mark(1000, 'dismember'), mark(1004, 'kill')], 5400, 900);
+    expect(clusterSeekTick(c)).toBe(1004 - KILL_LEAD_IN_TICKS);
+  });
+});
+
+describe('live or replay', () => {
+  it('is live at the newest simulated tick and replaying anywhere before it', () => {
+    expect(isLive({ tick: 600, maxTick: 600 })).toBe(true);
+    expect(isLive({ tick: 420, maxTick: 600 })).toBe(false);
+  });
+});
+
+describe('kill feed links to the timeline', () => {
+  const kill = mark(1200, 'kill', 'brenda', 'gary');
+  const hit = mark(1200, 'big_hit', 'brenda', 'gary');
+  const marks = [hit, kill, mark(5400, 'sudden_death')];
+
+  it("finds the feed line's own mark, not a big hit landed on the same tick", () => {
+    expect(markForFeed({ tick: 1200, text: 'Brenda filed Gary.', kind: 'kill', ids: ['brenda', 'gary'] }, marks)).toBe(kill);
+  });
+
+  it('links a sudden-death line that names nobody', () => {
+    expect(markForFeed({ tick: 5400, text: 'The walls are closing.', kind: 'sudden_death', ids: [] }, marks)?.kind).toBe('sudden_death');
+  });
+
+  it('links nothing for lines without a moment (the opening line)', () => {
+    expect(markForFeed({ tick: 0, text: '8 fighters in the Pit.', kind: 'info', ids: [] }, marks)).toBeNull();
+    expect(markForFeed({ tick: 1200, text: 'Doug took a limb.', kind: 'kill', ids: ['doug'] }, marks)).toBeNull();
+  });
+});
+
+describe('seeking', () => {
+  const track = { left: 40, width: 917.5 };
+
+  it('lands every click within half a pixel of where it was pressed, whatever the scale', () => {
+    for (const domain of [600, 5400, 7333]) {
+      for (let px = 0; px <= track.width; px += 0.5) {
+        const s = scrubStart(track.left + px, track, domain, domain, null);
+        const drawnAt = (scrubTarget(s) / domain) * track.width;
+        expect(Math.abs(drawnAt - px)).toBeLessThanOrEqual(Math.max(0.5, (0.5 * track.width) / domain) + 1e-9);
+      }
+    }
+  });
+
+  it('lands exactly on a tick when clicking where that tick is drawn', () => {
+    const domain = 600; // more than one px per tick
+    for (let t = 0; t <= domain; t++) {
+      const s = scrubStart(track.left + (t / domain) * track.width, track, domain, domain, null);
+      expect(scrubTarget(s)).toBe(t);
+    }
+  });
+
+  it('never seeks past what has been simulated', () => {
+    const s = scrubStart(track.left + track.width, track, 5400, 1800, null);
+    expect(scrubTarget(s)).toBe(1800);
+    expect(scrubTarget(scrubStart(track.left - 50, track, 5400, 1800, null))).toBe(0);
+  });
+
+  it("measures the release against the scale seen at the press, even if the bar grew since", () => {
+    const s = scrubStart(track.left + 300, track, 6000, 6000, null);
+    // The live match notifies while the button is down; the scrub keeps its own domain.
+    expect(scrubTarget(scrubMove(s, track.left + 300))).toBe(Math.round((300 / track.width) * 6000));
+  });
+
+  it('jumps to the lead-in of a clicked mark, but a drag that starts on a mark goes where it is released', () => {
+    const [c] = clusterMarks([mark(3000, 'kill')], 5400, track.width);
+    const press = scrubStart(track.left + c.x, track, 5400, 5400, c);
+    expect(scrubTarget(scrubMove(press, track.left + c.x + SCRUB_SLOP_PX))).toBe(3000 - KILL_LEAD_IN_TICKS);
+    const dragged = scrubMove(press, track.left + c.x + 120);
+    expect(dragged.moved).toBe(true);
+    expect(scrubTarget(dragged)).toBe(scrubTick(dragged));
+    expect(scrubTarget(dragged)).toBeGreaterThan(3000);
   });
 });
 
@@ -182,5 +319,42 @@ describe('inspector', () => {
     expect(east.y).toBeCloseTo(0);
     expect(south.x).toBeCloseTo(0);
     expect(south.y).toBeCloseTo(10);
+  });
+});
+
+describe('hoverCardPosition', () => {
+  const card = { w: 236, h: 150 };
+  const stage = { w: 1200, h: 800 };
+
+  it('sits below-right of the pointer, off the fighter being pointed at', () => {
+    expect(hoverCardPosition({ x: 300, y: 200 }, card, stage)).toEqual({ x: 318, y: 218 });
+  });
+
+  it('flips left and up near the far edges instead of running off the stage', () => {
+    const p = hoverCardPosition({ x: 1150, y: 760 }, card, stage);
+    expect(p.x + card.w).toBeLessThanOrEqual(1150);
+    expect(p.y + card.h).toBeLessThanOrEqual(760);
+  });
+
+  it('stays inside a stage smaller than the card rather than going negative', () => {
+    const p = hoverCardPosition({ x: 50, y: 50 }, card, { w: 200, h: 100 });
+    expect(p.x).toBeGreaterThanOrEqual(0);
+    expect(p.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('nextFollow', () => {
+  it('toggles the camera on the selected fighter', () => {
+    expect(nextFollow('a', null)).toBe('a');
+    expect(nextFollow('a', 'a')).toBeNull();
+  });
+
+  it('moves the camera to a newly selected fighter instead of switching it off', () => {
+    expect(nextFollow('b', 'a')).toBe('b');
+  });
+
+  it('releases the camera when nobody is selected, so F never locks onto someone you cannot see in the inspector', () => {
+    expect(nextFollow(null, 'a')).toBeNull();
+    expect(nextFollow(null, null)).toBeNull();
   });
 });

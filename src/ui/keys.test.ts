@@ -36,5 +36,22 @@ describe('keyToAction', () => {
     expect(key('f', { metaKey: true })).toBeNull();
     expect(key('Tab', { ctrlKey: true })).toBeNull();
     expect(key('ArrowLeft', { altKey: true })).toBeNull();
+    expect(key('m', { metaKey: true })).toBeNull();
+  });
+
+  // The spec promises "Reset camera" on a button and on C; without the key a zoomed viewer is stuck.
+  it('binds C to giving the camera back to the director', () => {
+    expect(key('c')).toEqual({ type: 'camera' });
+    expect(key('C')).toEqual({ type: 'camera' });
+    expect(key('c', { editable: true })).toBeNull();
+  });
+
+  it('binds End to the live edge, so there is always a key back from a replay', () => {
+    expect(key('End')).toEqual({ type: 'live' });
+    expect(key('End', { editable: true })).toBeNull();
+  });
+
+  it('never lets a View shortcut fire while typing a strategy name', () => {
+    expect(key('o', { editable: true })).toBeNull();
   });
 });

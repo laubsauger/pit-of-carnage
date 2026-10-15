@@ -7,9 +7,9 @@
  * `useSyncExternalStore`).
  */
 
-import type { OverlayState } from './render-api';
+import type { ViewSettings } from './render-api';
 import type { AggregateReport, EvolveGeneration, EvolveRequest, EvolveResult, LeaderboardEntry, MatchReport } from './report-types';
-import type { Decision, FighterState, MatchConfig, MatchFormat, Strategy } from './types';
+import type { Decision, FighterState, KnownFighter, MatchConfig, MatchFormat, Strategy } from './types';
 
 export type UiFighter = Pick<
   FighterState,
@@ -26,7 +26,33 @@ export type FeedItem = {
   ids: string[];
 };
 
-export type TimelineMark = { tick: number; kind: 'kill' | 'big_hit' | 'dismember' };
+/** Event type of a timeline mark; the timeline draws each as its own shape. */
+export type TimelineMarkKind = 'kill' | 'big_hit' | 'dismember' | 'pickup' | 'sudden_death';
+
+/**
+ * One explorable moment on the timeline. Built by the session from events; the timeline colours a
+ * mark by `actorId`'s fighter colour and filters by fighter and kind. A feed line about the same
+ * moment has the same `tick` and lists the same ids, so feed entries link to their marks.
+ */
+export type TimelineMark = {
+  tick: number;
+  kind: TimelineMarkKind;
+  /**
+   * Who caused it: the killer, the attacker of a big hit or lost limb, the fighter who took a
+   * power-up. Null for hazards, nobody's keg and sudden death (neutral colour).
+   */
+  actorId: string | null;
+  /** Who it happened to (victim), or null (power-ups, sudden death). */
+  targetId: string | null;
+  /**
+   * The tooltip sentence, names as plain text (the UI colours them via the ids), e.g.
+   * "Gary backstabbed Brenda, twin daggers, from shadow." No clock: the UI adds the time.
+   */
+  text: string;
+  /** Behaviours running at that moment (actor's and target's), for the tooltip; null when there is no such fighter. */
+  actorBehaviour: string | null;
+  targetBehaviour: string | null;
+};
 
 export type UiSnapshot = {
   tick: number;
@@ -50,10 +76,17 @@ export type UiSnapshot = {
   hoveredId: string | null;
   /** Refinement: fighter the camera follows, or null. */
   followId: string | null;
-  /** Refinement: current overlay toggles. */
-  overlay: OverlayState;
+  /** The viewer zoomed or panned the arena: the director is paused until `resetCamera()` (button, key C). */
+  cameraManual: boolean;
+  /** Current display settings (same value as `GameController.getView()`). */
+  view: ViewSettings;
   finished: boolean;
   placements: string[];
+  /**
+   * Refinement: why the arena could not be shown (for example the WebGPU device failed to start
+   * after an adapter was found), or null. The Watch screen shows it instead of a blank arena.
+   */
+  arenaError: string | null;
 };
 
 export interface GameController {
@@ -73,8 +106,15 @@ export interface GameController {
   hover(id: string | null): void;
   /** Refinement: camera follows this fighter (null = director framing). */
   follow(id: string | null): void;
-  setOverlay(o: Partial<OverlayState>): void;
+  /** Back to the director's camera after wheel zoom or drag pan: stops following too (button and key C). */
+  resetCamera(): void;
+  /** Current display settings (loaded from localStorage at startup, DEFAULT_VIEW_SETTINGS otherwise). */
+  getView(): ViewSettings;
+  /** Change some display settings: merged, persisted, pushed to renderer/fx/audio, then subscribers notified. */
+  setView(v: Partial<ViewSettings>): void;
   decision(id: string): Decision | null;
+  /** What this fighter knows about its enemies right now (`Match.knowledge`), for the inspector. Read-only; copy what you keep. */
+  knowledge(id: string): readonly KnownFighter[];
   /** Refinement: live state of one fighter for the inspector (read-only; copy what you keep). */
   fighter(id: string): FighterState | null;
   /** Refinement: battle report of the current match once it has finished, else null. */

@@ -4,15 +4,11 @@
  * matches on one map pays for it once.
  */
 
-import { HAZARD_RULES, clamp01, segmentRectT, smoothstep } from '../core';
+import { HAZARD_RULES, MATCH_RULES, clamp01, segmentRectT, smoothstep } from '../core';
 import type { MapDef, Rect, Vec2 } from '../core';
 
 /** Light grid spacing (px). Must stay below the smallest fighter radius so a body never samples inside a pillar. */
 export const LIGHT_CELL = 16;
-
-/** Fire pits are light sources too. */
-const FIRE_LIGHT_RADIUS = 175;
-const FIRE_LIGHT_INTENSITY = 0.55;
 
 /** Clearance of a cover anchor from the obstacle it hides behind (px). */
 const COVER_OFFSET = 30;
@@ -42,18 +38,25 @@ export function geoFor(map: MapDef): StaticGeo {
   return geo;
 }
 
-/** True when segment a-b touches any wall or pillar. */
-export function staticLosBlocked(geo: StaticGeo, a: Vec2, b: Vec2): boolean {
+const segA: Vec2 = { x: 0, y: 0 };
+const segB: Vec2 = { x: 0, y: 0 };
+
+/** True when segment (ax, ay)-(bx, by) touches any wall or pillar. */
+export function staticLosBlocked(geo: StaticGeo, ax: number, ay: number, bx: number, by: number): boolean {
   const bs = geo.blockers;
-  const minX = a.x < b.x ? a.x : b.x;
-  const maxX = a.x < b.x ? b.x : a.x;
-  const minY = a.y < b.y ? a.y : b.y;
-  const maxY = a.y < b.y ? b.y : a.y;
+  const minX = ax < bx ? ax : bx;
+  const maxX = ax < bx ? bx : ax;
+  const minY = ay < by ? ay : by;
+  const maxY = ay < by ? by : ay;
+  segA.x = ax;
+  segA.y = ay;
+  segB.x = bx;
+  segB.y = by;
   for (let i = 0; i < bs.length; i++) {
     const r = bs[i]!;
     // Bounding-box reject before the slab test.
     if (r.x > maxX || r.x + r.w < minX || r.y > maxY || r.y + r.h < minY) continue;
-    if (segmentRectT(a, b, r) >= 0) return true;
+    if (segmentRectT(segA, segB, r) >= 0) return true;
   }
   return false;
 }
@@ -111,6 +114,26 @@ function clampGrid(v: number, max: number): number {
   return v < 0 ? 0 : v > max ? max : v;
 }
 
+/**
+ * The playable rectangle while sudden death runs: the map inset by `inset` px on every side, but
+ * never smaller than `MATCH_RULES.suddenDeathMinHalfSize` from the centre on either axis (so a wide
+ * map ends as a square, not a sliver). Renderer and sim must both use this to draw/apply the wall.
+ */
+export function arenaBounds(map: MapDef, inset: number, out: Rect): Rect {
+  const ix = Math.max(0, Math.min(inset, map.width / 2 - MATCH_RULES.suddenDeathMinHalfSize));
+  const iy = Math.max(0, Math.min(inset, map.height / 2 - MATCH_RULES.suddenDeathMinHalfSize));
+  out.x = ix;
+  out.y = iy;
+  out.w = map.width - 2 * ix;
+  out.h = map.height - 2 * iy;
+  return out;
+}
+
+/** The inset at which the sudden-death wall stops moving on both axes. */
+export function maxInset(map: MapDef): number {
+  return Math.max(map.width, map.height) / 2 - MATCH_RULES.suddenDeathMinHalfSize;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------------------------
@@ -125,29 +148,33 @@ function buildGeo(map: MapDef): StaticGeo {
   return geo;
 }
 
-type Emitter = { x: number; y: number; radius: number; intensity: number; shadows: boolean };
-
+/**
+ * Ambient plus every map light whose line of sight reaches the grid point (smoothstep falloff).
+ * Fire pits are listed in `map.lights` by the map itself, so the renderer and the sim agree.
+ */
 function bakeLight(geo: StaticGeo): void {
   const map = geo.map;
-  const emitters: Emitter[] = map.lights.map((l) => ({ x: l.pos.x, y: l.pos.y, radius: l.radius, intensity: l.intensity, shadows: l.castsShadow }));
-  for (const hz of map.hazards) {
-    if (hz.kind === 'fire') emitters.push({ x: hz.pos.x, y: hz.pos.y, radius: FIRE_LIGHT_RADIUS, intensity: FIRE_LIGHT_INTENSITY, shadows: true });
-  }
   // Blockers shrunk by 1 px so points on a lit wall face are not shadowed by the wall itself.
   const shrunk = geo.blockers.map((r) => ({ x: r.x + 1, y: r.y + 1, w: Math.max(0, r.w - 2), h: Math.max(0, r.h - 2) }));
+  const inside = new Uint8Array(geo.gw * geo.gh);
   const a: Vec2 = { x: 0, y: 0 };
   const b: Vec2 = { x: 0, y: 0 };
   for (let gy = 0; gy < geo.gh; gy++) {
     for (let gx = 0; gx < geo.gw; gx++) {
       b.x = gx * LIGHT_CELL;
       b.y = gy * LIGHT_CELL;
+      const k = gy * geo.gw + gx;
+      if (shrunk.some((r) => b.x > r.x && b.x < r.x + r.w && b.y > r.y && b.y < r.y + r.h)) {
+        inside[k] = 1;
+        continue;
+      }
       let sum = map.ambient;
-      for (const e of emitters) {
-        const d = Math.hypot(b.x - e.x, b.y - e.y);
-        if (d >= e.radius) continue;
-        if (e.shadows) {
-          a.x = e.x;
-          a.y = e.y;
+      for (const l of map.lights) {
+        const d = Math.hypot(b.x - l.pos.x, b.y - l.pos.y);
+        if (d >= l.radius) continue;
+        if (l.castsShadow) {
+          a.x = l.pos.x;
+          a.y = l.pos.y;
           let blocked = false;
           for (const r of shrunk) {
             if (segmentRectT(a, b, r) >= 0) {
@@ -157,11 +184,37 @@ function bakeLight(geo: StaticGeo): void {
           }
           if (blocked) continue;
         }
-        sum += e.intensity * smoothstep(0, 1, 1 - d / e.radius);
+        sum += l.intensity * smoothstep(0, 1, 1 - d / l.radius);
       }
-      geo.light[gy * geo.gw + gx] = clamp01(sum);
+      geo.light[k] = clamp01(sum);
     }
   }
+  // Grid points buried in a wall take the brightest open neighbour, so bilinear samples next to a
+  // lit wall face are not dragged dark by the wall's interior.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let gy = 0; gy < geo.gh; gy++) {
+      for (let gx = 0; gx < geo.gw; gx++) {
+        const k = gy * geo.gw + gx;
+        if (inside[k] !== 1) continue;
+        let best = -1;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = gx + dx;
+            const ny = gy + dy;
+            if (nx < 0 || ny < 0 || nx >= geo.gw || ny >= geo.gh) continue;
+            const nk = ny * geo.gw + nx;
+            if (inside[nk] === 0 && geo.light[nk]! > best) best = geo.light[nk]!;
+          }
+        }
+        if (best >= 0) {
+          geo.light[k] = best;
+          inside[k] = 2; // filled this pass; not used as a source until the next pass
+        }
+      }
+    }
+    for (let k = 0; k < inside.length; k++) if (inside[k] === 2) inside[k] = 0;
+  }
+  for (let k = 0; k < inside.length; k++) if (inside[k] === 1) geo.light[k] = map.ambient;
 }
 
 /**
@@ -174,7 +227,10 @@ function buildCoverAnchors(geo: StaticGeo): readonly Vec2[] {
   const add = (x: number, y: number) => {
     if (circleBlocked(geo, x, y, COVER_FIT)) return;
     for (const p of map.props) if (Math.hypot(p.pos.x - x, p.pos.y - y) < p.radius + COVER_FIT) return;
-    for (const hz of map.hazards) if (hz.kind !== 'saw' && Math.hypot(hz.pos.x - x, hz.pos.y - y) < (hz.radius || HAZARD_RULES[hz.kind].radius) + COVER_FIT) return;
+    for (const hz of map.hazards) {
+      if (hz.kind === 'saw') continue;
+      if (Math.hypot(hz.pos.x - x, hz.pos.y - y) < (hz.radius || HAZARD_RULES[hz.kind].radius) + COVER_FIT) return;
+    }
     out.push(Object.freeze({ x, y }));
   };
   const o = COVER_OFFSET;

@@ -60,7 +60,7 @@ function Row({ f, snap, controller }: { f: UiFighter; snap: UiSnapshot; controll
       }}
       onPointerEnter={() => controller.hover(f.id)}
       aria-pressed={selected}
-      title={`${f.name}. Click to inspect, double-click to follow.`}
+      title={`${f.name}. Click to inspect and show only their moments on the timeline; double-click to follow.`}
     >
       <span className="sb-stripe" style={{ background: f.color }} />
       <span className="sb-name">{f.name}</span>

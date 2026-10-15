@@ -1,22 +1,31 @@
 // Owned by: ui
-import { useState } from 'react';
-import { TICK_HZ, deriveStats } from '../../core';
-import type { GameController, UiFighter, UiSnapshot } from '../../core';
-import { buildLine, formatPercent, formatPlace, formatValue } from '../format';
+import { Fragment, useRef, useState } from 'react';
+import { STAT_DOCS, TICK_HZ, deriveStats } from '../../core';
+import type { DerivedStats, GameController, UiFighter, UiSnapshot } from '../../core';
+import { buildLine, formatPercent, formatPlace, formatStat, formatValue } from '../format';
+
+/** The stats that explain a fight in progress: can it see, hear, catch, survive, parry. */
+const INSPECTOR_STATS: readonly (keyof DerivedStats)[] = ['visionRange', 'hearingRadius', 'moveSpeed', 'armorMitigation', 'parryChance'];
 import { usePolled } from '../hooks';
 import { scoreBars } from '../hud';
 import { CloseIcon, FollowIcon } from '../icons';
 import { AttrBars, HpBar } from '../widgets';
 import { SteeringRing } from './SteeringRing';
-import { readLive, statusChips } from './fighterData';
+import { guardTripSummary, knowledgeRows, powerupLines, readLive, statusChips, zoneLines } from './fighterData';
+import type { InfoLine } from './fighterData';
 
 type Props = { controller: GameController; snap: UiSnapshot; fighter: UiFighter };
 
 /** Pinned panel for the selected fighter: what it thinks, where it wants to go, what it has done. */
 export function Inspector({ controller, snap, fighter }: Props) {
   const id = fighter.id;
-  const { f, d } = usePolled(controller, () => readLive(controller, id), [id]);
+  const { f, d, known } = usePolled(controller, () => readLive(controller, id), [id]);
   const [termFocus, setTermFocus] = useState<number | null>(null);
+  const tripsRef = useRef<HTMLDivElement>(null);
+  const trips = guardTripSummary(d?.guardTrips ?? []);
+  const knows = fighter.alive ? knowledgeRows(known, f?.pos ?? null, snap.tick, snap.fighters) : [];
+  const targetKnow = d?.targetId ? knows.find((k) => k.id === d.targetId) ?? null : null;
+  const around = fighter.alive ? [...powerupLines(f, d?.sensors ?? {}), ...zoneLines(snap.suddenDeath, d?.sensors ?? {})] : [];
   const following = snap.followId === id;
   const target = d?.targetId ? snap.fighters.find((x) => x.id === d.targetId) ?? null : null;
   const stats = f ? deriveStats(f.attributes, f.weapon) : null;
@@ -30,6 +39,16 @@ export function Inspector({ controller, snap, fighter }: Props) {
             {fighter.name}
           </div>
           <div className="hc-build">{buildLine(fighter.weapon, fighter.skill)}</div>
+          {trips.total > 0 ? (
+            <button
+              type="button"
+              className="chip chip-hot gt-badge"
+              onClick={() => tripsRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}
+              title="Runtime guards caught bad values in this strategy. Each one is a validator bug: report it."
+            >
+              {trips.total.toLocaleString('en-US')} guard {trips.total === 1 ? 'trip' : 'trips'}
+            </button>
+          ) : null}
         </div>
         <button
           type="button"
@@ -74,7 +93,12 @@ export function Inspector({ controller, snap, fighter }: Props) {
               {target ? (
                 <span>
                   <b style={{ color: target.color, fontWeight: 600 }}>{target.name}</b>
-                  {d.sensors['target.distance'] !== undefined ? (
+                  {targetKnow ? (
+                    <span className={`faint${targetKnow.state === 'seen' ? '' : ' fogged'}`}>
+                      {' '}
+                      {targetKnow.state === 'seen' ? <span className="num">{targetKnow.distance}</span> : targetKnow.text.toLowerCase()}
+                    </span>
+                  ) : d.sensors['target.distance'] !== undefined ? (
                     <span className="num faint"> {Math.round(d.sensors['target.distance'])} px</span>
                   ) : null}
                 </span>
@@ -150,6 +174,57 @@ export function Inspector({ controller, snap, fighter }: Props) {
           </div>
         ) : null}
 
+        {fighter.alive && f ? (
+          <div className="ins-section">
+            <div className="ins-title">
+              <span>What it knows</span>
+              <span className="dim">{knowsSummary(knows)}</span>
+            </div>
+            {knows.length ? (
+              <div className="know-list">
+                {knows.map((k) => (
+                  <div key={k.id} className={`know-row ${k.state}`}>
+                    <i className="know-dot" style={{ borderColor: k.color, background: k.state === 'seen' ? k.color : 'transparent' }} />
+                    <b style={{ color: k.color }}>{k.name}</b>
+                    <span className="know-text">{k.text}</span>
+                    <span className="num faint">{k.distance}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="faint">Nobody in sight or earshot.</div>
+            )}
+          </div>
+        ) : null}
+
+        {around.length ? (
+          <div className="ins-section">
+            <div className="ins-title">
+              <span>Power-ups and zone</span>
+            </div>
+            <InfoList lines={around} />
+          </div>
+        ) : null}
+
+        {trips.total > 0 ? (
+          <div className="ins-section" ref={tripsRef}>
+            <div className="ins-title">
+              <span>Guard trips</span>
+              <span className="dim">caught at runtime</span>
+            </div>
+            <ul className="trip-list">
+              {trips.lines.map((t) => (
+                <li key={`${t.path}:${t.what}`}>
+                  <code>{t.path}</code>
+                  <span>
+                    {t.what}, <span className="num">{t.count.toLocaleString('en-US')}</span> {t.count === 1 ? 'time' : 'times'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {d && Object.keys(d.sensors).length > 0 ? (
           <div className="ins-section">
             <div className="ins-title">
@@ -187,16 +262,33 @@ export function Inspector({ controller, snap, fighter }: Props) {
             </div>
             <AttrBars attributes={f.attributes} />
             <dl className="kv" style={{ marginTop: 10 }}>
-              <Kv k="Vision" v={`${Math.round(stats.visionRange)} px`} />
-              <Kv k="Hearing" v={`${Math.round(stats.hearingRadius)} px`} />
-              <Kv k="Speed" v={`${Math.round(stats.moveSpeed * TICK_HZ)} px/s`} />
-              <Kv k="Armor" v={formatPercent(stats.armorMitigation)} />
-              <Kv k="Parry chance" v={formatPercent(stats.parryChance)} />
+              {INSPECTOR_STATS.map((k) => (
+                <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} />
+              ))}
             </dl>
           </div>
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function knowsSummary(rows: { state: string }[]): string {
+  const n = (s: string) => rows.filter((r) => r.state === s).length;
+  const parts = [n('seen') && `sees ${n('seen')}`, n('heard') && `hears ${n('heard')}`, n('remembered') && `remembers ${n('remembered')}`].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'nothing';
+}
+
+function InfoList({ lines }: { lines: InfoLine[] }) {
+  return (
+    <dl className="kv">
+      {lines.map((l) => (
+        <Fragment key={l.label}>
+          <dt>{l.label}</dt>
+          <dd className={l.hot ? 'hot' : undefined}>{l.value}</dd>
+        </Fragment>
+      ))}
+    </dl>
   );
 }
 

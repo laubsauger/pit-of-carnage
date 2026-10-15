@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pit render harness</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    />
+    <style>
+      html, body { height: 100%; margin: 0; background: #0e0d0c; color: #e8e2d9; overflow: hidden; }
+      #arena { position: fixed; inset: 0; }
+      #hud {
+        position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 24px);
+        font: 500 12px/1.5 'JetBrains Mono', ui-monospace, monospace; color: #a39a8e;
+        background: rgba(14, 13, 12, 0.72); padding: 6px 10px; border-radius: 6px; white-space: pre-wrap;
+        pointer-events: none;
+      }
+      #hud.error { color: #e8e2d9; border-left: 3px solid #c4302b; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="arena"></div>
+    <div id="hud">Starting WebGPU…</div>
+    <script type="module" src="/src/render/dev/main.ts"></script>
+  </body>
+</html>

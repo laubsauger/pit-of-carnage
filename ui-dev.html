@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pit of Carnage UI dev</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    />
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #0e0d0c; color: #e8e2d9; font-family: Inter, system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <!-- UI dev harness: the real App on a MockController (src/ui/dev). Not part of the build. -->
+    <div id="root"></div>
+    <script type="module" src="/src/ui/dev/main.tsx"></script>
+  </body>
+</html>

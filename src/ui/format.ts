@@ -1,7 +1,7 @@
 // Owned by: ui
 // Pure display formatting. No React, no DOM, so it is unit-tested directly.
-import { SKILLS, TICK_HZ, WEAPONS } from '../core';
-import type { SkillId, WeaponId } from '../core';
+import { SKILLS, STAT_DOCS, TICK_HZ, WEAPONS } from '../core';
+import type { DerivedStats, SkillId, WeaponId } from '../core';
 
 /** Match clock: whole seconds as m:ss. Ticks before 0 read as 0:00. */
 export function formatClock(ticks: number): string {
@@ -106,6 +106,33 @@ export function squadLetter(squad: number): string {
 /** Strategy identity as shown to players: "Lurking Daggers v3". */
 export function strategyLabel(name: string, version: number | undefined): string {
   return `${name} v${version ?? 1}`;
+}
+
+const DEG = 180 / Math.PI;
+
+/**
+ * A derived build stat in the units players reason in. The rules keep sim units (px per tick,
+ * ticks, radians); players compare "131 px/s" and "0.70 s", not "2.18 px/tick" and "42 ticks".
+ */
+export function formatStat(key: keyof DerivedStats, value: number): string {
+  switch (STAT_DOCS[key].unit) {
+    case 'px/tick':
+      return `${Math.round(value * TICK_HZ)} px/s`;
+    case 'ticks':
+      return `${(value / TICK_HZ).toFixed(2)} s`;
+    case 'fraction':
+      return formatPercent(value);
+    case 'rad':
+      return `${Math.round(value * DEG)}°`;
+    case 'rad/s':
+      return `${Math.round(value * DEG)}°/s`;
+    case 'x':
+      return `x${value.toFixed(2)}`;
+    case 'px':
+      return `${Math.round(value)} px`;
+    default:
+      return String(Math.round(value));
+  }
 }
 
 /** Parse a `name@vN` strategy key back into a label; unknown shapes pass through unchanged. */

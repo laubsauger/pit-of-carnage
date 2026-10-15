@@ -4,7 +4,7 @@
  * invented; `findings` are plain sentences generated in code from those numbers.
  */
 
-import type { DamageSource, KillCause, KillFlag, MatchFormat, SkillId, Strategy, Vec2, WeaponId } from './types';
+import type { DamageSource, GuardTrip, KillCause, KillFlag, MatchEnding, MatchFormat, PickupKind, SkillId, Strategy, SuddenDeathReason, Vec2, WeaponId } from './types';
 
 /**
  * Identity of a strategy across matches: `name@vN` (version defaults to 1).
@@ -90,14 +90,32 @@ export type FighterReport = {
   hitsLanded: number;
   skillUses: number;
   parries: number;
+  /** Power-ups taken from pedestals, by kind (spent ammo off the floor does not count). */
+  pickupsTaken: Partial<Record<PickupKind, number>>;
+  /**
+   * What the power-ups bought: kills landed while a power-up of that kind taken from a pedestal was
+   * still running (`PICKUP_RULES[kind].durationTicks` from the pickup). Buffs from skills (Bloodrage,
+   * Dash) do not count. "Took berserk 4 times, 3 kills while berserk."
+   */
+  killsWhileBuffed: Partial<Record<PickupKind, number>>;
+  /** Runtime guard trips of this fighter's brain over the match (from `MatchResult`), most first. */
+  guardTrips: GuardTrip[];
 };
 
 export type MatchReport = {
   seed: number;
   mapId: string;
   format: MatchFormat;
+  /** Rules of the match, so a report can be replayed exactly (see MatchConfig). */
+  timeLimitTicks: number;
+  suddenDeath: boolean;
+  friendlyFire: boolean;
   /** Match length in ticks. */
   ticks: number;
+  /** How it ended. `judges` and `capped` are always also explained in `findings`. */
+  ending: MatchEnding;
+  /** When and why sudden death started, or null if it never did. */
+  suddenDeathStart: { tick: number; reason: SuddenDeathReason } | null;
   roster: ReportRosterEntry[];
   /** Fighter ids, 1st place first. */
   placements: string[];
@@ -113,7 +131,11 @@ export type MatchReport = {
 
 export type WinRecord = { matches: number; wins: number; winRate: number };
 
-/** One strategy's results across a batch. */
+/**
+ * One strategy's results across a batch. Units: `placementHistogram`, `avgPlace`, `avgKills`,
+ * `avgDamageDealt` and `avgSurvivalTicks` count per appearance (one seat); `matches`, `winRate`,
+ * `byMap` and `byOpponent` count per match (a mirror match with two seats counts once).
+ */
 export type StrategyAggregate = {
   key: string;
   name: string;
@@ -136,6 +158,12 @@ export type StrategyAggregate = {
   avgDamageDealt: number;
   avgSurvivalTicks: number;
   deathsByCause: Partial<Record<KillCause, number>>;
+  /** Power-ups taken across the batch (totals over every appearance), by kind. */
+  pickupsTaken: Partial<Record<PickupKind, number>>;
+  /** Kills while a pedestal power-up was running, across the batch (totals), by kind. */
+  killsWhileBuffed: Partial<Record<PickupKind, number>>;
+  /** Guard-trip totals across the batch, summed per path and kind, most first. */
+  guardTrips: GuardTrip[];
   /** Plain sentences computed from the numbers above. */
   findings: string[];
   /** Rating after this batch (continues from the stored rating when one exists). */
@@ -172,10 +200,13 @@ export type LeaderboardEntry = {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Evolve a strategy against a fixed field. Each generation mutates the current champion into
- * `population` candidates, plays every candidate and the champion on the SAME seeds against the
- * same field (paired comparison), and promotes a candidate only if it beats the champion by a
- * real margin. Fewer, honest promotions beat a new "champion" every generation.
+ * Evolve a strategy against a fixed field (MAP-Elites). The run keeps an archive of elites, one per
+ * niche (weapon family x preferred range x aggression). Each generation breeds `population` children
+ * from the whole archive (mutation and crossover), plays them with the elites and the champion on
+ * the SAME seeds against the same field (paired comparison), and lets a child take a niche when it
+ * beats that niche's elite. A title challenger must beat the champion on the shared seeds and then
+ * again on 2 x `matchesPerCandidate` fresh seeds. Fewer, honest promotions beat a new "champion"
+ * every generation.
  */
 export type EvolveRequest = {
   parent: Strategy;
@@ -183,9 +214,9 @@ export type EvolveRequest = {
   field: Strategy[];
   mapIds: string[];
   generations: number;
-  /** Mutated candidates per generation. */
+  /** Children bred per generation. */
   population: number;
-  /** Matches per candidate per generation (each on a seed shared with the champion). */
+  /** Shared seeds per generation (every child, elite and the champion play each one). */
   matchesPerCandidate: number;
   fighters: number;
   seed: number;
@@ -202,8 +233,9 @@ export type EvolveGeneration = {
   generation: number;
   /** The champion's results on this generation's seeds. */
   champion: StrategyAggregate;
+  /** Every child played this generation. */
   candidates: EvolveCandidate[];
-  /** The candidate that replaced the champion, or null when none beat it. */
+  /** The strategy that took the title (a child or an older elite), or null when none beat the champion. */
   promoted: EvolveCandidate | null;
   /** e.g. "New contender: Lurking Daggers v3 beats v2 on 7 of 10 shared seeds." */
   summary: string;

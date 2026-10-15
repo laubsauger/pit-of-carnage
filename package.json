@@ -7,8 +7,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p scripts",
+    "test": "vitest run",
+    "lint:strategy": "tsx scripts/lint-strategy.ts",
+    "balance": "tsx scripts/balance.ts"
   },
   "dependencies": {
     "fflate": "0.8.3",
@@ -18,10 +20,12 @@
     "three": "0.186.1"
   },
   "devDependencies": {
+    "@types/node": "24.19.1",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
     "@types/three": "0.186.0",
     "@vitejs/plugin-react": "6.1.2",
+    "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.4",
     "vitest": "5.0.4"

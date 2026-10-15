@@ -1,6 +1,8 @@
 // Owned by: ui
 // Watch-screen keyboard map as a pure function, so the bindings are testable without a DOM.
 import { THINK_EVERY_TICKS, TICK_HZ } from '../core';
+import { viewKeyForShortcut } from './view';
+import type { ViewKey } from './view';
 
 /** Playback presets bound to keys 1-5 and shown in the clock. */
 export const SPEED_PRESETS: readonly number[] = [0.25, 0.5, 1, 2, 4];
@@ -15,7 +17,13 @@ export type KeyAction =
   | { type: 'pause' }
   | { type: 'step'; ticks: number }
   | { type: 'speed'; speed: number }
-  | { type: 'deselect' };
+  | { type: 'deselect' }
+  /** End: back to the live edge after replaying. */
+  | { type: 'live' }
+  /** C: give the camera back to the director after wheel zoom or drag pan. */
+  | { type: 'camera' }
+  /** A View setting's shortcut (see VIEW_GROUPS). */
+  | { type: 'view'; key: ViewKey };
 
 export type KeyInput = {
   key: string;
@@ -48,9 +56,16 @@ export function keyToAction(e: KeyInput): KeyAction | null {
       return { type: 'step', ticks: -(e.shiftKey ? STEP_TICKS_LARGE : STEP_TICKS) };
     case 'Escape':
       return { type: 'deselect' };
+    case 'End':
+      return { type: 'live' };
+    case 'c':
+    case 'C':
+      return { type: 'camera' };
   }
   const digit = e.key.length === 1 ? e.key.charCodeAt(0) - 48 : -1;
   if (digit >= 1 && digit <= SPEED_PRESETS.length) return { type: 'speed', speed: SPEED_PRESETS[digit - 1] };
+  const view = viewKeyForShortcut(e.key);
+  if (view) return { type: 'view', key: view };
   return null;
 }
 

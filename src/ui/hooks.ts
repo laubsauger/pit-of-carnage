@@ -1,7 +1,7 @@
 // Owned by: ui
 // Subscriptions to the controller (about 10 Hz, never per frame) and small persistence helpers.
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import type { GameController, UiSnapshot } from '../core';
+import type { GameController, SavedStrategy, UiSnapshot } from '../core';
 
 /** The controller snapshot. Re-renders only when the controller notifies (about 10 Hz). */
 export function useSnapshot(controller: GameController): UiSnapshot {
@@ -23,6 +23,45 @@ export function usePolled<T>(controller: GameController, read: () => T, deps: re
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controller, ...deps]);
   return value;
+}
+
+/**
+ * Saved strategies. The store has no change events, so the UI calls `refresh` after it saves or
+ * removes one (it is the only writer).
+ */
+export function useSavedStrategies(controller: GameController): [SavedStrategy[], () => void] {
+  const [list, setList] = useState<SavedStrategy[]>(() => [...controller.strategies.list()]);
+  const refresh = useCallback(() => setList([...controller.strategies.list()]), [controller]);
+  return [list, refresh];
+}
+
+type GpuLike = { requestAdapter(): Promise<unknown> };
+export type WebGpuStatus = 'checking' | 'ok' | 'missing';
+
+function navigatorGpu(): GpuLike | null {
+  if (typeof navigator === 'undefined') return null;
+  return (navigator as Navigator & { gpu?: GpuLike }).gpu ?? null;
+}
+
+/**
+ * The arena is WebGPU only. `navigator.gpu` alone is not enough: some browsers expose it and then
+ * hand out no adapter (blocklisted GPU, disabled flag), so this asks for an adapter once.
+ */
+export function useWebGpu(): WebGpuStatus {
+  const [status, setStatus] = useState<WebGpuStatus>(() => (navigatorGpu() ? 'checking' : 'missing'));
+  useEffect(() => {
+    const gpu = navigatorGpu();
+    if (!gpu) return;
+    let live = true;
+    gpu.requestAdapter().then(
+      (adapter) => live && setStatus(adapter ? 'ok' : 'missing'),
+      () => live && setStatus('missing'),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return status;
 }
 
 export function readStored<T>(key: string, fallback: T, sanitize: (v: unknown, fallback: T) => T = (v) => v as T): T {

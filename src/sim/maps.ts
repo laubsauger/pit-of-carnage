@@ -17,6 +17,17 @@ export const OUTER_WALL = 24;
 const BRAZIER = '#ffc27a';
 const TORCH = '#ff9d4d';
 const COLD = '#9fb7ff';
+const FIRE = '#ff7a2e';
+
+/** Fire pits are light sources: each one gets a matching light so the renderer and the sim agree. */
+const FIRE_LIGHT_RADIUS = 175;
+const FIRE_LIGHT_INTENSITY = 0.55;
+
+function fireLights(hazards: HazardDef[]): LightDef[] {
+  return hazards
+    .filter((h) => h.kind === 'fire')
+    .map((h) => ({ id: `${h.id}_light`, pos: { ...h.pos }, radius: FIRE_LIGHT_RADIUS, intensity: FIRE_LIGHT_INTENSITY, color: FIRE, flicker: 0.45, castsShadow: true }));
+}
 
 function outerWalls(w: number, h: number): Rect[] {
   const t = OUTER_WALL;
@@ -123,9 +134,12 @@ function mirrorPath(w: number, h: number) {
 
 /**
  * Lit centre with the shrine on open sand, a ring of eight pillars around it, open lanes along the
- * top and bottom edges (ranged), gate halls with narrow doorways on the left and right (melee), and
+ * top and bottom edges (ranged), gate halls behind a gated wall on the left and right (melee), and
  * dark corner alcoves with a torch at each mouth (stealth). Kegs sit just inside the pillar ring on
- * the hall side, acid amphoras at the top and bottom gaps of the ring.
+ * the hall side, acid amphoras at the top and bottom gaps of the ring. Power-ups sit where fights
+ * happen, so grabbing one is a risk: each gate hall keeps its berserk draught on a spike trap (grab
+ * it on the off-beat or pay for it), and the haste charms stand in the light in the middle of the
+ * open top and bottom lanes, in the archers' line of fire.
  */
 function buildPit(): MapDef {
   const W = 1360;
@@ -133,14 +147,17 @@ function buildPit(): MapDef {
   const cx = W / 2;
   const cy = H / 2;
 
+  // Every wall is a straight piece; pieces never meet in an L, so fighters steering straight at a
+  // target slide off walls instead of wedging into inside corners.
   const quadrantWalls: Rect[] = [
-    // Gate hall: east wall with an 80 px doorway at mid-height (the lower half is the mirror).
-    { x: 192, y: 262, w: 22, h: 128 },
-    // Gate hall north wall; the gap between it and the outer wall is the hall's back door.
-    { x: 106, y: 262, w: 108, h: 22 },
-    // Corner alcove: partition from the top lane and a lip that narrows the mouth.
-    { x: 236, y: 24, w: 22, h: 146 },
-    { x: 136, y: 150, w: 122, h: 20 },
+    // Gate hall: the gate wall's upper half (the mirror is the lower half), a 100 px gate between them.
+    { x: 192, y: 240, w: 22, h: 140 },
+    // Hall roof off the outer wall; the 72 px gap to the gate wall is the hall's back door.
+    { x: 24, y: 240, w: 96, h: 22 },
+    // Corner alcove: a partition off the top wall and a lip off the side wall; the mouth between
+    // them opens toward the arena.
+    { x: 236, y: 24, w: 22, h: 116 },
+    { x: 24, y: 140, w: 106, h: 20 },
   ];
 
   const pillars: Rect[] = [];
@@ -164,11 +181,11 @@ function buildPit(): MapDef {
       light('centre', cx, cy, 440, 0.85, BRAZIER, 0.06),
       ...mirrorItems(W, H, [
         light('lane', 470, 46, 300, 0.5, BRAZIER, 0.15),
-        light('alcove', 64, 192, 165, 0.6, TORCH, 0.35),
+        light('alcove', 186, 186, 150, 0.6, TORCH, 0.35),
       ]),
       ...mirrorItems(W, H, [light('hall', 38, cy, 230, 0.55, TORCH, 0.3)]),
     ],
-    hazards: [],
+    hazards: mirrorItems(W, H, [{ id: 'spike', kind: 'spike' as const, pos: { x: 96, y: cy }, radius: 42 }]),
     props: [
       ...mirrorItems(W, H, [prop('keg', 'keg', 505, cy)]),
       ...mirrorItems(W, H, [prop('amphora', 'amphora', cx, 236)]),
@@ -177,7 +194,7 @@ function buildPit(): MapDef {
     shrines: [{ id: 'shrine', pos: { x: cx, y: cy } }],
     pickups: [
       ...mirrorItems(W, H, [pickup('berserk', 'berserk', 96, cy)]),
-      ...mirrorItems(W, H, [pickup('haste', 'haste', 80, 72)]),
+      ...mirrorItems(W, H, [pickup('haste', 'haste', cx, 120)]),
     ],
     spawns: sortByAngle(W, H, ellipseSpawns(W, H, 420, 300)),
   };
@@ -214,6 +231,7 @@ function buildPillarForest(): MapDef {
   const lights: LightDef[] = [
     light('centre', cx, cy, 300, 0.72, BRAZIER, 0.08),
     ...mirrorItems(W, H, [light('torch', 330, 150, 230, 0.55, TORCH, 0.3)]),
+    ...fireLights(hazards),
   ];
 
   // Features first, then the grid minus every pillar that would crowd one of them.
@@ -260,9 +278,11 @@ function buildPillarForest(): MapDef {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Nine dark rooms in a 3x3 grid, joined by short corridors through thick walls. Each room has one
- * pool of torchlight; the rest is shadow, so hearing matters. Spike traps sit in the corridors to
- * the shrine room's left and right.
+ * Nine dark rooms in a 3x3 grid. The room walls are broken crypt walls: a cross-shaped block at
+ * each inner junction and short stubs off the outer walls, leaving 95-150 px gaps between rooms and
+ * a wide mouth into the shrine hall from above and below. Each room has one pool of torchlight; the
+ * rest is shadow, so hearing matters. The doors from the side rooms into the shrine hall sit on
+ * spike traps: a shortcut with a rhythm.
  */
 function buildCatacombs(): MapDef {
   const W = 1360;
@@ -271,26 +291,17 @@ function buildCatacombs(): MapDef {
   const cy = H / 2;
   const t = OUTER_WALL;
   const band = 50;
-  const door = 90;
-
-  // Wall bands at x 430..480 (mirrored to 880..930) and y 270..320 (mirrored to 540..590).
+  // Room grid lines: x 430..480 (mirrored 880..930) and y 270..320 (mirrored 540..590).
   const vx = 430;
   const hy = 270;
-  const rowCentres = [(t + hy) / 2, cy];
-  const colCentres = [(t + vx) / 2, cx];
-  const walls: Rect[] = [];
-  // Vertical band in the top-left half: pieces between the doors at each row centre (top half only).
-  let y0 = t;
-  for (const c of rowCentres) {
-    walls.push({ x: vx, y: y0, w: band, h: c - door / 2 - y0 });
-    y0 = c + door / 2;
-  }
-  // Horizontal band in the top-left half.
-  let x0 = t;
-  for (const c of colCentres) {
-    walls.push({ x: x0, y: hy, w: c - door / 2 - x0, h: band });
-    x0 = c + door / 2;
-  }
+  const walls: Rect[] = [
+    // Cross block at the junction of the grid lines.
+    { x: vx, y: 215, w: band, h: 160 },
+    { x: 375, y: hy, w: 160, h: band },
+    // Stubs off the outer walls along the grid lines.
+    { x: vx, y: t, w: band, h: 120 - t },
+    { x: t, y: hy, w: 225 - t, h: band },
+  ];
 
   const pillars = mirrorRects(W, H, [{ x: (t + vx) / 2 - 22, y: (t + hy) / 2 - 22, w: 44, h: 44 }]);
 
@@ -314,8 +325,8 @@ function buildCatacombs(): MapDef {
     hazards: mirrorItems(W, H, [{ id: 'spike', kind: 'spike' as const, pos: { x: vx + band / 2, y: cy }, radius: 42 }]),
     props: [
       ...mirrorItems(W, H, [prop('amphora', 'amphora', 560, 160)]),
-      ...mirrorItems(W, H, [prop('keg', 'keg', 360, 365)]),
-      ...mirrorItems(W, H, [prop('crate', 'crate', 380, 70)]),
+      ...mirrorItems(W, H, [prop('keg', 'keg', 360, 380)]),
+      ...mirrorItems(W, H, [prop('crate', 'crate', 370, 70)]),
     ],
     shrines: [{ id: 'shrine', pos: { x: cx, y: cy } }],
     pickups: [
@@ -331,9 +342,10 @@ function buildCatacombs(): MapDef {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * A walled central arena with four doorways, wrapped in a ring of narrow corridors. Saws patrol
- * every corridor and sweep across the arena, right over the shrine. Fire pits burn in the outer
- * corners. Getting anywhere means timing a saw.
+ * A walled central arena (the grinder) with openings at its four corners and gates in the middle
+ * of its long sides. Saws patrol outside every wall, crossing every opening, and one sweeps across
+ * the arena right over the shrine. Short barricades break up the outer ring; fire pits burn in the
+ * corners. Getting in or out means timing a saw. Wall pieces never meet, so nobody gets wedged.
  */
 function buildMeatGrinder(): MapDef {
   const W = 1360;
@@ -342,12 +354,12 @@ function buildMeatGrinder(): MapDef {
   const cy = H / 2;
 
   const quadrantWalls: Rect[] = [
-    // Central arena walls (doorways 90 px at the middle of each side).
-    { x: 418, y: 258, w: 217, h: 24 },
-    { x: 418, y: 258, w: 24, h: 127 },
-    // Corridor outer walls; their ends leave wide openings at the four corners.
-    { x: 420, y: 140, w: 520, h: 24 },
-    { x: 306, y: 282, w: 24, h: 296 },
+    // Arena top wall, left of the top gate (arena spans x 420..940, y 270..590).
+    { x: 500, y: 270, w: 130, h: 24 },
+    // Arena side wall (spans the centre line, so it mirrors onto itself vertically).
+    { x: 420, y: 350, w: 24, h: 160 },
+    // Outer-ring barricade: cover for the corner runs.
+    { x: 250, y: 172, w: 140, h: 22 },
   ];
 
   const sawPath = (pts: [number, number][]) => pts.map(([x, y]) => ({ x, y }));
@@ -356,12 +368,12 @@ function buildMeatGrinder(): MapDef {
       W,
       H,
       [
-        { id: 'saw_h', kind: 'saw' as const, pos: { x: cx, y: 211 }, radius: 26, path: sawPath([[cx, 211], [900, 211], [cx, 211], [460, 211]]) },
-        { id: 'saw_v', kind: 'saw' as const, pos: { x: 374, y: cy }, radius: 26, path: sawPath([[374, cy], [374, 545], [374, cy], [374, 315]]) },
+        { id: 'saw_top', kind: 'saw' as const, pos: { x: cx, y: 236 }, radius: 26, path: sawPath([[cx, 236], [960, 236], [cx, 236], [400, 236]]) },
+        { id: 'saw_side', kind: 'saw' as const, pos: { x: 386, y: cy }, radius: 26, path: sawPath([[386, cy], [386, 560], [386, cy], [386, 300]]) },
       ],
       mirrorPath(W, H),
     ),
-    { id: 'saw_centre', kind: 'saw', pos: { x: cx, y: cy }, radius: 26, path: sawPath([[cx, cy], [860, cy], [cx, cy], [500, cy]]) },
+    { id: 'saw_centre', kind: 'saw', pos: { x: cx, y: cy }, radius: 26, path: sawPath([[cx, cy], [840, cy], [cx, cy], [520, cy]]) },
     ...mirrorItems(W, H, [{ id: 'fire', kind: 'fire' as const, pos: { x: 84, y: 84 }, radius: 40 }]),
   ];
 
@@ -376,13 +388,14 @@ function buildMeatGrinder(): MapDef {
     pillars: [],
     lights: [
       light('arena', cx, cy, 380, 0.8, BRAZIER, 0.06),
-      ...mirrorItems(W, H, [light('corridor_h', cx, 211, 230, 0.42, TORCH, 0.2)]),
-      ...mirrorItems(W, H, [light('corridor_v', 374, cy, 210, 0.42, TORCH, 0.2)]),
+      ...mirrorItems(W, H, [light('lane_top', cx, 200, 260, 0.45, TORCH, 0.2)]),
+      ...mirrorItems(W, H, [light('lane_side', 340, cy, 230, 0.45, TORCH, 0.2)]),
+      ...fireLights(hazards),
     ],
     hazards,
     props: [
       ...mirrorItems(W, H, [prop('keg', 'keg', 300, 92)]),
-      ...mirrorItems(W, H, [prop('amphora', 'amphora', cx, 324)]),
+      ...mirrorItems(W, H, [prop('amphora', 'amphora', cx, 352)]),
     ],
     shrines: [{ id: 'shrine', pos: { x: cx, y: cy } }],
     pickups: [

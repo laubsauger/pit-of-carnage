@@ -1,4 +1,5 @@
 /** Shared core: import from `src/core` (or `../core`) rather than individual files. */
+export * from './audio-api';
 export * from './constants';
 export * from './controller';
 export * from './math';

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TIME_LIMIT_TICKS, FIGHTER_COLORS, strategyKey } from '../core';
-import type { MatchReport, Strategy } from '../core';
+import type { MatchReport, SavedStrategy, Strategy } from '../core';
 import {
   RANDOM_SLOT,
   buildMatchConfig,
+  buildPool,
   configFromReport,
   dedupeNames,
   defaultSetup,
@@ -114,7 +115,8 @@ describe('dedupeNames', () => {
 
 describe('configFromReport', () => {
   const report: MatchReport = {
-    seed: 99, mapId: 'pit', format: 'ffa', ticks: 3000,
+    seed: 99, mapId: 'pit', format: 'ffa', timeLimitTicks: 3600, suddenDeath: false, friendlyFire: false, ticks: 3000,
+    ending: 'time', suddenDeathStart: null,
     roster: [
       { fighterId: 'f0', entrantId: 'e7', name: 'Doug', strategyName: 'Doug', strategyVersion: 1, strategyKey: 'Doug@v1', weapon: 'GREATSWORD', skill: 'DASH', squad: 0, color: '#111' },
       { fighterId: 'f1', entrantId: 'e2', name: 'Mine', strategyName: 'Mine', strategyVersion: 2, strategyKey: 'Mine@v2', weapon: 'GREATSWORD', skill: 'DASH', squad: 1, color: '#222' },
@@ -129,6 +131,11 @@ describe('configFromReport', () => {
       ['e7', 'Doug', '#111', 0, 'Doug@v1'],
       ['e2', 'Mine', '#222', 1, 'Mine@v2'],
     ]);
+  });
+
+  it('replays under the rules the match was played with, since a different time limit is a different fight', () => {
+    const cfg = configFromReport(report, [strat('Mine', 2), house[2]]);
+    expect([cfg?.timeLimitTicks, cfg?.suddenDeath, cfg?.friendlyFire]).toEqual([3600, false, false]);
   });
 
   it('refuses to guess when a strategy version is missing, rather than replaying a different fight', () => {
@@ -146,5 +153,35 @@ describe('sanitizeSetup', () => {
     expect(s.seed).toBe(4294967295);
     expect(s.slots[0]).toBe('x');
     expect(s.slots).toHaveLength(16);
+  });
+
+  it('drops a map this build does not have, so a stale setup cannot make every Fight fail', () => {
+    const fallback = defaultSetup(5);
+    expect(sanitizeSetup({ ...fallback, mapId: 'old_quarry' }, fallback).mapId).toBe(fallback.mapId);
+    expect(sanitizeSetup({ ...fallback, mapId: 'toString' }, fallback).mapId).toBe(fallback.mapId);
+    expect(sanitizeSetup({ ...fallback, mapId: 'catacombs' }, fallback).mapId).toBe('catacombs');
+  });
+});
+
+describe('buildPool', () => {
+  const saved = (name: string, version: number): SavedStrategy => ({
+    id: `${name}@v${version}`, name, version, savedAt: 0, strategy: strat(name, version), code: '',
+  });
+
+  it('lists house stacks first, then saved strategies newest version first, so the newest is the obvious pick', () => {
+    const p = buildPool([house[0], house[1]], [saved('Zed', 1), saved('Mine', 1), saved('Mine', 3), saved('Mine', 2)]);
+    expect(p.map((e) => e.label)).toEqual(['Gary', 'Brenda', 'Mine v3', 'Mine v2', 'Mine v1', 'Zed v1']);
+    expect(p.map((e) => e.source)).toEqual(['house', 'house', 'saved', 'saved', 'saved', 'saved']);
+  });
+
+  it('names saved strategies by the version the store gave them, even if the stored JSON says otherwise', () => {
+    const entry = { ...saved('Mine', 3), strategy: strat('Mine', 1) };
+    expect(strategyKey(buildPool([], [entry])[0].strategy)).toBe('Mine@v3');
+  });
+
+  it('keeps every saved version addressable, so a slot can pin an old version for a rematch', () => {
+    const p = buildPool([], [saved('Mine', 1), saved('Mine', 2)]);
+    const cfg = buildMatchConfig({ ...defaultSetup(1), fighters: 2, slots: [savedRef('Mine@v1'), savedRef('Mine@v2')] }, p);
+    expect(cfg.entrants.map((e) => strategyKey(e.strategy))).toEqual(['Mine@v1', 'Mine@v2']);
   });
 });

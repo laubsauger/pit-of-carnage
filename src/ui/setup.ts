@@ -11,8 +11,9 @@ import {
   clamp,
   strategyKey,
 } from '../core';
-import type { Entrant, MatchConfig, MatchFormat, MatchReport, Strategy } from '../core';
-import { roman } from './format';
+import type { Entrant, MatchConfig, MatchFormat, MatchReport, SavedStrategy, Strategy } from '../core';
+import { MAPS } from '../sim';
+import { roman, strategyLabel } from './format';
 
 /**
  * Slot choice, kept as a string so it can live in a <select> and in localStorage:
@@ -44,6 +45,28 @@ export function houseRef(s: Strategy): SlotChoice {
 export function savedRef(id: string): SlotChoice {
   return `saved:${id}`;
 }
+
+/**
+ * Everything that can fill a slot: house stacks in their given order, then saved strategies
+ * newest version first within each name, names alphabetical. Saved versions are all listed, so a
+ * slot can pin an older version for a rematch.
+ */
+export function buildPool(house: readonly Strategy[], saved: readonly SavedStrategy[]): PoolEntry[] {
+  const mine = [...saved].sort((a, b) => a.name.localeCompare(b.name) || b.version - a.version);
+  return [
+    ...house.map((s) => ({ ref: houseRef(s), label: s.name, source: 'house' as const, strategy: s })),
+    // The entry's version is the source of truth; stamp it on so reports key on the saved name@vN.
+    ...mine.map((s) => ({ ref: savedRef(s.id), label: strategyLabel(s.name, s.version), source: 'saved' as const, strategy: { ...s.strategy, version: s.version } })),
+  ];
+}
+
+/** One line per map for the setup screen. Maps without a line just show their name. */
+export const MAP_BLURBS: Readonly<Record<string, string>> = {
+  pit: 'Balanced. Lit centre, pillar ring, dark alcoves.',
+  pillar_forest: 'Dense pillars, short sightlines. Ambush country.',
+  catacombs: 'Dark rooms and torch pools. Ears matter.',
+  meat_grinder: 'Narrow halls and moving saws. Melee heaven.',
+};
 
 export function defaultSetup(seed: number): MatchSetup {
   return {
@@ -151,9 +174,9 @@ export function buildMatchConfig(setup: MatchSetup, pool: readonly PoolEntry[]):
 
 /**
  * Rebuild the config of a gym match so it can be watched. Entrant ids, order, squads, names and
- * colours come from the report roster unchanged: the sim forks randomness per entrant, so any
- * reordering would replay a different fight. Returns null when a roster strategy is unknown.
- * Assumes the gym used the default time limit, sudden death and friendly fire (see integration notes).
+ * colours come from the report roster unchanged, and the rules (time limit, sudden death, friendly
+ * fire) from the report: the sim forks randomness per entrant, so any difference would replay a
+ * different fight. Returns null when a roster strategy is unknown.
  */
 export function configFromReport(report: MatchReport, strategies: readonly Strategy[]): MatchConfig | null {
   const byKey = new Map(strategies.map((s) => [strategyKey(s), s]));
@@ -168,9 +191,9 @@ export function configFromReport(report: MatchReport, strategies: readonly Strat
     mapId: report.mapId,
     format: report.format,
     entrants,
-    friendlyFire: true,
-    timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS,
-    suddenDeath: true,
+    friendlyFire: report.friendlyFire,
+    timeLimitTicks: report.timeLimitTicks,
+    suddenDeath: report.suddenDeath,
   };
 }
 
@@ -188,7 +211,8 @@ export function sanitizeSetup(value: unknown, fallback: MatchSetup): MatchSetup 
   const slots = Array.isArray(v.slots) ? v.slots.filter((s): s is string => typeof s === 'string') : fallback.slots;
   while (slots.length < MAX_FIGHTERS) slots.push(RANDOM_SLOT);
   return {
-    mapId: typeof v.mapId === 'string' ? v.mapId : fallback.mapId,
+    // A map from an older build (renamed or removed) would make every Fight fail; fall back instead.
+    mapId: typeof v.mapId === 'string' && Object.hasOwn(MAPS, v.mapId) ? v.mapId : fallback.mapId,
     format,
     fighters: clamp(Math.round(num(v.fighters, fallback.fighters)), MIN_FIGHTERS, MAX_FIGHTERS),
     squadSize: clamp(Math.round(num(v.squadSize, fallback.squadSize)), 2, MAX_FIGHTERS / 2),

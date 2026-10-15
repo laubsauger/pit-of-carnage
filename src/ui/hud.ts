@@ -1,7 +1,7 @@
 // Owned by: ui
 // Pure HUD logic: scoreboard order, fighter cycling, feed styling, timeline maths, inspector bars.
 import { STEER_COS, STEER_SIN, TICK_HZ, clamp } from '../core';
-import type { FeedItem, MatchFormat, TimelineMark, UiFighter, UiSnapshot } from '../core';
+import type { FeedItem, MatchFormat, TimelineMark, TimelineMarkKind, UiFighter, UiSnapshot } from '../core';
 
 // ---------------------------------------------------------------------------------------------
 // Scoreboard
@@ -131,25 +131,140 @@ export function tickAtRatio(ratio: number, domain: number, maxTick: number): num
   return clamp(Math.round(clamp(ratio, 0, 1) * domain), 0, Math.max(0, maxTick));
 }
 
-/** Closest mark within `tolerance` ticks of `tick`, preferring kills over smaller marks. */
-export function markNear(marks: readonly TimelineMark[], tick: number, tolerance: number): TimelineMark | null {
-  let best: TimelineMark | null = null;
-  let bestScore = Infinity;
-  for (const m of marks) {
-    const d = Math.abs(m.tick - tick);
-    if (d > tolerance) continue;
-    const score = d + (m.kind === 'kill' ? 0 : tolerance);
-    if (score < bestScore) {
-      best = m;
-      bestScore = score;
+/** Where clicking a mark seeks to. */
+export function seekTickForMark(mark: TimelineMark): number {
+  return Math.max(0, mark.tick - (mark.kind === 'kill' ? KILL_LEAD_IN_TICKS : TICK_HZ / 2));
+}
+
+/** Every mark kind, in legend order. */
+export const MARK_KINDS: readonly TimelineMarkKind[] = ['kill', 'dismember', 'big_hit', 'pickup', 'sudden_death'];
+
+/** Which mark of a dense moment is drawn on top and named first: deaths matter most. */
+const MARK_RANK: Readonly<Record<TimelineMarkKind, number>> = { kill: 0, sudden_death: 1, dismember: 2, pickup: 3, big_hit: 4 };
+
+/**
+ * Marks to show. With a fighter picked, only the moments they caused or suffered, plus sudden
+ * death, which happens to everyone and explains the deaths around it.
+ */
+export function filterMarks(marks: readonly TimelineMark[], fighterId: string | null, kinds: readonly TimelineMarkKind[]): TimelineMark[] {
+  return marks.filter(
+    (m) => kinds.includes(m.kind) && (fighterId === null || m.kind === 'sudden_death' || m.actorId === fighterId || m.targetId === fighterId),
+  );
+}
+
+/** Marks in one fighter's lane: what they did and what was done to them. */
+export function laneMarks(marks: readonly TimelineMark[], fighterId: string): TimelineMark[] {
+  return marks.filter((m) => m.actorId === fighterId || m.targetId === fighterId);
+}
+
+/** Tick a fighter died, from the kill marks, or null while they live (their lane ends there). */
+export function deathTick(marks: readonly TimelineMark[], fighterId: string): number | null {
+  return marks.find((m) => m.kind === 'kill' && m.targetId === fighterId)?.tick ?? null;
+}
+
+/** Closest two marks may be drawn, in px, before they share a cluster. */
+export const MARK_GAP_PX = 9;
+
+/** Marks drawn as one stack. `x` (px) and `tick` are the earliest member's; `marks` are by importance. */
+export type MarkCluster = { x: number; tick: number; marks: TimelineMark[] };
+
+/**
+ * Group marks so dense moments never overlap: a cluster starts at its earliest mark and takes every
+ * mark within `gapPx` of it, so clusters are always at least `gapPx` apart and none grows into a
+ * smear across a busy minute.
+ */
+export function clusterMarks(marks: readonly TimelineMark[], domain: number, width: number, gapPx = MARK_GAP_PX): MarkCluster[] {
+  const scale = width / Math.max(1, domain);
+  const sorted = [...marks].sort((a, b) => a.tick - b.tick);
+  const out: MarkCluster[] = [];
+  let cur: MarkCluster | null = null;
+  for (const m of sorted) {
+    const x = m.tick * scale;
+    if (cur && x - cur.x < gapPx) cur.marks.push(m);
+    else {
+      cur = { x, tick: m.tick, marks: [m] };
+      out.push(cur);
+    }
+  }
+  for (const c of out) c.marks.sort((a, b) => MARK_RANK[a.kind] - MARK_RANK[b.kind] || a.tick - b.tick);
+  return out;
+}
+
+/** The cluster nearest `x` (px) within `hitPx`, or null. */
+export function clusterAt(clusters: readonly MarkCluster[], x: number, hitPx: number): MarkCluster | null {
+  let best: MarkCluster | null = null;
+  let bestD = hitPx;
+  for (const c of clusters) {
+    const d = Math.abs(c.x - x);
+    if (d <= bestD) {
+      best = c;
+      bestD = d;
     }
   }
   return best;
 }
 
-/** Where clicking a mark seeks to. */
-export function seekTickForMark(mark: TimelineMark): number {
-  return Math.max(0, mark.tick - (mark.kind === 'kill' ? KILL_LEAD_IN_TICKS : TICK_HZ / 2));
+/** Where clicking a cluster seeks: the earliest lead-in among its marks, so the whole moment plays. */
+export function clusterSeekTick(c: MarkCluster): number {
+  return Math.min(...c.marks.map(seekTickForMark));
+}
+
+/** At the newest simulated tick (or the end of a finished match), as opposed to replaying. */
+export function isLive(s: Pick<UiSnapshot, 'tick' | 'maxTick'>): boolean {
+  return s.tick >= s.maxTick;
+}
+
+/**
+ * The timeline mark a feed line is about: same tick, same kind, same fighters. The session writes
+ * both from one event, so this links a kill line to its kill mark rather than to a big hit landed
+ * on the same tick. Null for lines with no mark (the opening line, the winner line).
+ */
+export function markForFeed(item: FeedItem, marks: readonly TimelineMark[]): TimelineMark | null {
+  for (const m of marks) {
+    if (m.tick !== item.tick || m.kind !== item.kind) continue;
+    const ids = [m.actorId, m.targetId].filter((id): id is string => id !== null);
+    if (ids.length === 0 || ids.some((id) => item.ids.includes(id))) return m;
+  }
+  return null;
+}
+
+// Scrubbing. A press records the track geometry and the scale (`domain`) the player is looking at;
+// the release is measured against that same record. While the match runs past the time limit the
+// domain grows every notification, so measuring a release against the newer scale would land the
+// seek somewhere other than where the player pressed.
+
+/** Pointer travel (px) that turns a click into a drag. */
+export const SCRUB_SLOP_PX = 3;
+
+export type Scrub = {
+  left: number;
+  width: number;
+  domain: number;
+  maxTick: number;
+  startX: number;
+  x: number;
+  moved: boolean;
+  /** Cluster under the press, if any. A click on it seeks to its lead-in instead of the raw tick. */
+  cluster: MarkCluster | null;
+};
+
+export function scrubStart(clientX: number, track: { left: number; width: number }, domain: number, maxTick: number, cluster: MarkCluster | null): Scrub {
+  return { left: track.left, width: Math.max(1, track.width), domain, maxTick, startX: clientX, x: clientX, moved: false, cluster };
+}
+
+export function scrubMove(s: Scrub, clientX: number): Scrub {
+  return { ...s, x: clientX, moved: s.moved || Math.abs(clientX - s.startX) > SCRUB_SLOP_PX };
+}
+
+/** Tick under the pointer right now (the ghost playhead while dragging). */
+export function scrubTick(s: Scrub): number {
+  return tickAtRatio((s.x - s.left) / s.width, s.domain, s.maxTick);
+}
+
+/** Tick to seek to on release: a clicked mark's lead-in, otherwise the tick under the pointer. */
+export function scrubTarget(s: Scrub): number {
+  if (!s.moved && s.cluster) return Math.min(clusterSeekTick(s.cluster), s.maxTick);
+  return scrubTick(s);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -186,4 +301,35 @@ export function ringPoint(i: number, radius: number): { x: number; y: number } {
 /** HP fraction 0..1, safe for zero max HP. */
 export function hpFraction(hp: number, maxHp: number): number {
   return maxHp > 0 ? clamp(hp / maxHp, 0, 1) : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hover card and camera follow
+// ---------------------------------------------------------------------------------------------
+
+type Size = { w: number; h: number };
+type Point = { x: number; y: number };
+
+/**
+ * Top-left corner for the hover card. It sits below-right of the pointer and flips to the other
+ * side near an edge, so it never covers the fighter being pointed at and never leaves the stage.
+ */
+export function hoverCardPosition(pointer: Point, card: Size, bounds: Size, gap = 18, margin = 8): Point {
+  let x = pointer.x + gap;
+  if (x + card.w > bounds.w - margin) x = pointer.x - gap - card.w;
+  let y = pointer.y + gap;
+  if (y + card.h > bounds.h - margin) y = pointer.y - gap - card.h;
+  return {
+    x: clamp(x, margin, Math.max(margin, bounds.w - card.w - margin)),
+    y: clamp(y, margin, Math.max(margin, bounds.h - card.h - margin)),
+  };
+}
+
+/**
+ * What F does. It toggles the camera on the selected fighter; with nobody selected it releases
+ * the camera, because a follow you cannot see the subject of is just a confusing camera.
+ */
+export function nextFollow(selectedId: string | null, followId: string | null): string | null {
+  if (selectedId === null) return null;
+  return followId === selectedId ? null : selectedId;
 }

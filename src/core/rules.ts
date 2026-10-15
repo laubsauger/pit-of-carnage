@@ -11,7 +11,7 @@
 
 import { ATTRIBUTE_BUDGET, ATTRIBUTE_MAX, ATTRIBUTE_MIN, DEFAULT_TIME_LIMIT_TICKS, SPEED_SCALE, TICK_HZ } from './constants';
 import { clamp } from './math';
-import type { Attributes, BarkKind, HazardKind, PickupKind, PropKind, SkillId, Stance, WeaponFamily, WeaponId } from './types';
+import type { Attributes, BarkKind, HazardKind, MapDef, PickupKind, PropKind, Rect, SkillId, Stance, SuddenDeathState, Vec2, WeaponFamily, WeaponId } from './types';
 
 /** Doc table with exactly one entry per key of T, enforced by the compiler. */
 export type DocsFor<T> = { readonly [K in keyof T]: string };
@@ -102,16 +102,22 @@ export type WeaponRule = {
   splash: number;
   /** Fraction of damage dealt to others inside the splash radius. */
   splashMul: number;
-  /** Carries a shield: in `guard` stance, blocks arrows and axes arriving within COMBAT.shieldArc of facing. */
+  /** Carries a shield: in `guard` stance, blocks projectiles arriving within COMBAT.shieldArc of facing. */
   shield: boolean;
   /** Added to vision range (px). */
   visionBonus: number;
   /** Base field of view (radians) before perception. */
   fov: number;
-  /** Move speed multiplier (weapon weight). */
+  /**
+   * Move speed multiplier (weapon weight). Melee weapons are lighter on the feet: the melee family
+   * averages about 10% faster than the ranged family, and no ranged weapon outruns a melee one, so
+   * closing in is possible and kiting has to be earned.
+   */
   moveMul: number;
   /** Turn rate multiplier (weapon weight). */
   turnMul: number;
+  /** Melee: px the attacker lunges forward during each strike (0 for ranged). */
+  lunge: number;
 };
 
 export const WEAPON_IDS: readonly WeaponId[] = ['GREATSWORD', 'WARHAMMER', 'TWIN_DAGGERS', 'THROWING_AXES', 'LONGBOW', 'ARCANE_STAFF'];
@@ -123,7 +129,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 82, damage: 30, cooldown: 42, windup: 14, strike: 11, recovery: 12, knockback: 10,
     arc: 2.35, cleave: true, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: true,
-    visionBonus: 0, fov: 1.95, moveMul: 0.96, turnMul: 0.84,
+    visionBonus: 0, fov: 1.95, moveMul: 1.06, turnMul: 0.84, lunge: 30,
   },
   WARHAMMER: {
     id: 'WARHAMMER', name: 'Warhammer', family: 'melee',
@@ -131,7 +137,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 70, damage: 26, cooldown: 44, windup: 15, strike: 12, recovery: 13, knockback: 16,
     arc: 1.65, cleave: false, backstabMult: 1.45, stunTicks: 34, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: true,
-    visionBonus: -15, fov: 1.8, moveMul: 0.91, turnMul: 0.78,
+    visionBonus: -15, fov: 1.8, moveMul: 1.02, turnMul: 0.78, lunge: 24,
   },
   TWIN_DAGGERS: {
     id: 'TWIN_DAGGERS', name: 'Twin daggers', family: 'melee',
@@ -139,7 +145,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 56, damage: 16, cooldown: 18, windup: 6, strike: 8, recovery: 6, knockback: 3,
     arc: 1.35, cleave: false, backstabMult: 2.35, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 35, fov: 2.25, moveMul: 1.18, turnMul: 1.38,
+    visionBonus: 35, fov: 2.25, moveMul: 1.15, turnMul: 1.38, lunge: 36,
   },
   THROWING_AXES: {
     id: 'THROWING_AXES', name: 'Throwing axes', family: 'ranged',
@@ -147,7 +153,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 265, damage: 21, cooldown: 26, windup: 8, strike: 9, recovery: 7, knockback: 6,
     arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 10.6, ammo: 4, ammoPickup: true, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 45, fov: 2.05, moveMul: 1.06, turnMul: 1.12,
+    visionBonus: 45, fov: 2.05, moveMul: 1.0, turnMul: 1.12, lunge: 0,
   },
   LONGBOW: {
     id: 'LONGBOW', name: 'Longbow', family: 'ranged',
@@ -155,7 +161,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 430, damage: 20, cooldown: 33, windup: 11, strike: 8, recovery: 8, knockback: 4,
     arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 75,
     projectileSpeed: 12.2, ammo: 10, ammoPickup: true, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 130, fov: 1.65, moveMul: 1.07, turnMul: 1.15,
+    visionBonus: 130, fov: 1.65, moveMul: 0.96, turnMul: 1.15, lunge: 0,
   },
   ARCANE_STAFF: {
     id: 'ARCANE_STAFF', name: 'Arcane staff', family: 'ranged',
@@ -163,7 +169,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
     range: 375, damage: 25, cooldown: 43, windup: 12, strike: 10, recovery: 10, knockback: 8,
     arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 9.6, ammo: 4, ammoPickup: false, ammoRegenTicks: 90, splash: 72, splashMul: 0.6, shield: false,
-    visionBonus: 95, fov: 1.9, moveMul: 0.99, turnMul: 1.02,
+    visionBonus: 95, fov: 1.9, moveMul: 0.95, turnMul: 1.02, lunge: 0,
   },
 };
 
@@ -275,6 +281,17 @@ export const COMBAT = {
   leglessMoveMul: 0.55,
   helmetKnockChance: 0.5,
   projectileRangeMul: 1.15,
+  backpedalMoveMul: 0.55,
+  rangedPlantMoveMul: 0.3,
+  releaseFacingTolerance: 0.15,
+  spreadBase: 0.025,
+  spreadPerSpeed: 0.06,
+  spreadPerPx: 0.00012,
+  spreadMax: 0.3,
+  aimLead: 0.75,
+  pointBlankRange: 80,
+  pointBlankMul: 0.5,
+  interruptStaggerTicks: 18,
 } as const;
 
 export const COMBAT_DOCS: DocsFor<typeof COMBAT> = {
@@ -293,7 +310,7 @@ export const COMBAT_DOCS: DocsFor<typeof COMBAT> = {
   parryStunTicks: 'Stun on an attacker whose blow was parried.',
   parryBaseChance: 'Auto-parry chance at 40 perception (scales linearly with perception), rolled once per enemy windup aimed at you while you face the attacker.',
   parryFacingArc: 'To parry you must face the attacker within this angle (radians).',
-  shieldArc: 'Shield users in guard stance block arrows and axes arriving within this full arc (radians) of facing.',
+  shieldArc: 'Shield users in guard stance block projectiles arriving within this full arc (radians) of facing. A blocked staff orb still bursts on the shield; its splash spares the bearer.',
   knockbackScale: 'Knockback impulse multiplier applied to the victim\'s velocity.',
   hasteAttackPerPoint: 'Attack cooldown reduction per haste point.',
   minAttackCooldown: 'Attack cooldown never drops below this many ticks.',
@@ -312,6 +329,17 @@ export const COMBAT_DOCS: DocsFor<typeof COMBAT> = {
   leglessMoveMul: 'Move speed multiplier after losing a leg (the fighter hops).',
   helmetKnockChance: 'Chance that a crit knocks the victim\'s helmet off (cosmetic).',
   projectileRangeMul: 'Projectiles fly up to range x this before dropping to the floor.',
+  backpedalMoveMul: 'Move speed multiplier walking straight backwards (away from where you face); sideways is halfway, forwards is full speed. Kiting costs.',
+  rangedPlantMoveMul: 'Ranged attackers plant to shoot: move speed multiplier during windup and recovery.',
+  releaseFacingTolerance: 'A shot only releases when the shooter faces its target within this angle (radians); until then the windup holds.',
+  spreadBase: 'Aim error of a standing shooter at point-blank range (radians, half-angle).',
+  spreadPerSpeed: 'Extra aim error per px/tick the shooter is moving (radians).',
+  spreadPerPx: 'Extra aim error per px of distance to the target (radians).',
+  spreadMax: 'Aim error never exceeds this (radians, half-angle).',
+  aimLead: 'Shooters lead a moving target by this fraction of its seen velocity (1 = perfect prediction).',
+  pointBlankRange: 'Ranged hits on a target closer than this (px, centre to centre, at release) deal reduced damage.',
+  pointBlankMul: 'Damage multiplier of a point-blank ranged hit.',
+  interruptStaggerTicks: 'A melee hit on a ranged attacker in windup cancels the shot (no ammo spent) and staggers them for this many ticks.',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -334,6 +362,13 @@ export const PERCEPTION = {
   enemiesNearRadius: 200,
   fightingWindowTicks: 90,
   memoryTicks: 360,
+  hearingWallMul: 0.5,
+  hearingErrorBase: 24,
+  hearingErrorPerPx: 0.2,
+  hearingRefreshTicks: 30,
+  searchStareTicks: 45,
+  searchScanArc: 2.4,
+  searchScanTicks: 120,
 } as const;
 
 export const PERCEPTION_DOCS: DocsFor<typeof PERCEPTION> = {
@@ -342,7 +377,7 @@ export const PERCEPTION_DOCS: DocsFor<typeof PERCEPTION> = {
   fovPerPerception: 'Field of view per perception point (radians), added to the weapon base.',
   fovMin: 'Narrowest field of view (radians).',
   fovMax: 'Widest field of view (radians).',
-  hearingBase: 'Hearing radius at 0 perception (px). Hearing works in every direction and through walls.',
+  hearingBase: 'Hearing radius at 0 perception (px). Hearing works in every direction; through a wall or pillar only within hearingWallMul of the radius. It gives a rough position, never an exact one.',
   hearingPerPerception: 'Hearing radius per perception point (px).',
   hearingFastMul: 'Hearing radius multiplier against a target moving faster than hearingFastSpeed.',
   hearingQuietMul: 'Hearing radius multiplier against a target that is slow, still or creeping.',
@@ -351,7 +386,14 @@ export const PERCEPTION_DOCS: DocsFor<typeof PERCEPTION> = {
   shadowVisionMul: 'A target in shadow is only seen within this fraction of normal vision range.',
   enemiesNearRadius: 'Radius (px) of the enemies_near sensor.',
   fightingWindowTicks: 'A fighter counts as fighting for this many ticks after attacking or being hit.',
-  memoryTicks: 'An enemy not seen or heard for this long is forgotten.',
+  memoryTicks: 'An enemy not seen or heard for this long is forgotten. Until then it is remembered where it was last seen or heard.',
+  hearingWallMul: 'Hearing radius multiplier when a wall or pillar stands between listener and source.',
+  hearingErrorBase: 'A heard-only position is off by up to this many px (plus hearingErrorPerPx x distance), and always by at least half of that total.',
+  hearingErrorPerPx: 'Extra hearing error per px of distance to the source.',
+  hearingRefreshTicks: 'A heard-only estimate moves to a new rough guess this often (ticks); in between it stays put.',
+  searchStareTicks: 'After losing sight of its target, a fighter keeps looking at the last seen spot this long (ticks), then sweeps.',
+  searchScanArc: 'Full width (radians) of the head sweep while searching, centred on the last seen spot.',
+  searchScanTicks: 'Ticks for one full sweep left and back while searching.',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -363,7 +405,7 @@ export type StanceRule = { moveMul: number; quiet: boolean; shield: boolean; doc
 export const STANCES: Readonly<Record<Stance, StanceRule>> = {
   normal: { moveMul: 1, quiet: false, shield: false, doc: 'Full speed. Heard normally.' },
   creep: { moveMul: 0.55, quiet: true, shield: false, doc: 'Slow and quiet: always counts as quiet for hearing.' },
-  guard: { moveMul: 0.7, quiet: false, shield: true, doc: 'Slow, shield up: greatsword and warhammer users block arrows and axes from the front.' },
+  guard: { moveMul: 0.7, quiet: false, shield: true, doc: 'Slow, shield up: greatsword and warhammer users block projectiles from the front.' },
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -422,8 +464,10 @@ export type PickupRule = {
   radius: number;
   /** Effect length in ticks (0 = instant). */
   durationTicks: number;
-  /** Ticks until it can be used again after a use. */
+  /** Ticks until it can be used again after a use (power-ups: until it respawns on its pedestal). */
   cooldownTicks: number;
+  /** Ticks after the match starts before it first appears (0 = there from the start). Never above cooldownTicks. */
+  firstSpawnTicks: number;
   /** Effect size: heal fraction of max HP (shrine), speed multiplier (haste), damage bonus (berserk). */
   amount: number;
 };
@@ -431,15 +475,15 @@ export type PickupRule = {
 export const PICKUP_RULES: Readonly<Record<'shrine' | PickupKind, PickupRule>> = {
   shrine: {
     name: 'Shrine', doc: 'Heals 42% of max HP on touch, then needs 320 ticks to recharge.',
-    radius: 34, durationTicks: 0, cooldownTicks: 320, amount: 0.42,
+    radius: 34, durationTicks: 0, cooldownTicks: 320, firstSpawnTicks: 0, amount: 0.42,
   },
   haste: {
-    name: 'Haste charm', doc: 'Move speed x1.45 for 200 ticks. Respawns after 600 ticks.',
-    radius: 30, durationTicks: 200, cooldownTicks: 600, amount: 1.45,
+    name: 'Haste charm', doc: 'Move speed x1.45 for 200 ticks. First appears after 480 ticks, respawns 600 ticks after it is taken.',
+    radius: 30, durationTicks: 200, cooldownTicks: 600, firstSpawnTicks: 480, amount: 1.45,
   },
   berserk: {
-    name: 'Berserk draught', doc: '+35% weapon damage for 200 ticks. Respawns after 600 ticks.',
-    radius: 30, durationTicks: 200, cooldownTicks: 600, amount: 0.35,
+    name: 'Berserk draught', doc: '+35% weapon damage for 200 ticks. First appears after 480 ticks, respawns 600 ticks after it is taken.',
+    radius: 30, durationTicks: 200, cooldownTicks: 600, firstSpawnTicks: 480, amount: 0.35,
   },
 };
 
@@ -479,38 +523,167 @@ export const PROP_RULES: Readonly<Record<PropKind, PropRule>> = {
 // Match flow
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Match flow. Sudden death starts at the time limit, or earlier on a stalemate; the wall closes to
+ * `final`; then damage ramps up every second, outside the zone first and soon everywhere, so every
+ * match ends in deaths. The hard cap (time limit + hardCapExtraTicks) is the last resort: a judges'
+ * decision, announced and reported, never silent. With `MatchConfig.suddenDeath` off none of this
+ * runs and the bell at the time limit ends the match (placed by standing).
+ */
 export const MATCH_RULES = {
   timeLimitTicks: DEFAULT_TIME_LIMIT_TICKS,
+  stalemateTicks: 15 * TICK_HZ,
   suddenDeathInsetPerTick: 0.25,
   suddenDeathMinHalfSize: 90,
   suddenDeathDamage: 4,
   suddenDeathIntervalTicks: 10,
   suddenDeathSawSpeedMul: 1.6,
+  warningTicks: 3 * TICK_HZ,
+  escalationStepTicks: TICK_HZ,
+  escalationDamage: 2,
+  escalationEverywhereTicks: 5 * TICK_HZ,
+  hardCapExtraTicks: 60 * TICK_HZ,
   multiKillWindowTicks: 180,
 } as const;
 
 export const MATCH_RULES_DOCS: DocsFor<typeof MATCH_RULES> = {
   timeLimitTicks: 'Default ticks before sudden death (90 s).',
+  stalemateTicks: 'Sudden death starts early when no fighter has damaged another fighter for this long (15 s; weapons, skills and kegs count, hazards and the wall do not). Hiding cannot stall a match.',
   suddenDeathInsetPerTick: 'In sudden death the arena wall moves inward this many px per tick on every side.',
   suddenDeathMinHalfSize: 'The wall stops when the remaining arena is this many px from its centre to an edge.',
   suddenDeathDamage: 'Damage to a fighter caught outside the sudden-death wall, every interval.',
   suddenDeathIntervalTicks: 'Ticks between sudden-death wall damage.',
   suddenDeathSawSpeedMul: 'Saw speed multiplier during sudden death.',
+  warningTicks: 'The floor warns where the wall will be this many ticks ahead (3 s).',
+  escalationStepTicks: 'After the wall stops, the escalation level rises by one every this many ticks (every second).',
+  escalationDamage: 'Extra wall damage per escalation level, every interval. Outside the zone from the first level; inside it too from escalationEverywhereTicks.',
+  escalationEverywhereTicks: 'This long after the wall stops, the escalated damage hits everyone, inside the zone too.',
+  hardCapExtraTicks: 'If anyone is still standing at time limit + this (60 s), the judges decide (see JUDGES_ORDER).',
   multiKillWindowTicks: 'Kills by the same fighter within this window count as a multi-kill.',
 };
+
+/** What the judges compare when the hard cap ends a match with fighters standing. */
+export type JudgeCriterion = 'hp_fraction' | 'damage_dealt' | 'kills';
+
+/** Judges' decision: survivors ranked by these, in order, higher first; full ties keep roster order. */
+export const JUDGES_ORDER: readonly JudgeCriterion[] = ['hp_fraction', 'damage_dealt', 'kills'];
+export const JUDGES_DOC = "Judges' decision at the hard cap: survivors ranked by HP fraction left, then damage dealt, then kills.";
 
 /** Chance to bark when the trigger happens (if the strategy has lines for it). `low_hp` fires once, below 30% HP. */
 const BARK_CHANCE: Readonly<Record<BarkKind, number>> = { spawn: 0.5, kill: 0.8, hit: 0.15, low_hp: 0.6, death: 0.7, skill: 0.5, taunt: 0.05 };
 
+/** Bark kinds shown in the default "key moments" view (`ViewSettings.barks === 'key'`). */
+const KEY_BARK_KINDS: readonly BarkKind[] = ['spawn', 'kill', 'low_hp', 'skill', 'death'];
+
+/**
+ * Barks are rare and small. The sim enforces the per-fighter cooldown (every kind, kill and death
+ * included) and emits `bark` events with their kind; fx enforce what is visible (mode, key kinds,
+ * at most `maxVisible` bubbles, `maxWords`, `visibleSeconds`).
+ */
 export const BARK_RULES = {
-  /** Ticks a fighter waits after barking before it may bark again. */
-  cooldownTicks: 150,
+  /** Ticks a fighter waits after barking before it may bark again (8 s). */
+  cooldownTicks: 8 * TICK_HZ,
   /** Longest bark text shown (characters); the validator rejects longer lines. */
   maxLength: 48,
   /** HP fraction below which the `low_hp` bark may fire (once per fighter). */
   lowHp: 0.3,
   chance: BARK_CHANCE,
+  /** Kinds shown in "key moments" mode. */
+  keyKinds: KEY_BARK_KINDS,
+  /** Most bark bubbles on screen at once. */
+  maxVisible: 2,
+  /** Bubbles show at most this many words (longer lines end in an ellipsis). */
+  maxWords: 5,
+  /** Seconds a bubble stays up, fade included. */
+  visibleSeconds: 1.5,
 } as const;
+
+/** Tick at which a match still running ends by judges' decision (only with sudden death on). */
+export function matchHardCapTicks(timeLimitTicks: number): number {
+  return timeLimitTicks + MATCH_RULES.hardCapExtraTicks;
+}
+
+/**
+ * The zone before sudden death: the whole map is playable, nothing moves, and `final` (where the
+ * wall will stop) is worked out from the map. The sim starts every match from this; tests and mocks
+ * use it too.
+ */
+export function initialSuddenDeathState(map: Pick<MapDef, 'width' | 'height'>): SuddenDeathState {
+  const fx = Math.max(0, map.width / 2 - MATCH_RULES.suddenDeathMinHalfSize);
+  const fy = Math.max(0, map.height / 2 - MATCH_RULES.suddenDeathMinHalfSize);
+  return {
+    active: false,
+    reason: null,
+    startedAtTick: -1,
+    inset: 0,
+    bounds: { x: 0, y: 0, w: map.width, h: map.height },
+    warning: { x: 0, y: 0, w: map.width, h: map.height },
+    final: { x: fx, y: fy, w: map.width - 2 * fx, h: map.height - 2 * fy },
+    closedAtTick: -1,
+    escalation: 0,
+    everywhere: false,
+  };
+}
+
+/**
+ * Where the playable rectangle will be `ticks` from now, written into `out` (which may be
+ * `z.bounds` itself). The wall moves `suddenDeathInsetPerTick` per side per tick and stops at
+ * `final`; before sudden death and once closed the answer is `bounds`. The sim fills
+ * `SuddenDeathState.warning` with `zoneBoundsAfter(z, MATCH_RULES.warningTicks, ...)`.
+ */
+export function zoneBoundsAfter(z: Readonly<SuddenDeathState>, ticks: number, out: Rect): Rect {
+  const b = z.bounds;
+  let x0 = b.x;
+  let y0 = b.y;
+  let x1 = b.x + b.w;
+  let y1 = b.y + b.h;
+  if (z.active && z.closedAtTick < 0 && ticks > 0) {
+    const d = ticks * MATCH_RULES.suddenDeathInsetPerTick;
+    const f = z.final;
+    x0 = Math.min(f.x, x0 + d);
+    y0 = Math.min(f.y, y0 + d);
+    x1 = Math.max(f.x + f.w, x1 - d);
+    y1 = Math.max(f.y + f.h, y1 - d);
+  }
+  out.x = x0;
+  out.y = y0;
+  out.w = x1 - x0;
+  out.h = y1 - y0;
+  return out;
+}
+
+/**
+ * Ticks until the closing wall reaches p: 0 when p is already outside the zone, Infinity when the
+ * wall will never reach it (sudden death not running, the wall already stopped, or p inside `final`).
+ * Sensors in seconds divide by TICK_HZ and must map Infinity to their documented maximum.
+ */
+export function zoneTicksToReach(z: Readonly<SuddenDeathState>, p: Vec2): number {
+  if (!z.active) return Infinity;
+  const b = z.bounds;
+  if (p.x < b.x || p.x > b.x + b.w || p.y < b.y || p.y > b.y + b.h) return 0;
+  if (z.closedAtTick >= 0) return Infinity;
+  const v = MATCH_RULES.suddenDeathInsetPerTick;
+  const f = z.final;
+  let t = Infinity;
+  if (p.x < f.x) t = Math.min(t, (p.x - b.x) / v);
+  if (p.x > f.x + f.w) t = Math.min(t, (b.x + b.w - p.x) / v);
+  if (p.y < f.y) t = Math.min(t, (p.y - b.y) / v);
+  if (p.y > f.y + f.h) t = Math.min(t, (b.y + b.h - p.y) / v);
+  return t;
+}
+
+/** Signed distance (px) from p to the edge of the playable rectangle: positive inside, negative outside. */
+export function zoneEdgeDistance(z: Readonly<SuddenDeathState>, p: Vec2): number {
+  const b = z.bounds;
+  const left = p.x - b.x;
+  const right = b.x + b.w - p.x;
+  const top = p.y - b.y;
+  const bottom = b.y + b.h - p.y;
+  if (left >= 0 && right >= 0 && top >= 0 && bottom >= 0) return Math.min(left, right, top, bottom);
+  const ox = Math.max(0, -left, -right);
+  const oy = Math.max(0, -top, -bottom);
+  return -Math.sqrt(ox * ox + oy * oy);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Derived stats
@@ -528,6 +701,25 @@ export function fighterRadius(a: Attributes): number {
 export function moveSpeed(a: Attributes, weapon: WeaponId): number {
   const raw = 2.2 + a.agility * 0.068 - a.armor * 0.015;
   return Math.max(0.5, raw) * WEAPONS[weapon].moveMul * SPEED_SCALE;
+}
+
+/**
+ * Move-speed multiplier for walking toward `moveDir` while facing `facing` (radians): 1 straight
+ * ahead, COMBAT.backpedalMoveMul straight backwards, blended by the cosine in between (sideways is
+ * halfway). Applied on top of moveSpeed, stance and buffs.
+ */
+export function facingMoveMul(moveDir: number, facing: number): number {
+  const ahead = (1 + Math.cos(moveDir - facing)) / 2;
+  return COMBAT.backpedalMoveMul + (1 - COMBAT.backpedalMoveMul) * ahead;
+}
+
+/**
+ * Half-angle (radians) of a shot's aim error: the release direction is the (imperfectly led) aim
+ * line turned by a uniform random angle in [-spread, spread]. Grows with the shooter's speed
+ * (px/tick) and the distance to the target (px).
+ */
+export function shotSpread(shooterSpeed: number, distance: number): number {
+  return Math.min(COMBAT.spreadMax, COMBAT.spreadBase + COMBAT.spreadPerSpeed * Math.max(0, shooterSpeed) + COMBAT.spreadPerPx * Math.max(0, distance));
 }
 
 /** Turn rate in rad/s, including weapon weight, clamped to [1.6, 7.4]. */
@@ -648,7 +840,7 @@ export function deriveStats(a: Attributes, weapon: WeaponId): DerivedStats {
 export const STAT_DOCS: Readonly<Record<keyof DerivedStats, { label: string; unit: string; doc: string }>> = {
   maxHp: { label: 'Max HP', unit: 'hp', doc: '150 + vitality x 8.5, rounded.' },
   radius: { label: 'Body radius', unit: 'px', doc: '15.5 + vitality x 0.18 + armor x 0.14.' },
-  moveSpeed: { label: 'Move speed', unit: 'px/tick', doc: `(2.2 + agility x 0.068 - armor x 0.015) x weapon weight x ${SPEED_SCALE}.` },
+  moveSpeed: { label: 'Move speed', unit: 'px/tick', doc: `(2.2 + agility x 0.068 - armor x 0.015) x weapon weight x ${SPEED_SCALE}. Walking backwards is slower (x${COMBAT.backpedalMoveMul} straight back).` },
   turnRate: { label: 'Turn rate', unit: 'rad/s', doc: '(2.4 + agility x 0.145 - armor x 0.032) x weapon weight, clamped 1.6-7.4.' },
   armorMitigation: { label: 'Damage reduction', unit: 'fraction', doc: 'armor x 1.6%, at most 48%.' },
   damageMultiplier: { label: 'Damage multiplier', unit: 'x', doc: '1 + power x 2.4% (+35% while berserk).' },

@@ -1,0 +1,571 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pit-of-carnage:strategy:pit-strategy-2",
+  "title": "Pit of Carnage strategy (pit-strategy/2)",
+  "description": "A fighter build plus behaviours written in a small expression language. See the rulebook for exact semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "build",
+    "target",
+    "behaviours",
+    "commit"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional link to this JSON Schema for editors (e.g. \"/pit-strategy-2.schema.json\"). The game ignores it."
+    },
+    "schema": {
+      "const": "pit-strategy/2"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "Also the fighter's name in the arena."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Bump it when you change the strategy; reports identify strategies as name@vN."
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "weapon",
+        "skill",
+        "attributes"
+      ],
+      "properties": {
+        "weapon": {
+          "enum": [
+            "GREATSWORD",
+            "WARHAMMER",
+            "TWIN_DAGGERS",
+            "THROWING_AXES",
+            "LONGBOW",
+            "ARCANE_STAFF"
+          ],
+          "description": "GREATSWORD: Wide 135° cleave that hits everyone in the arc. Slow to wind up, rude to stand next to. Shield in guard stance. WARHAMMER: Single-target smash. Stuns for 34 ticks and sends the victim across the room. Shield in guard stance. TWIN_DAGGERS: Short, fast stabs. Backstabs deal x2.35. Light enough to turn on a coin. THROWING_AXES: Four axes, thrown hard. Each one lands on the floor and has to be picked up again. LONGBOW: Longest reach in the pit. Arrows slow the victim for 75 ticks. Ten arrows; spent ones must be picked up. ARCANE_STAFF: Slow orbs that burst on impact, splashing 60% damage within 72 px. Recharges instead of using ammo."
+        },
+        "skill": {
+          "enum": [
+            "WHIRLWIND",
+            "SHADOWSTEP",
+            "DASH",
+            "SHOCKWAVE",
+            "BLOODRAGE"
+          ],
+          "description": "WHIRLWIND: Spin attack: 25 + power x 0.55 damage to everyone within 92 px, with knockback. SHADOWSTEP: Teleport 36 px behind the target (within 320 px), facing its back. Pairs well with daggers. DASH: Burst along the current steering heading (impulse 14) plus haste for 65 ticks. Works for chasing and for leaving. SHOCKWAVE: Shield slam: parry window of 48 ticks, plus 19 damage and a 36-tick stun to everyone in a 96 px cone ahead. BLOODRAGE: Berserk (+35% damage) and haste (x1.45 speed) for 145 ticks."
+        },
+        "attributes": {
+          "type": "object",
+          "description": "Each attribute 4-40; the six together may not exceed 100.",
+          "additionalProperties": false,
+          "required": [
+            "vitality",
+            "power",
+            "agility",
+            "perception",
+            "armor",
+            "haste"
+          ],
+          "properties": {
+            "vitality": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Max HP (+8.5 per point) and a slightly bigger body."
+            },
+            "power": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Weapon damage +2.4% per point. Whirlwind damage +0.55 per point."
+            },
+            "agility": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Move speed and turn rate. The difference between catching someone and watching them leave."
+            },
+            "perception": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Vision range (+9.5 px), field of view, hearing (+4.2 px) and auto-parry chance."
+            },
+            "armor": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Damage reduction 1.6% per point (cap 48%). Heavier: slower to move and turn, bigger body."
+            },
+            "haste": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 40,
+              "description": "Attack cooldown -1.4% per point. Skill cooldown -3.1 ticks per point."
+            }
+          }
+        }
+      }
+    },
+    "target": {
+      "$ref": "#/$defs/expression",
+      "description": "Rates each known enemy; the highest becomes the target. Use it.* sensors here: it.distance, it.visible, it.heard, it.last_seen_age, it.hp, it.hp_abs, it.facing_away, it.sees_me, it.ranged, it.family_ranged, it.winding_up, it.ammo, it.fighting, it.last_attacker, it.kills, it.seen, it.since_seen, it.in_reach, it.in_shadow, it.hazard_distance, it.is_target."
+    },
+    "behaviours": {
+      "type": "object",
+      "description": "At most 8 including imports. Each think the highest score runs.",
+      "maxProperties": 8,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,23}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/behaviour"
+      }
+    },
+    "imports": {
+      "type": "array",
+      "description": "Starter-library behaviours to include by name. Your own behaviour with the same name wins.",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "prowl",
+          "brawl",
+          "kite",
+          "restock",
+          "heal",
+          "retreat",
+          "lurk",
+          "backstab",
+          "bait",
+          "guard_corner",
+          "third_party",
+          "search",
+          "grab_powerup",
+          "deny_powerup",
+          "escape_zone"
+        ]
+      }
+    },
+    "memory": {
+      "type": "object",
+      "description": "Up to 12 named numbers with starting values; read them by name in expressions, write them with \"set\".",
+      "maxProperties": 12,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,23}$"
+      },
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "commit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600,
+      "default": 30,
+      "description": "Ticks (60 per second) a newly chosen behaviour keeps a +0.25 score bonus, so close scores do not flip-flop."
+    },
+    "barks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lines the fighter shouts. One line or a list per kind.",
+      "properties": {
+        "spawn": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "kill": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "hit": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "low_hp": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "death": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "skill": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        },
+        "taunt": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 48
+              }
+            }
+          ]
+        }
+      }
+    },
+    "look": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "Preferred fighter colour (the match may assign another to keep colours distinct)."
+        },
+        "glyph": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2
+        }
+      }
+    }
+  },
+  "$defs": {
+    "expression": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Expression. Operators: + - * / < <= > >= == != and or not, parentheses, numbers, true/false. Functions: min(a, b, ...), max(a, b, ...), clamp(x, lo, hi) or clamp(x), abs(x). Booleans are 1/0; above 0 counts as true. Sensors: self.hp, self.hp_abs, self.ammo, self.ranged, self.reach, self.in_shadow, self.light, self.speed, self.stunned, self.seen, self.limbs, self.kills, self.berserk, self.hasted, skill.ready, attack.ready, parry.ready, enemies_seen, enemies_known, enemies_near, fights_nearby, allies_alive, ally.distance, shrine.ready, shrine.distance, ammo.distance, hazard.distance, pickup.haste.ready, pickup.haste.distance, pickup.berserk.ready, pickup.berserk.distance, pickup.any.ready, pickup.any.distance, pickup.respawn_in, time, sudden_death, zone.distance, zone.time_to_reach, since_hit, random, target.distance, target.visible, target.heard, target.last_seen_age, target.hp, target.hp_abs, target.facing_away, target.sees_me, target.ranged, target.family_ranged, target.winding_up, target.ammo, target.fighting, target.last_attacker, target.kills, target.seen, target.since_seen, target.in_reach, target.in_shadow, target.hazard_distance, target.is_target. Memory slots by name."
+    },
+    "place": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A place: target, nearest_enemy, last_attacker, weakest, nearest_fight, ally, behind(X, d), side(X, deg, d), cover_from(X), last_seen(X), search_point, hazard_near(P), beyond(P, Q, d), shrine, ammo, pickup(K), nearest_pickup, centre, zone_centre, nearest_keg, corner, dark_spot. Fighter arguments take target, nearest_enemy, last_attacker, weakest, nearest_fight, ally; the K of pickup(K) is haste, berserk, any.",
+      "examples": [
+        "target",
+        "behind(target, 36)",
+        "cover_from(enemies)",
+        "search_point",
+        "pickup(berserk)"
+      ]
+    },
+    "zone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A zone: shadow, lit, seen_by(X), hazards, walls, open, outside_zone.",
+      "examples": [
+        "shadow",
+        "seen_by(enemies)",
+        "hazards",
+        "outside_zone"
+      ]
+    },
+    "moveTerm": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Each direction rates cos(angle between it and the way to PLACE): +1 straight at it, -1 straight away. Strength eases from 1 to 0 over the last 40 px before the stop distance (6 px for a point; your radius + 22 px for a fighter, i.e. bodies touching). A fighter you can see right now is led: you aim where it will be after min(distance / your speed, 30) ticks. One you only hear or remember is not (you do not know how it is moving).",
+          "additionalProperties": false,
+          "required": [
+            "seek"
+          ],
+          "properties": {
+            "seek": {
+              "$ref": "#/$defs/place"
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "The mirror of seek at full strength at any distance: +1 straight away from PLACE, -1 straight at it.",
+          "additionalProperties": false,
+          "required": [
+            "flee"
+          ],
+          "properties": {
+            "flee": {
+              "$ref": "#/$defs/place"
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Closer than min: rates like flee, at strength (min - distance) / 40 capped at 1. Further than max: like seek, at strength (distance - max) / 40 capped at 1. Inside the band: rates nothing (add orbit to keep moving).",
+          "additionalProperties": false,
+          "required": [
+            "keep_range"
+          ],
+          "properties": {
+            "keep_range": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/place"
+                },
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                }
+              ],
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Rates cos(angle to the tangent of a circle around PLACE), going clockwise (\"cw\", as seen on screen) or counter-clockwise (\"ccw\"). The tangent tilts 0.2 rad toward PLACE so the circle does not drift outward.",
+          "additionalProperties": false,
+          "required": [
+            "orbit"
+          ],
+          "properties": {
+            "orbit": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/place"
+                },
+                {
+                  "enum": [
+                    "cw",
+                    "ccw"
+                  ]
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Each direction rates -(zone ahead - zone here), where \"zone ahead\" averages the zone 40 and 96 px along that direction and \"zone here\" is the zone where you stand. Directions into more of the zone go negative; inside the zone, directions out of it go positive. Deep inside a large uniform zone it rates nothing: combine with flee or cover_from.",
+          "additionalProperties": false,
+          "required": [
+            "avoid"
+          ],
+          "properties": {
+            "avoid": {
+              "$ref": "#/$defs/zone"
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "The mirror of avoid: rates +(zone ahead - zone here).",
+          "additionalProperties": false,
+          "required": [
+            "prefer"
+          ],
+          "properties": {
+            "prefer": {
+              "$ref": "#/$defs/zone"
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1,
+              "description": "How much this term counts in the steering sum."
+            }
+          }
+        }
+      ]
+    },
+    "behaviour": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "move",
+        "attack"
+      ],
+      "properties": {
+        "score": {
+          "$ref": "#/$defs/expression",
+          "description": "How much this behaviour wants to run right now (about 0..1)."
+        },
+        "move": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/moveTerm"
+          }
+        },
+        "attack": {
+          "type": "string",
+          "minLength": 1,
+          "description": "in_range, never, if_blocked, or an expression (above 0 = attack the target)."
+        },
+        "skill": {
+          "$ref": "#/$defs/expression",
+          "description": "Use the skill when this is above 0 and the skill is ready. Leave out to never use it."
+        },
+        "set": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,23}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/expression"
+          },
+          "description": "Memory writes applied every think while this behaviour runs."
+        },
+        "stance": {
+          "enum": [
+            "normal",
+            "creep",
+            "guard"
+          ],
+          "default": "normal"
+        }
+      }
+    }
+  }
+}

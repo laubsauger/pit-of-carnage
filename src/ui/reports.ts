@@ -1,6 +1,29 @@
 // Owned by: ui
 // Pure helpers for showing battle reports, ratings and evolution runs.
-import type { KillRecord, Rating, StrategyAggregate, WinRecord } from '../core';
+import type { KillCause, KillRecord, MatchReport, Rating, StrategyAggregate, WinRecord } from '../core';
+
+export const CAUSE_LABEL: Record<KillCause, string> = {
+  weapon: 'Weapons',
+  skill: 'Skills',
+  hazard: 'Hazards',
+  keg: 'Kegs',
+  friendly: 'Friendly fire',
+  sudden_death: 'Sudden death',
+};
+
+/**
+ * Where each tested strategy finished in one gym match, best first. A batch match has many
+ * fighters, and the row in the match list only needs to answer "how did mine do".
+ */
+export function candidatePlaces(report: MatchReport, candidateKeys: ReadonlySet<string>): { name: string; place: number }[] {
+  const out: { name: string; place: number }[] = [];
+  for (const r of report.roster) {
+    if (!candidateKeys.has(r.strategyKey)) continue;
+    const place = report.placements.indexOf(r.fighterId) + 1;
+    if (place > 0) out.push({ name: r.name, place });
+  }
+  return out.sort((a, b) => a.place - b.place);
+}
 
 /** "The Pit" reads as "the Pit" mid-sentence. */
 export function inSentence(mapName: string): string {

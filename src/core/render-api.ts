@@ -18,21 +18,66 @@
  * - `render(..., frameDt)` receives real wall-clock seconds since the last frame. Camera easing
  *   uses it directly (so the camera still settles while paused); FX multiply it by the time scale.
  * - The renderer is the camera director: framing, follow, zoom toward big moments, capped shake.
+ *   Manual input (`zoomAt`, `panBy`) takes the camera from the director until `resetCamera()`;
+ *   follow still works at the viewer's zoom, and seeks keep the viewer's view.
  */
 
 // Render code imports three from 'three/webgpu' (WebGPU only, no WebGL fallback) and
 // TSL from 'three/tsl'. Never mix in the plain 'three' entry: two three.js copies break node materials.
 import type * as THREE from 'three/webgpu';
-import type { Decision, GameEvent, MapDef, Vec2, WorldState } from './types';
+import type { Decision, GameEvent, KnownFighter, MapDef, Vec2, WorldState } from './types';
 
-/** Debug/readability overlays. */
-export type OverlayState = {
-  cones: 'off' | 'selected' | 'all';
+export type ConeMode = 'off' | 'selected' | 'all';
+/** `key` = only `BARK_RULES.keyKinds` (spawn, kill, low HP, skill, death). */
+export type BarkMode = 'off' | 'key' | 'all';
+export type ShakeMode = 'off' | 'kills';
+/** Scales how much gore fx paint and spray (cosmetic only; the sim is unaffected). */
+export type BloodAmount = 'light' | 'normal' | 'carnage';
+
+/**
+ * The viewer's display and readability settings (the Watch screen's "View" popover). Cosmetic
+ * only: nothing here reaches the sim. The controller owns the current value, persists it in
+ * localStorage, and pushes the full object to the renderer (which forwards it to fx) and the
+ * volume to audio whenever any field changes.
+ */
+export type ViewSettings = {
+  /** Damage popups, coloured by the attacker; crits bigger, backstabs labelled. */
+  damageNumbers: boolean;
+  barks: BarkMode;
+  /** Bangers kill stamps ("BACKSTAB", "SAWED"). */
+  killStamps: boolean;
+  nameTags: boolean;
+  hpBars: boolean;
+  /** Vision cones. */
+  cones: ConeMode;
   /** Steering ring and target line for the selected fighter. */
   rings: boolean;
-  names: boolean;
-  /** Fog of war from the selected fighter's point of view. */
+  /** Fog of war from the selected fighter's point of view (what it sees, hears and remembers). */
   fog: boolean;
+  /** Hearing ripples: rough rings where the selected fighter hears enemies (never an exact marker). */
+  hearing: boolean;
+  /** Screen shake: only on kills, or never. Ordinary hits never shake the camera. */
+  shake: ShakeMode;
+  blood: BloodAmount;
+  /** Master volume 0..1. */
+  volume: number;
+};
+
+export const DEFAULT_VIEW_SETTINGS: Readonly<ViewSettings> = {
+  damageNumbers: true,
+  barks: 'key',
+  killStamps: true,
+  nameTags: true,
+  hpBars: true,
+  cones: 'selected',
+  rings: true,
+  /** On by default: selecting a fighter shows the pit through its eyes (user request). */
+  fog: true,
+  hearing: true,
+  shake: 'kills',
+  /** Carnage by default: vicious, violent splatter is the point (user request). */
+  blood: 'carnage',
+  volume: 0.7,
 };
 
 export interface GameRenderer {
@@ -48,9 +93,25 @@ export interface GameRenderer {
   setHovered(id: string | null): void;
   /** Refinement: camera follows this fighter (null = director framing). */
   setFollow(id: string | null): void;
-  setOverlay(o: OverlayState): void;
+  /**
+   * Mouse wheel: zoom by `factor` (> 1 zooms in) toward the client (CSS pixel) point, keeping the
+   * world point under it in place. Clamped to sensible limits. Takes the camera from the director.
+   */
+  zoomAt(clientX: number, clientY: number, factor: number): void;
+  /** Drag: move the view by CSS pixels (the world follows the pointer). Takes the camera from the director. */
+  panBy(dx: number, dy: number): void;
+  /** Give the camera back to the director (framing, moments). */
+  resetCamera(): void;
+  /** Display settings (full object, already merged). The renderer forwards it to fx via `FxModule.setView`. */
+  setView(v: ViewSettings): void;
   /** Source of steering rings and target lines for the overlays. */
   setDecisionProvider(fn: (fighterId: string) => Decision | null): void;
+  /**
+   * Source of a fighter's knowledge (`Match.knowledge`) for fog view, ghost markers at last seen
+   * spots ("lost sight 2.3 s ago"), hearing ripples (circle of `estimateError` around the
+   * estimate) and aim lines (to the record's `pos`, never the live fighter).
+   */
+  setKnowledgeProvider(fn: (fighterId: string) => readonly KnownFighter[]): void;
   /** Fighter id under the given client (CSS pixel) coordinates, or null. */
   pick(clientX: number, clientY: number): string | null;
   /** Combined game-time factor from the app loop (speed x slow-mo; 0 when paused). */
@@ -72,7 +133,9 @@ export interface RenderContext {
   /**
    * Floor-sized render target that the floor's TSL node material multiplies over the floor. FX draw
    * persistent gore (splats, streaks, footprints, scorch) into it. It spans the map with
-   * texel (0, 0) at world (0, 0) and `floorSize` world px across.
+   * texel (0, 0) at world (0, 0) and `floorSize` world px across; the floor samples it at
+   * `uv = world / floorSize`. Under WebGPU three.js does not flip render-target UVs, so uv.y = 0
+   * (texel row 0) is the TOP edge of the target: a decal camera must put world y = 0 at NDC y = +1.
    */
   floorDecalTarget: THREE.RenderTarget;
   floorSize: Vec2;
@@ -83,12 +146,24 @@ export interface RenderContext {
 export interface FxModule {
   init(ctx: RenderContext): void;
   onEvents(events: GameEvent[], state: WorldState): void;
+  /**
+   * Display settings (damage numbers, barks, kill stamps, blood amount). May arrive before `init`
+   * and at any time after; applies to effects started from then on.
+   */
+  setView(v: ViewSettings): void;
   /** `frameDt` here is already scaled game time (real seconds x time scale). */
   update(frameDt: number, state: WorldState, alpha: number): void;
   /** Refinement: drop transient particles, popups and decals (new match or seek). */
   reset(): void;
   dispose(): void;
 }
+
+/**
+ * Events more than this many ticks older than the state they arrive with are catch-up (a seek
+ * replays a whole stretch of match in one batch): they leave persistent marks (floor gore, pieces at
+ * rest) but play no transient effects, camera moves or flashes.
+ */
+export const LIVE_EVENT_TICKS = 90;
 
 /** Height (three.js Y) of each draw layer. Keep effects inside their band. */
 export const LAYER_HEIGHT = {

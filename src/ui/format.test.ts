@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TICK_HZ } from '../core';
-import { formatAgo, formatClock, formatClockTenths, formatPercent, formatPlace, formatValue, keyLabel, roman, squadLetter } from './format';
+import { formatAgo, formatClock, formatClockTenths, formatPercent, formatPlace, formatStat, formatValue, keyLabel, roman, squadLetter } from './format';
 
 describe('formatClock', () => {
   it('reads sim ticks as broadcast time, so 90 s of regulation shows 1:30', () => {
@@ -73,5 +73,18 @@ describe('labels', () => {
 
   it('letters squads from A', () => {
     expect([0, 1, 2].map(squadLetter)).toEqual(['A', 'B', 'C']);
+  });
+});
+
+describe('formatStat', () => {
+  it('shows build stats in player units, so two builds compare at a glance instead of in sim ticks', () => {
+    expect(formatStat('moveSpeed', 2)).toBe(`${2 * TICK_HZ} px/s`);
+    expect(formatStat('attackCooldown', 42)).toBe('0.70 s');
+    expect(formatStat('armorMitigation', 0.32)).toBe('32%');
+    expect(formatStat('visionFov', Math.PI / 2)).toBe('90°');
+    expect(formatStat('turnRate', Math.PI)).toBe('180°/s');
+    expect(formatStat('damageMultiplier', 1.48)).toBe('x1.48');
+    expect(formatStat('visionRange', 397.4)).toBe('397 px');
+    expect(formatStat('maxHp', 320)).toBe('320');
   });
 });

@@ -1,17 +1,86 @@
 // Owned by: ui
-// Pure helpers for the strategy editor: JSON errors with a line and column, and the budget meter.
-import { ATTRIBUTE_BUDGET, ATTRIBUTE_KEYS, ATTRIBUTE_MAX, ATTRIBUTE_MIN, WEAPON_IDS } from '../core';
-import type { AttributeKey, Attributes, WeaponId } from '../core';
+// Pure helpers for the strategy editor: JSON errors with a line and column, issue underlines, and
+// the budget meter.
+import { ATTRIBUTE_BUDGET, ATTRIBUTE_KEYS, ATTRIBUTE_MAX, ATTRIBUTE_MIN, STRATEGY_SCHEMA, WEAPON_IDS } from '../core';
+import type { AttributeKey, Attributes, Strategy, ValidationIssue, WeaponId } from '../core';
+
+export const NEW_STRATEGY_NAME = 'My Gladiator';
+
+/**
+ * Text for "New strategy": the first house stack under a fresh name (house stacks are known to
+ * validate, so a new player starts from something that fights), or a bare brawler when there are
+ * none. Never a house stack's own name: reports and ratings key on `name@vN`, and a copy saved
+ * under the original name would pour its results into the house stack's row.
+ */
+export function newStrategyText(house: readonly Strategy[]): string {
+  const base = house[0];
+  const s: Strategy = base
+    ? { ...base, name: NEW_STRATEGY_NAME, author: undefined, version: 1 }
+    : {
+        schema: STRATEGY_SCHEMA,
+        name: NEW_STRATEGY_NAME,
+        version: 1,
+        build: { weapon: 'GREATSWORD', skill: 'DASH', attributes: { vitality: 18, power: 18, agility: 18, perception: 16, armor: 16, haste: 14 } },
+        target: '0 - it.distance',
+        behaviours: { brawl: { score: '1', move: [{ seek: 'target', weight: 1 }], attack: 'in_range' } },
+        commit: 30,
+      };
+  return prettyJson(s);
+}
 
 export type JsonParse =
   | { ok: true; value: unknown }
   | { ok: false; message: string; line: number; col: number };
+
+/**
+ * JSON for the editor: like `JSON.stringify(v, null, 2)`, but any object or array that fits in
+ * `width` columns stays on one line. A move term then reads as one line instead of five, so a
+ * whole behaviour fits on screen and diffs between versions stay readable.
+ */
+export function prettyJson(value: unknown, width = 96): string {
+  const entries = (v: object) => Object.entries(v).filter(([, x]) => x !== undefined);
+  const inline = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map(inline).join(', ')}]`;
+    if (v !== null && typeof v === 'object') {
+      const e = entries(v);
+      return e.length ? `{ ${e.map(([k, x]) => `${JSON.stringify(k)}: ${inline(x)}`).join(', ')} }` : '{}';
+    }
+    return JSON.stringify(v) ?? 'null';
+  };
+  const walk = (v: unknown, indent: string, room: number): string => {
+    const flat = inline(v);
+    if (v === null || typeof v !== 'object' || flat.length <= room || flat === '{}' || flat === '[]') return flat;
+    const inner = `${indent}  `;
+    if (Array.isArray(v)) {
+      return `[\n${v.map((x) => inner + walk(x, inner, width - inner.length - 1)).join(',\n')}\n${indent}]`;
+    }
+    const lines = entries(v).map(([k, x]) => {
+      const key = `${JSON.stringify(k)}: `;
+      return inner + key + walk(x, inner, width - inner.length - key.length - 1);
+    });
+    return `{\n${lines.join(',\n')}\n${indent}}`;
+  };
+  // The top level always breaks: a strategy is a document, not a value.
+  return walk(value, '', 0);
+}
 
 /** Line and column (both 1-based) of a character offset. */
 export function lineCol(text: string, offset: number): { line: number; col: number } {
   const before = text.slice(0, Math.max(0, Math.min(offset, text.length)));
   const lines = before.split('\n');
   return { line: lines.length, col: lines[lines.length - 1].length + 1 };
+}
+
+/** Character offset of a 1-based line and column, clamped to the text. Inverse of `lineCol`. */
+export function offsetOf(text: string, line: number, col: number): number {
+  let offset = 0;
+  for (let l = 1; l < line; l++) {
+    const nl = text.indexOf('\n', offset);
+    if (nl < 0) return text.length;
+    offset = nl + 1;
+  }
+  const end = text.indexOf('\n', offset);
+  return Math.min(offset + Math.max(0, col - 1), end < 0 ? text.length : end);
 }
 
 /**
@@ -80,9 +149,109 @@ export function budget(attrs: Record<AttributeKey, number | null>): Budget {
   return { rows, total, left, over: left < 0, complete };
 }
 
+/**
+ * Character offset of the key a validator path points at, e.g. `behaviours.kite.move[1].keep_range`,
+ * so clicking an issue can put the cursor on it. Walks the keys in order through the text, which
+ * is right for any JSON a person or an LLM writes (keys are not repeated inside their own value).
+ * Array indices are skipped: the next named key after them is close enough to the error.
+ * Returns the deepest key found, or -1 when not even the first key is in the text.
+ */
+export function locatePath(text: string, path: string): number {
+  const keys = path.split(/[.[\]]+/).filter((k) => k !== '' && !/^\d+$/.test(k));
+  let from = 0;
+  let found = -1;
+  for (const key of keys) {
+    const at = text.indexOf(JSON.stringify(key), from);
+    if (at < 0) break;
+    found = at;
+    from = at + key.length + 2;
+  }
+  return found;
+}
+
 /** Full attributes when every value is present (for derived stats), else null. */
 export function completeAttributes(attrs: Record<AttributeKey, number | null> | null): Attributes | null {
   if (!attrs) return null;
   for (const k of ATTRIBUTE_KEYS) if (attrs[k] === null) return null;
   return attrs as Attributes;
+}
+
+/**
+ * Where an issue points in the text: the gate's own line and column when it gave them, otherwise
+ * the key its path names (or, for a JSON syntax error without a location, where parsing fails).
+ * -1 when the text has no such spot.
+ */
+export function issueOffset(text: string, issue: Pick<ValidationIssue, 'path' | 'line' | 'column'>): number {
+  if (issue.line !== undefined && issue.column !== undefined) return offsetOf(text, issue.line, issue.column);
+  if (issue.path) return locatePath(text, issue.path);
+  const parsed = parseJson(text);
+  return parsed.ok ? -1 : offsetOf(text, parsed.line, parsed.col);
+}
+
+/**
+ * End of the token starting at `start`, for the underline: a whole JSON string (escapes included),
+ * a number or bare word, or one character. Never runs past the end of the line.
+ */
+export function tokenEnd(text: string, start: number): number {
+  const nl = text.indexOf('\n', start);
+  const lineEnd = nl < 0 ? text.length : nl;
+  if (start >= lineEnd) return Math.min(text.length, start + 1);
+  if (text[start] === '"') {
+    for (let i = start + 1; i < lineEnd; i++) {
+      if (text[i] === '\\') i++;
+      else if (text[i] === '"') return i + 1;
+    }
+    return lineEnd;
+  }
+  let i = start;
+  while (i < lineEnd && /[\w.+-]/.test(text[i])) i++;
+  return Math.max(i, start + 1);
+}
+
+/** One issue placed in the text: the characters to underline and the 1-based spot to report. */
+export type IssueSpan = { start: number; end: number; line: number; column: number; severity: ValidationIssue['severity']; issue: ValidationIssue };
+
+/** Every issue that can be placed in the text, errors first, then by position. */
+export function placeIssues(text: string, issues: readonly ValidationIssue[]): IssueSpan[] {
+  const out: IssueSpan[] = [];
+  for (const issue of issues) {
+    let start = issueOffset(text, issue);
+    if (start < 0) continue;
+    // "Unexpected end of JSON" points past the last character: underline the last one instead.
+    if (start >= text.length) start = Math.max(0, text.length - 1);
+    const { line, col } = lineCol(text, start);
+    out.push({ start, end: tokenEnd(text, start), line, column: col, severity: issue.severity, issue });
+  }
+  return out.sort((a, b) => sevRank(a) - sevRank(b) || a.start - b.start);
+}
+
+/** Underlines to draw, in text order, never overlapping: on a shared spot the error wins over a warning. */
+export function underlineSpans(spans: readonly IssueSpan[]): IssueSpan[] {
+  const sorted = [...spans].sort((a, b) => a.start - b.start || sevRank(a) - sevRank(b));
+  const out: IssueSpan[] = [];
+  for (const s of sorted) {
+    const prev = out[out.length - 1];
+    if (prev && s.start < prev.end) continue;
+    out.push(s);
+  }
+  return out;
+}
+
+/** Worst severity per 1-based line, for the gutter. */
+export function lineSeverity(spans: readonly IssueSpan[]): Map<number, ValidationIssue['severity']> {
+  const out = new Map<number, ValidationIssue['severity']>();
+  for (const s of spans) if (out.get(s.line) !== 'error') out.set(s.line, s.severity);
+  return out;
+}
+
+/** The issue under the caret, or else the first one on the caret's line, for the status line. */
+export function issueAtCaret(spans: readonly IssueSpan[], text: string, caret: number): IssueSpan | null {
+  const inside = spans.find((s) => caret >= s.start && caret <= s.end);
+  if (inside) return inside;
+  const line = lineCol(text, caret).line;
+  return spans.find((s) => s.line === line) ?? null;
+}
+
+function sevRank(s: { severity: ValidationIssue['severity'] }): number {
+  return s.severity === 'error' ? 0 : 1;
 }
