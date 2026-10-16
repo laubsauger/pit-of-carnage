@@ -9,14 +9,14 @@ import type {
   EvolveRequest,
   EvolveResult,
   GameController,
-  GymApi,
   SavedStrategy,
   Strategy,
 } from '../../core';
-import type { CompareRequest, GymService } from '../../gym';
+import type { CompareRequest } from '../../gym';
 import { loadStrategy } from '../../strategy';
 import type { WatchRequest } from '../App';
 import { newStrategyText, parseJson, prettyJson } from '../editor';
+import { draftIdentity } from '../editor/versions';
 import { strategyLabel } from '../format';
 import { usePane, useStoredState } from '../hooks';
 import { WeaponIcon } from '../icons';
@@ -38,15 +38,6 @@ const TABS: { id: Tab; label: string }[] = [
 
 /** The gym runs one job at a time (see GymApi). */
 export type GymJob = { kind: 'idle' } | { kind: 'batch' | 'evolve' | 'compare'; done: number; total: number };
-
-/**
- * The gym service behind `GameController.gym` also runs paired comparisons (src/gym `GymService`),
- * though the shared `GymApi` contract does not promise it yet; the Compare mode shows only when it is there.
- */
-type GymWithCompare = GymApi & Pick<GymService, 'compare'>;
-function canCompare(g: GymApi): g is GymWithCompare {
-  return typeof (g as Partial<GymWithCompare>).compare === 'function';
-}
 
 export type BatchOutcome = {
   result: BatchResult;
@@ -151,11 +142,10 @@ export function GymScreen({ controller, active, houseStacks, saved, refreshSaved
 
   const runCompare = useCallback(
     async (req: CompareRequest) => {
-      const gym = controller.gym;
-      if (job.kind !== 'idle' || !canCompare(gym)) return;
+      if (job.kind !== 'idle') return;
       setJob({ kind: 'compare', done: 0, total: req.matches * 2 });
       try {
-        const result = await gym.compare(req, (done, total) => setJob({ kind: 'compare', done, total }));
+        const result = await controller.gym.compare(req, (done, total) => setJob({ kind: 'compare', done, total }));
         setComparison({ request: req, result });
         if (!activeRef.current) toast(`Comparison done: ${result.findings[0] ?? 'the numbers are in the Gym.'}`);
       } catch (err) {
@@ -188,7 +178,9 @@ export function GymScreen({ controller, active, houseStacks, saved, refreshSaved
     [controller, job.kind],
   );
 
-  const title = strategy ? strategyLabel(strategy.name, strategy.version) : parsed.ok ? draftName(parsed.value) : 'Strategy with errors';
+  // Only the library numbers versions: a new or imported draft has none yet, so it shows its name alone.
+  // The gate fills in version 1 when the JSON has none, so ask the draft's own JSON.
+  const title = strategy ? (parsed.ok && draftIdentity(parsed.value).version !== null ? strategyLabel(strategy.name, strategy.version) : strategy.name) : parsed.ok ? draftName(parsed.value) : 'Strategy with errors';
   const currentName = strategy?.name ?? null;
 
   return (
@@ -282,7 +274,8 @@ export function GymScreen({ controller, active, houseStacks, saved, refreshSaved
               refreshSaved={refreshSaved}
               lastBatch={batch}
               onTest={() => setTab('test')}
-              onWatch={(config) => onWatch({ config })}
+              // The draft fights from seat 0 and stays pinned for "Next match".
+              onWatch={(config) => onWatch({ config, pin: { keys: config.entrants[0] ? [strategyKey(config.entrants[0].strategy)] : [], source: 'editor' } })}
             />
           ) : tab === 'test' ? (
             <BatchPane
@@ -296,7 +289,7 @@ export function GymScreen({ controller, active, houseStacks, saved, refreshSaved
               onWatch={onWatch}
               focus={reportFocus}
               comparison={comparison}
-              onCompare={canCompare(controller.gym) ? runCompare : null}
+              onCompare={runCompare}
             />
           ) : (
             <EvolvePane

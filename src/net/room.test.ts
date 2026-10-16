@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { Strategy } from '../core';
-import { encodeStrategyCode } from '../strategy';
-import { RoomClient } from './client';
+import type { GameEvent, Strategy } from '../core';
+import { MAPS } from '../sim';
+import { encodeStrategyCode, loadStrategy } from '../strategy';
+import { INBOUND_BURST, RoomClient } from './client';
 import { RoomHost } from './host';
+import { PLAYER_TIMING } from './player';
 import { hostStorageKey, hostedRooms } from './saved';
 import { MAX_MEMBERS, PROTOCOL_VERSION } from './protocol';
+import { encodeFrame, mapFingerprint } from './snapshot';
 import { createMemoryHub } from './transport';
 import type { Transport } from './transport';
-import { broughtStrategy } from './testkit';
+import { broughtStrategy, houseMatch } from './testkit';
 
 const CODE = 'KRZBW';
 
@@ -75,7 +78,7 @@ function room() {
     return tr;
   };
   return {
-    hub, storage, join, rogue, pump, until,
+    hub, storage, join, rogue, pump, until, now,
     get host() {
       return host;
     },
@@ -313,6 +316,128 @@ describe('rooms', { timeout: 60_000 }, () => {
     r.pump();
     expect(late.getView().status).toBe('refused');
     expect(late.getView().notices.at(-1)!.text).toMatch(/full/);
+  });
+
+  it('shares strategies only when the host turns the reveal on, and then as codes that pass the gate', () => {
+    const r = room();
+    r.host.setSettings({ running: false });
+    const ana = r.join('Ana', 'ana-client-0000000');
+    const seenByBen: unknown[] = [];
+    const ben = r.join('Ben', 'ben-client-0000000', { spy: seenByBen });
+    r.pump();
+    expect(r.host.getView().room!.settings.revealStrategies, 'off by default').toBe(false);
+    ana.add(secretStrategy(), 'saved');
+    r.pump();
+    r.host.setSettings({ running: true });
+    r.until(() => r.host.getView().room!.history.length >= 1, 'a finished match');
+    const first = r.host.getView().room!.history[0]!.id;
+    expect(seenByBen.some((m) => (m as { t: string }).t === 'reveal')).toBe(false);
+    expect(JSON.stringify(seenByBen)).not.toContain('PIT2.');
+    expect(ben.extras(first)?.revealed ?? null).toBeNull();
+
+    r.host.setSettings({ revealStrategies: true });
+    r.until(() => r.host.getView().room!.history.length >= 2, 'a finished match with the reveal on');
+    const second = r.host.getView().room!.history[0]!.id;
+    const revealed = ben.extras(second)?.revealed;
+    expect(revealed, "Ben got the second match's strategies").toBeTruthy();
+    expect(revealed!.length).toBe(4);
+    // Every code is a real strategy (Ana's own among them), and gated like any other import.
+    const loaded = revealed!.map((x) => loadStrategy(x.code, 'network'));
+    expect(loaded.every((l) => l.strategy)).toBe(true);
+    expect(loaded.find((l) => l.strategy!.name === 'Lurking Gary')?.strategy?.author).toBe('SECRET-AUTHOR-MARK');
+    expect(revealed!.find((x) => x.name === 'Lurking Gary')).toMatchObject({ owner: 'Ana' });
+    expect(r.host.extras(second)!.revealed!.map((x) => x.code)).toEqual(revealed!.map((x) => x.code));
+  });
+
+  it('gives every guest the battle report of a finished match', () => {
+    const r = room();
+    const ana = r.join('Ana', 'ana-client-0000000');
+    r.pump();
+    r.until(() => r.host.getView().room!.history.length >= 1, 'a finished match');
+    const h = r.host.getView().room!.history[0]!;
+    const report = r.host.extras(h.id)?.report;
+    expect(report, 'the host recorded the match').toBeTruthy();
+    expect(report).toContain(h.winner!);
+    expect(ana.extras(h.id)?.report).toBe(report);
+  });
+
+  it("shows a guest the thinking of the fighter it selected, and only to that guest", () => {
+    const r = room();
+    const seenByAna: unknown[] = [];
+    const ana = r.join('Ana', 'ana-client-0000000', { spy: seenByAna });
+    const seenByBen: unknown[] = [];
+    r.join('Ben', 'ben-client-0000000', { spy: seenByBen });
+    r.until(() => (r.host.player.latest?.tick ?? 0) > 120 && ana.player.info?.id === r.host.player.info?.id, 'a match under way');
+    const alive = r.host.player.latest!.fighters.find((f) => f.alive)!.id;
+    ana.player.select(alive);
+    r.host.player.select(alive);
+    for (let i = 0; i < 6; i++) r.pump(100);
+    const minds = (seen: unknown[]) => seen.filter((m) => (m as { t: string }).t === 'mind').length;
+    expect(minds(seenByAna)).toBeGreaterThan(0);
+    expect(minds(seenByBen), 'nobody asked for it').toBe(0);
+    ana.player.advance(r.now());
+    r.host.player.advance(r.now());
+    // Same fighter, same picture: the guest sees what the host sees.
+    expect(ana.player.decision(alive)?.behaviour).toBeTruthy();
+    expect(ana.player.decision(alive)).toEqual(r.host.player.decision(alive));
+    expect(ana.player.knowledge(alive)).toEqual(r.host.player.knowledge(alive));
+    // Deselecting stops the stream.
+    ana.player.select(null);
+    for (let i = 0; i < 4; i++) r.pump(100);
+    const before = minds(seenByAna);
+    for (let i = 0; i < 6; i++) r.pump(100);
+    expect(minds(seenByAna)).toBe(before);
+  });
+
+  it('paints the gore so far for someone who joins mid-match', () => {
+    const r = room();
+    r.until(() => r.host.player.latest !== null && r.host.player.latest.tick > 900, 'a match well under way');
+    const joinedAt = r.host.player.latest!.tick;
+    const seen: unknown[] = [];
+    const cleo = r.join('Cleo', 'cleo-client-000000', { spy: seen });
+    r.pump();
+    const gore = seen.find((m) => (m as { t: string }).t === 'gore') as { e: GameEvent[] } | undefined;
+    expect(gore, 'the host sent the gore so far').toBeDefined();
+    expect(gore!.e.length).toBeGreaterThan(0);
+    for (let i = 0; i < 4; i++) r.pump(100);
+    const out = cleo.player.advance(r.now());
+    expect(out?.reset).toBe(true);
+    // The arena repaints from before Cleo arrived.
+    expect(out!.events.filter((e) => e.tick < joinedAt - 600).length).toBeGreaterThan(0);
+  });
+
+  it('stays responsive when a hostile host floods it', () => {
+    // One page, one hostile host: messages beyond the budget are dropped unread, the screen is told
+    // once per pump, and what the player keeps stays within its limits.
+    const hub = createMemoryHub();
+    let t = 0;
+    const evil = hub.join();
+    const ana = new RoomClient({ code: CODE, name: 'Ana', clientId: 'ana-client-0000000', transport: hub.join(), now: () => t });
+    let told = 0;
+    ana.subscribe(() => told++);
+    const match = houseMatch(1, 'pit', 4);
+    const map = MAPS.pit!;
+    const info = {
+      id: 1, mapId: 'pit', mapHash: mapFingerprint(map), seed: 1, format: 'ffa', timeLimitTicks: 5400, suddenDeath: true, friendlyFire: true, fightAt: 0,
+      fighters: match.state.fighters.map((f) => ({ id: f.id, entrantId: f.entrantId, squad: f.squad, name: f.name, color: f.color, weapon: f.weapon, skill: f.skill, attributes: f.attributes, radius: f.radius, owner: null })),
+    };
+    hub.flush();
+    evil.send({ t: 'you', v: PROTOCOL_VERSION, member: 'm1' });
+    evil.send({ t: 'match', info });
+    hub.flush();
+    expect(ana.getView().status).toBe('connected');
+    const index = new Map(match.state.fighters.map((f, i) => [f.id, i]));
+    const kill: GameEvent = { type: 'kill', tick: 0, killerId: 'f0', victimId: 'f1', cause: 'weapon', pos: { x: 1, y: 1 }, dir: 0, title: 'AGAIN', killerBehaviour: null, victimBehaviour: 'x', weapon: null, flags: [], hazard: null, final: false };
+    const flood = 600;
+    for (let i = 0; i < flood; i++) evil.send(encodeFrame(1, i + 1, 1, match.state, Array.from({ length: 40 }, () => kill), index));
+    for (let i = 0; i < 200; i++) evil.send({ t: 'added', ok: true, line: `spam ${i}` });
+    hub.flush();
+    expect(ana.getView().rejected, 'everything past the burst is dropped unread').toBeGreaterThanOrEqual(flood + 200 - INBOUND_BURST);
+    expect(ana.player.feed.length).toBeLessThanOrEqual(PLAYER_TIMING.maxFeed);
+    expect(ana.player.marks.length).toBeLessThanOrEqual(PLAYER_TIMING.maxMarks);
+    t += 16;
+    ana.pump();
+    expect(told, 'one screen update for the whole flood').toBe(1);
   });
 
   it('reopens with every stored strategy gated again', () => {

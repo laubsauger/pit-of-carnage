@@ -18,7 +18,7 @@ import { createMockController } from './MockController';
 const params = new URLSearchParams(window.location.search);
 if (params.has('nogpu')) Object.defineProperty(Navigator.prototype, 'gpu', { configurable: true, get: () => undefined });
 
-const controller = createMockController({ saved: FIXTURE_SAVED, splash: params.has('splash') });
+const controller = createMockController({ saved: FIXTURE_SAVED, splash: params.has('splash'), house: FIXTURE_HOUSE });
 if (params.has('crash')) {
   controller.knowledge = () => {
     throw new Error('Mock knowledge exploded (?crash).');

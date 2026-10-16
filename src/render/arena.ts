@@ -1,8 +1,9 @@
 /**
  * Set dressing driven by the map and the live world state: wall torches, props (kegs, amphoras,
- * crates), hazards (spikes, saws with their tracks, acid, fire pits), shrines, power-up pedestals
- * and items lying on the floor. Cut-out parts share the fighter material (lit by the light field);
- * flames and halos go into the renderer's shared fire and glow batches.
+ * crates), hazards (spikes, saws with their tracks, acid, fire pits), shrines and power-up
+ * pedestals (spent arrows and axes are ammo.ts; dropped gear is fx). Cut-out parts share the fighter
+ * material (lit by the light field); flames and halos go into the renderer's shared fire and glow
+ * batches.
  *
  * Power-ups are worth a detour and must read from across the arena: a pedestal that is always
  * there, runes and a ring in the power-up's colour that fill up toward the respawn (pulsing through
@@ -19,14 +20,14 @@
 
 import * as THREE from 'three/webgpu';
 import { HAZARD_RULES, LAYER_HEIGHT, PICKUP_RULES, PROP_RULES, TICK_HZ, hashString } from '../core';
-import type { FloorItem, GameEvent, HazardState, MapDef, PickupKind, WorldState } from '../core';
+import type { GameEvent, HazardState, MapDef, PickupKind, WorldState } from '../core';
 import { affine, setFrame } from './affine';
-import { PartBatch, SLOT, buildCutout, colorOf, newStyle } from './cutout';
+import { PartBatch, SLOT, buildCutout, newStyle } from './cutout';
 import { DynamicMesh } from './dynmesh';
 import type { LightField } from './lightfield';
 import { collectMapLights, flicker } from './lightmath';
 import type { LightSource } from './lightmath';
-import { C, floorItemGeometry } from './parts';
+import { C } from './parts';
 import { arcBand, circle, rect, roundRect, star, taperedCurve, transformPoly } from './poly';
 import type { Poly } from './poly';
 import { spikeCycle, spikeWarning } from './hazards';
@@ -34,7 +35,6 @@ import { QuadBatch, smokeMaterial } from './sprites';
 
 const MAX_PROPS = 48;
 const MAX_HAZARDS = 48;
-const MAX_ITEMS = 96;
 const MAX_TORCHES = 32;
 const MAX_PICKUPS = 16;
 /** A map light this close to a wall is drawn as a torch on that wall. */
@@ -62,7 +62,6 @@ const FUME_WISPS = 5;
 const H = {
   track: LAYER_HEIGHT.floor + 0.3,
   acid: LAYER_HEIGHT.floorFx + 0.2,
-  items: LAYER_HEIGHT.floorItems,
   hazard: LAYER_HEIGHT.props,
   spikes: LAYER_HEIGHT.props + 1,
   shrine: LAYER_HEIGHT.props,
@@ -257,7 +256,6 @@ export class ArenaLayer {
   private readonly berserk: PartBatch;
   private readonly pedestals: Record<PickupKind, PartBatch>;
   private readonly sconce: PartBatch;
-  private readonly items: Record<FloorItem['kind'], PartBatch>;
   private readonly batches: PartBatch[];
   private readonly tracks: DynamicMesh;
   private readonly marks: DynamicMesh;
@@ -270,7 +268,6 @@ export class ArenaLayer {
   private map: MapDef | null = null;
   private propHp: number[] = [];
   private propJiggle: number[] = [];
-  private readonly fighterColor = new THREE.Color();
   /** Game seconds since each pedestal's power-up appeared / was taken (large = long ago). */
   private readonly spawnAge = new Float32Array(MAX_PICKUPS).fill(99);
   private readonly takenAge = new Float32Array(MAX_PICKUPS).fill(99);
@@ -303,15 +300,9 @@ export class ArenaLayer {
       berserk: mk('pedestal-berserk', pedestalGeometry('berserk'), MAX_PICKUPS),
     };
     this.sconce = mk('torch', sconceGeometry(), MAX_TORCHES);
-    this.items = {
-      arrow: mk('item-arrow', floorItemGeometry('arrow'), MAX_ITEMS),
-      axe: mk('item-axe', floorItemGeometry('axe'), MAX_ITEMS),
-      weapon: mk('item-weapon', floorItemGeometry('weapon'), MAX_ITEMS),
-      helmet: mk('item-helmet', floorItemGeometry('helmet'), MAX_ITEMS),
-    };
     this.batches = [
       this.keg, this.amphora, this.crate, this.spikePlate, this.spikes, this.spikeGlow, this.saw, this.firePit, this.shrine,
-      this.shrineRune, this.shrineCore, this.haste, this.berserk, this.pedestals.haste, this.pedestals.berserk, this.sconce, ...Object.values(this.items),
+      this.shrineRune, this.shrineCore, this.haste, this.berserk, this.pedestals.haste, this.pedestals.berserk, this.sconce,
     ];
     this.tracks = new DynamicMesh('saw-tracks', 6 * 256);
     this.marks = new DynamicMesh('arena-marks', 6 * 2048, { emissive: 0.6 });
@@ -447,17 +438,6 @@ export class ArenaLayer {
 
     // Power-up pedestals.
     for (let i = 0; i < state.pickups.length; i++) this.drawPickup(state.pickups[i]!, i, time, gameDt, glow, light);
-
-    // Spent arrows and axes on the floor. Dropped weapons and helmets belong to fx, which throws and
-    // rolls them as pieces; drawing them here too would show each one twice.
-    for (const it of state.floor) {
-      if (it.kind === 'weapon' || it.kind === 'helmet') continue;
-      const rot = (hashString(it.id) % 628) / 100;
-      this.ownerColor(state, it.ownerId);
-      st.team.copy(this.fighterColor);
-      this.items[it.kind].push(setFrame(T, it.pos.x, it.pos.y, rot, 1), H.items, st, 0);
-    }
-    st.team.setRGB(1, 1, 1);
 
     for (const b of this.batches) b.end();
     this.marks.end();
@@ -677,17 +657,6 @@ export class ArenaLayer {
     glow.data[k] = r;
     glow.data[k + 1] = g;
     glow.data[k + 2] = b;
-  }
-
-  private ownerColor(state: WorldState, ownerId: string | null): void {
-    this.fighterColor.setRGB(0.55, 0.52, 0.48);
-    if (ownerId === null) return;
-    for (const f of state.fighters) {
-      if (f.id === ownerId) {
-        this.fighterColor.copy(colorOf(f.color));
-        return;
-      }
-    }
   }
 
   dispose(): void {

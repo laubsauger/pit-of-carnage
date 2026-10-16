@@ -21,6 +21,7 @@
  */
 
 import {
+  BLEED_RULES,
   COMBAT,
   SKILLS,
   SPEED_SCALE,
@@ -28,6 +29,7 @@ import {
   angleDiff,
   attackCooldown,
   damageMultiplier,
+  muzzlePoint,
   projectileSpeed,
   projectileTtl,
   resolveDamage,
@@ -37,10 +39,12 @@ import {
   skillDamage,
 } from '../core';
 import type { FighterRt, SimCtx } from './context';
-import type { AnimPhase, FighterState, ProjectileState, Vec2, WeaponId } from '../core';
-import { applyDamage, bark, blow, canHurt, damageProp, dropItem } from './damage';
+import type { AnimPhase, FighterState, ProjectileState, Vec2 } from '../core';
+import { applyDamage, bark, blow, canHurt, damageProp, dropItem, openWound } from './damage';
 import { circleBlocked, staticLosBlocked, staticSegmentT } from './geometry';
 import { remembers } from './perception';
+import { landAmmo } from './stuck';
+import type { AmmoStop } from './stuck';
 
 /** Punches (weapon arm gone, or a ranged weapon out of ammo): phase lengths and arc. */
 const PUNCH = { windup: 7, strike: 5, recovery: 8, arc: 1.4, knockback: 3, backstabMult: 1.45 } as const;
@@ -54,28 +58,18 @@ const MAX_HOLD_TICKS = 45;
 const PUNCH_START_SLACK = 12;
 /** Extra radius (px) a fighter offers to projectiles, so grazing shots count. */
 const PROJECTILE_BODY_SLACK = 2;
-/** Spent arrows and axes land this far back from a wall they hit (px). */
+/** Bursts and dropped arrows and axes sit this far back (px) from whatever stopped the shot. */
 const DROP_BACKOFF = 10;
 /** Splash knockback relative to the weapon's knockback. */
 const SPLASH_KNOCKBACK = 0.6;
+/**
+ * A stunned body slides about 1 / this times its starting speed before it stops (movement's stun
+ * friction, then normal deceleration once the stun ends; measured): HOOK sets the pull speed from
+ * the distance to cover.
+ */
+const HOOK_SLIDE = 0.118;
 /** SHADOWSTEP tries these rotations (radians) around the target's back when the spot is blocked. */
 const STEP_TRIES = [0, 0.5, -0.5, 1, -1, 1.6, -1.6];
-
-/**
- * Where each ranged weapon lets go of its projectile, in the shooter's body frame: `u` px ahead
- * along its facing, `v` px toward its right hand, for a body of MUZZLE_RADIUS (scaled by radius /
- * MUZZLE_RADIUS, like the drawn rig). Read off the renderer's rig at release (render/fighters.ts
- * with SWING_KEYS in render/rig.ts): the staff's orb tip at the end of the windup, the bow string
- * at rest, and the throwing hand as the axe leaves it (a left-hand throw mirrors `v`).
- */
-const MUZZLE: Readonly<Partial<Record<WeaponId, { u: number; v: number }>>> = {
-  THROWING_AXES: { u: 16, v: 15 },
-  LONGBOW: { u: 13, v: -3 },
-  ARCANE_STAFF: { u: 69.5, v: 20 },
-};
-const NO_MUZZLE = { u: 0, v: 0 };
-/** Body radius the rig is drawn at (the renderer's NOMINAL_RADIUS). */
-const MUZZLE_RADIUS = 18;
 
 function setPhase(f: FighterState, phase: AnimPhase, dur: number): void {
   f.anim.phase = phase;
@@ -127,12 +121,24 @@ function isShot(rt: FighterRt): boolean {
   return !rt.punching && WEAPONS[rt.f.weapon].family === 'ranged';
 }
 
+/** A blow with the hand weapon kept back (`WeaponRule.handDamage`, the axe thrower's hatchet) instead of fists. */
+function handWeapon(f: FighterState): boolean {
+  return f.limbs.armR && WEAPONS[f.weapon].handDamage > 0;
+}
+
+/** Base damage of a punch-style blow: the hand weapon if there is one, else fists. */
+function handDamage(f: FighterState): number {
+  return handWeapon(f) ? WEAPONS[f.weapon].handDamage : COMBAT.punchDamage;
+}
+
 function startAttack(ctx: SimCtx, rt: FighterRt): void {
   const f = rt.f;
   const w = WEAPONS[f.weapon];
   if (!f.limbs.armR && !f.limbs.armL) return;
-  const punching = !f.limbs.armR || (w.family === 'ranged' && f.ammo <= 0);
   const target = decisionTarget(ctx, rt);
+  // Out of ammo it punches; a hand weapon also hacks instead of throwing at an enemy that close.
+  const punching =
+    !f.limbs.armR || (w.family === 'ranged' && (f.ammo <= 0 || (handWeapon(f) && target >= 0 && knownEdgeDistance(ctx, rt, target) <= COMBAT.punchRange)));
   // A decision naming someone this fighter does not know (or no longer can: dead, an ally) is no
   // licence to swing; only a decision with no target at all may swing at the air (or a keg).
   if (target < 0 && rt.decision?.targetId) return;
@@ -216,7 +222,7 @@ function strike(ctx: SimCtx, rt: FighterRt): void {
   const f = rt.f;
   const w = WEAPONS[f.weapon];
   setPhase(f, 'strike', rt.punching ? PUNCH.strike : w.strike);
-  f.attackCd = rt.punching ? COMBAT.punchCooldown : attackCooldown(f.attributes, f.weapon);
+  f.attackCd = rt.punching && !handWeapon(f) ? COMBAT.punchCooldown : attackCooldown(f.attributes, f.weapon);
   rt.lastCombatTick = ctx.state.tick;
   if (rt.punching || w.family === 'melee') meleeStrike(ctx, rt);
   else fire(ctx, rt);
@@ -269,7 +275,7 @@ function meleeStrike(ctx: SimCtx, rt: FighterRt): void {
   if (cleave || !hit) {
     const props = ctx.state.props;
     const mult = damageMultiplier(f.attributes, f.buffs.berserk > 0);
-    const base = rt.punching ? COMBAT.punchDamage : w.damage;
+    const base = rt.punching ? handDamage(f) : w.damage;
     let nearest = -1;
     let nearestD = Infinity;
     for (let i = 0; i < props.length; i++) {
@@ -298,7 +304,9 @@ function hitFighter(ctx: SimCtx, rt: FighterRt, j: number): void {
   if (!v.alive || !f.alive) return;
   const w = WEAPONS[f.weapon];
   const punching = rt.punching;
-  const base = punching ? COMBAT.punchDamage : w.damage;
+  // A hatchet blow counts as the weapon's (reports, kill stamps); fists are a punch.
+  const hand = punching && handWeapon(f);
+  const base = punching ? handDamage(f) : w.damage;
   const dir = Math.atan2(v.pos.y - f.pos.y, v.pos.x - f.pos.x);
   let mult = damageMultiplier(f.attributes, f.buffs.berserk > 0);
 
@@ -322,35 +330,20 @@ function hitFighter(ctx: SimCtx, rt: FighterRt, j: number): void {
     v.helmet = false;
     dropItem(ctx, 'helmet', v.pos.x + Math.cos(dir) * 24, v.pos.y + Math.sin(dir) * 24, v.pos.x, v.pos.y, v.id);
   }
-  const info = blow(rt.idx, punching ? 'punch' : 'weapon', 'weapon', dir);
-  info.weapon = punching ? null : f.weapon;
+  const info = blow(rt.idx, punching && !hand ? 'punch' : 'weapon', 'weapon', dir);
+  info.weapon = punching && !hand ? null : f.weapon;
   info.crit = crit;
   info.backstab = backstab;
   info.knockback = punching ? PUNCH.knockback : w.knockback;
   info.stunTicks = punching ? 0 : w.stunTicks;
   info.slowTicks = punching ? 0 : w.slowTicks;
   applyDamage(ctx, j, resolveDamage(base, mult, v.attributes), info);
+  // A twin-dagger backstab opens a wound (BLEED_RULES; off while bleed is disabled).
+  if (backstab && !punching && f.weapon === 'TWIN_DAGGERS') openWound(ctx, vrt, BLEED_RULES.backstabTicks, BLEED_RULES.backstabDamage, info);
 }
 
+/** Scratch for the muzzle point (`muzzlePoint` and `MUZZLES` in src/core/rules.ts, shared with the renderer's rig). */
 const muzzle: Vec2 = { x: 0, y: 0 };
-
-/**
- * World position of f's muzzle (see MUZZLE), written into `out`. Axes alternate hands when both
- * arms are there: an odd count throws from the right (the hand that holds a lone axe), an even
- * count from the left.
- */
-function muzzlePoint(f: FighterState, out: Vec2): Vec2 {
-  const m = MUZZLE[f.weapon] ?? NO_MUZZLE;
-  const side = f.weapon === 'THROWING_AXES' && f.limbs.armL && f.ammo % 2 === 0 ? -1 : 1;
-  const s = f.radius / MUZZLE_RADIUS;
-  const u = m.u * s;
-  const v = m.v * side * s;
-  const c = Math.cos(f.facing);
-  const n = Math.sin(f.facing);
-  out.x = f.pos.x + u * c - v * n;
-  out.y = f.pos.y + u * n + v * c;
-  return out;
-}
 
 /**
  * Loose a projectile at the locked target (seen this tick, checked by `releaseShot`) from the
@@ -445,6 +438,15 @@ const HIT_NONE = 0;
 const HIT_WALL = 1;
 const HIT_PROP = 2;
 const HIT_FIGHTER = 3;
+const HIT_ZONE = 4;
+
+/** Reused answers for where spent ammo ended up (see `landAmmo`). */
+const FLOOR: AmmoStop = { kind: 'floor' };
+const WALL: AmmoStop = { kind: 'wall' };
+const ZONE: AmmoStop = { kind: 'zone' };
+const SHIELD: AmmoStop = { kind: 'shield' };
+const PROP_STOP = { kind: 'prop', index: -1 } satisfies AmmoStop;
+const BODY_STOP = { kind: 'fighter', index: -1 } satisfies AmmoStop;
 
 /** Advance one projectile; returns true when it ended this tick. */
 function stepProjectile(ctx: SimCtx, p: ProjectileState): boolean {
@@ -456,7 +458,7 @@ function stepProjectile(ctx: SimCtx, p: ProjectileState): boolean {
   p.pos.x = segTo.x;
   p.pos.y = segTo.y;
   if (--p.ttl > 0) return false;
-  endProjectile(ctx, p, ctx.rts[ctx.byId.get(p.ownerId)!]!, p.pos.x, p.pos.y, -1);
+  endProjectile(ctx, p, ctx.rts[ctx.byId.get(p.ownerId)!]!, p.pos.x, p.pos.y, -1, -1, FLOOR);
   return true;
 }
 
@@ -481,7 +483,7 @@ function sweep(ctx: SimCtx, p: ProjectileState, from: Vec2, to: Vec2): boolean {
     const te = exitT(from, to, b.x, b.y, b.x + b.w, b.y + b.h);
     if (te >= 0 && te < tBest) {
       tBest = te;
-      kind = HIT_WALL;
+      kind = HIT_ZONE;
     }
   }
   const props = ctx.state.props;
@@ -515,6 +517,7 @@ function sweep(ctx: SimCtx, p: ProjectileState, from: Vec2, to: Vec2): boolean {
   const mult = shotMultiplier(ctx, p, owner);
   let hitId = -1;
   let spared = -1;
+  let stop: AmmoStop = kind === HIT_ZONE ? ZONE : WALL;
   if (kind === HIT_FIGHTER) {
     const vrt = ctx.rts[idx]!;
     const v = vrt.f;
@@ -527,6 +530,7 @@ function sweep(ctx: SimCtx, p: ProjectileState, from: Vec2, to: Vec2): boolean {
     if (shielded) {
       ctx.events.push({ type: 'parry', tick: ctx.state.tick, fighterId: v.id, attackerId: owner.f.id, pos: { x: ex, y: ey } });
       spared = idx;
+      stop = SHIELD;
     } else {
       hitId = idx;
       const backstab = Math.abs(angleDiff(v.facing, dir)) <= COMBAT.backstabArc;
@@ -542,11 +546,15 @@ function sweep(ctx: SimCtx, p: ProjectileState, from: Vec2, to: Vec2): boolean {
       info.stunTicks = w.stunTicks;
       info.slowTicks = w.slowTicks;
       applyDamage(ctx, idx, resolveDamage(w.damage, m, v.attributes), info);
+      BODY_STOP.index = idx;
+      stop = BODY_STOP;
     }
   } else if (kind === HIT_PROP) {
     damageProp(ctx, idx, w.damage * mult, oi);
+    PROP_STOP.index = idx;
+    stop = PROP_STOP;
   }
-  endProjectile(ctx, p, owner, ex, ey, hitId, hitId >= 0 ? hitId : spared);
+  endProjectile(ctx, p, owner, ex, ey, hitId, hitId >= 0 ? hitId : spared, stop);
   return true;
 }
 
@@ -557,19 +565,20 @@ function shotMultiplier(ctx: SimCtx, p: ProjectileState, owner: FighterRt): numb
 }
 
 /**
- * Splash (staff, sparing `spareIdx`: the fighter hit directly or the shield that stopped it), drop
- * spent ammo (arrows, axes) and emit `projectile_end`.
+ * Splash (staff, sparing `spareIdx`: the fighter hit directly or the shield that stopped it), emit
+ * `projectile_end`, then let spent ammo (arrows, axes) stick in or drop by what stopped it (`stop`,
+ * see stuck.ts).
  */
-function endProjectile(ctx: SimCtx, p: ProjectileState, owner: FighterRt, x: number, y: number, hitIdx: number, spareIdx = hitIdx): void {
+function endProjectile(ctx: SimCtx, p: ProjectileState, owner: FighterRt, x: number, y: number, hitIdx: number, spareIdx: number, stop: AmmoStop): void {
   const w = WEAPONS[p.weapon];
   const len = Math.hypot(p.vel.x, p.vel.y) || 1;
-  // Step back from whatever stopped it, so the burst and the dropped item sit in open floor.
+  // Step back from whatever stopped it, so the burst and a dropped item sit in open floor.
   const bx = x - (p.vel.x / len) * DROP_BACKOFF;
   const by = y - (p.vel.y / len) * DROP_BACKOFF;
   if (w.splash > 0) splash(ctx, p, owner, bx, by, spareIdx);
-  if (w.ammoPickup) dropItem(ctx, p.weapon === 'LONGBOW' ? 'arrow' : 'axe', bx, by, bx, by, p.ownerId);
   ctx.pointBlank.delete(p.id);
   ctx.events.push({ type: 'projectile_end', tick: ctx.state.tick, projectileId: p.id, pos: { x, y }, hitId: hitIdx >= 0 ? ctx.rts[hitIdx]!.f.id : null });
+  if (w.ammoPickup) landAmmo(ctx, p, stop, x, y, bx, by);
 }
 
 function splash(ctx: SimCtx, p: ProjectileState, owner: FighterRt, x: number, y: number, spareIdx: number): void {
@@ -599,6 +608,7 @@ function splash(ctx: SimCtx, p: ProjectileState, owner: FighterRt, x: number, y:
 // ---------------------------------------------------------------------------------------------
 
 export function updateSkills(ctx: SimCtx): void {
+  for (const rt of ctx.rts) if (rt.windTicks > 0) secondWind(ctx, rt);
   for (const rt of ctx.rts) {
     const f = rt.f;
     if (!f.alive || !rt.decision?.useSkill || f.skillCd > 0 || f.stunTicks > 0) continue;
@@ -607,6 +617,7 @@ export function updateSkills(ctx: SimCtx): void {
     const oy = f.pos.y;
     if (!useSkill(ctx, rt)) continue;
     f.skillCd = skillCooldown(f.attributes);
+    f.attackCd = Math.max(f.attackCd, SKILLS[f.skill].lockTicks);
     // pos is where the skill happened; for SHADOWSTEP that is the departure point (the state has the arrival).
     ctx.events.push({ type: 'skill', tick: ctx.state.tick, fighterId: f.id, skill: f.skill, pos: { x: ox, y: oy } });
     bark(ctx, rt, 'skill');
@@ -641,7 +652,63 @@ function useSkill(ctx: SimCtx, rt: FighterRt): boolean {
       f.buffs.berserk = Math.max(f.buffs.berserk, s.berserkTicks);
       f.buffs.haste = Math.max(f.buffs.haste, s.hasteTicks);
       return true;
+    case 'HOOK':
+      return hook(ctx, rt);
+    case 'SECOND_WIND':
+      // Nothing to catch your breath from at full health: the cooldown is not spent.
+      if (f.hp >= f.maxHp) return false;
+      rt.windTicks = s.healTicks;
+      rt.windStart = ctx.state.tick;
+      rt.windGulp = Math.max(1, Math.round((f.maxHp * s.heal) / Math.max(1, Math.floor(s.healTicks / s.healEvery))));
+      return true;
   }
+}
+
+/** A breath being caught (SECOND_WIND): a gulp of HP every healEvery ticks; any damage taken since it started ends it. */
+function secondWind(ctx: SimCtx, rt: FighterRt): void {
+  const f = rt.f;
+  const s = SKILLS.SECOND_WIND;
+  if (!f.alive || (f.lastHitTick !== null && f.lastHitTick >= rt.windStart)) {
+    rt.windTicks = 0;
+    return;
+  }
+  rt.windTicks--;
+  if ((ctx.state.tick - rt.windStart) % s.healEvery !== 0 || ctx.state.tick === rt.windStart) return;
+  const amount = Math.min(f.maxHp - f.hp, rt.windGulp);
+  if (amount <= 0) return;
+  f.hp += amount;
+  ctx.events.push({ type: 'heal', tick: ctx.state.tick, fighterId: f.id, amount, pos: { x: f.pos.x, y: f.pos.y }, shrineId: null });
+}
+
+/**
+ * HOOK: yank the decision's target (seen this tick, within maxRange, clear line) toward the user,
+ * stunned, so it slides to about `distance` px in front of it (a stunned body slides about 10x
+ * its speed before stopping). Fails (cooldown not spent) without such a target.
+ */
+function hook(ctx: SimCtx, rt: FighterRt): boolean {
+  const s = SKILLS.HOOK;
+  const j = decisionTarget(ctx, rt);
+  if (j < 0 || !rt.mem[j]!.seen) return false;
+  const f = rt.f;
+  const vrt = ctx.rts[j]!;
+  const t = vrt.f;
+  const dx = f.pos.x - t.pos.x;
+  const dy = f.pos.y - t.pos.y;
+  const d = Math.hypot(dx, dy);
+  if (d > s.maxRange || staticLosBlocked(ctx.geo, f.pos.x, f.pos.y, t.pos.x, t.pos.y)) return false;
+  rt.lastCombatTick = ctx.state.tick;
+  f.facing = Math.atan2(-dy, -dx);
+  const dir = Math.atan2(dy, dx);
+  const info = blow(rt.idx, 'skill', 'skill', dir);
+  info.skill = 'HOOK';
+  info.stunTicks = s.stunTicks;
+  applyDamage(ctx, j, resolveDamage(skillDamage('HOOK', f.attributes), 1, t.attributes), info);
+  if (t.alive) {
+    const pull = Math.max(0, d - f.radius - t.radius - s.distance) * HOOK_SLIDE;
+    t.vel.x = Math.cos(dir) * pull;
+    t.vel.y = Math.sin(dir) * pull;
+  }
+  return true;
 }
 
 /** Damage, stun and knockback everyone within `radius` (and within `halfArc` of facing unless 0). */

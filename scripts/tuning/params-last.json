@@ -1,0 +1,10 @@
+[
+ {"path": "WEAPONS.ARCANE_STAFF.damage", "min": 20, "max": 32, "step": 1, "value": 26},
+ {"path": "WEAPONS.ARCANE_STAFF.cooldown", "min": 34, "max": 52, "step": 2, "value": 38},
+ {"path": "WEAPONS.ARCANE_STAFF.ammoRegenTicks", "min": 50, "max": 90, "step": 5, "value": 65},
+ {"path": "WEAPONS.ARCANE_STAFF.handDamage", "min": 10, "max": 22, "step": 2, "value": 16},
+ {"path": "WEAPONS.GREATSWORD.damage", "min": 28, "max": 38, "step": 1, "value": 35},
+ {"path": "WEAPONS.GREATSWORD.cooldown", "min": 34, "max": 46, "step": 2, "value": 36},
+ {"path": "WEAPONS.TWIN_DAGGERS.cooldown", "min": 22, "max": 32, "step": 1, "value": 27},
+ {"path": "WEAPONS.LONGBOW.cooldown", "min": 31, "max": 41, "step": 2, "value": 37}
+]

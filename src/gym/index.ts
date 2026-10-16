@@ -10,8 +10,7 @@
  * chip (`jobs()`, `GymOptions.onJobsChange`).
  */
 
-import type { BackgroundJob, BatchResult, EvolveResult, GymApi } from '../core';
-import type { CompareRequest, CompareResult } from './compare';
+import type { BackgroundJob, BatchResult, CompareResult, EvolveResult, GymApi } from '../core';
 import type { WorkerRequest, WorkerResponse } from './jobs';
 import { RatingBook } from './ratings';
 
@@ -24,7 +23,16 @@ export { RatingBook, DEFAULT_RATING, type RatingBookJson, type RatingRecord } fr
 export { aggregateReports } from './aggregate';
 export { buildBatch, runBatch, type MatchRunner } from './batch';
 export { createSimRunner } from './runner';
-export { evolve, type ArchiveCell, type GenerationReport } from './evolve';
+export {
+  evolve,
+  evolutionMatch,
+  type ArchiveCell,
+  type EvolutionMatch,
+  type GenerationMatches,
+  type GenerationReport,
+  type RecordedSlot,
+  type RecordedTrial,
+} from './evolve';
 export { nicheOf, nicheKey, NICHE_COUNT, type Niche } from './mutate';
 
 /** What the gym needs from a worker; a real `Worker` fits, tests pass an in-process fake. */
@@ -76,16 +84,8 @@ function abortError(): Error {
   return err;
 }
 
-/**
- * The gym as the app uses it: the `GymApi` contract plus comparisons and the running job for the
- * top-bar chip.
- */
+/** The gym as the app uses it: the `GymApi` contract (comparisons included) plus the running job for the top-bar chip. */
 export type GymService = GymApi & {
-  /**
-   * Two strategies or two versions side by side over the same seeds (see `runCompare`). Not rated.
-   * `onProgress` counts matches over both sides.
-   */
-  compare(req: CompareRequest, onProgress?: (done: number, total: number) => void): Promise<CompareResult>;
   /**
    * The job running in the background, for the top-bar chip: empty when idle, else one entry (the
    * gym runs one job at a time). The same array until it changes.

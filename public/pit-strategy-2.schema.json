@@ -56,7 +56,7 @@
             "LONGBOW",
             "ARCANE_STAFF"
           ],
-          "description": "GREATSWORD: Wide 135° cleave that hits everyone in the arc. Slow to wind up, rude to stand next to. Shield in guard stance. WARHAMMER: Single-target smash. Stuns for 34 ticks and sends the victim across the room. Shield in guard stance. TWIN_DAGGERS: Short, fast stabs. Backstabs deal x2.35. Light enough to turn on a coin. THROWING_AXES: Four axes, thrown hard. Each one lands on the floor and has to be picked up again. LONGBOW: Longest reach in the pit. Arrows slow the victim for 75 ticks. Ten arrows; spent ones must be picked up. ARCANE_STAFF: Slow orbs that burst on impact, splashing 60% damage within 72 px. Recharges instead of using ammo."
+          "description": "GREATSWORD: Wide 135° cleave that hits everyone in the arc. Slow to wind up, rude to stand next to. Shield in guard stance. WARHAMMER: Single-target smash with the longest melee reach. Stuns for 16 ticks and sends the victim across the room. Shield in guard stance. TWIN_DAGGERS: Short, quick stabs. Backstabs deal x2.2. Light enough to turn on a coin, but no shield and the shortest reach. THROWING_AXES: Five axes, thrown hard; they stick in whatever they hit and have to be pulled back out. Keeps a hatchet back for anyone who gets close (28 damage), and for when the axes are gone. LONGBOW: Longest reach in the pit. Arrows slow the victim for 105 ticks. Twelve arrows that stick where they hit (pull them back out), and the quiver finds one more every 4 s. ARCANE_STAFF: Slow orbs that burst on impact, splashing 60% damage within 72 px. Four charges, one back every 65 ticks. Whacks anyone who gets close with the staff itself (16 damage)."
         },
         "skill": {
           "enum": [
@@ -64,9 +64,11 @@
             "SHADOWSTEP",
             "DASH",
             "SHOCKWAVE",
-            "BLOODRAGE"
+            "BLOODRAGE",
+            "HOOK",
+            "SECOND_WIND"
           ],
-          "description": "WHIRLWIND: Spin attack: 25 + power x 0.55 damage to everyone within 92 px, with knockback. SHADOWSTEP: Teleport 36 px behind the target (within 320 px), facing its back. Pairs well with daggers. DASH: Burst along the current steering heading (impulse 14) plus haste for 65 ticks. Works for chasing and for leaving. SHOCKWAVE: Shield slam: parry window of 48 ticks, plus 19 damage and a 36-tick stun to everyone in a 96 px cone ahead. BLOODRAGE: Berserk (+35% damage) and haste (x1.45 speed) for 145 ticks."
+          "description": "WHIRLWIND: Spin attack: 25 + power x 0.55 damage to everyone within 92 px, with knockback. SHADOWSTEP: Teleport 36 px behind the target (within 320 px), facing its back. Stepping out of the shadows takes a moment: no attack for 30 ticks after. Pairs well with daggers. DASH: Burst along the current steering heading (impulse 14) plus haste for 65 ticks. Works for chasing and for leaving. SHOCKWAVE: Shield slam: parry window of 36 ticks, plus 19 damage and a 24-tick stun to everyone in a 96 px cone ahead. BLOODRAGE: Berserk (+35% damage) and haste (x1.45 speed) for 145 ticks. HOOK: Chain hook at the target (in sight, clear line, within 260 px): 8 damage, yanked to 20 px in front of you and stunned 24 ticks. Pull an archer off its perch, or a rival across the saw. SECOND_WIND: Catch your breath: heal 24% of max HP over 3 s, a gulp every half second. Any damage taken ends it. Needs you hurt."
         },
         "attributes": {
           "type": "object",

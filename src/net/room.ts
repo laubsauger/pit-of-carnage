@@ -9,6 +9,7 @@ import { RoomClient } from './client';
 import { RoomHost } from './host';
 import type { RoomSession } from './session';
 import { startTicker } from './transport';
+import type { TurnConfig } from './turn';
 
 type KeyValue = { getItem(key: string): string | null; setItem(key: string, value: string): void };
 
@@ -21,6 +22,8 @@ export type OpenRoomOptions = {
   clientId: string;
   /** The host keeps its room here (to reopen it after a reload). */
   storage?: KeyValue | null;
+  /** A TURN relay for strict networks (kept only in this browser), or null for direct connections. */
+  turn?: TurnConfig | null;
 };
 
 /** Pump interval: about 60 Hz, like the sim. */
@@ -28,7 +31,7 @@ const PUMP_MS = 16;
 
 export async function openRoom(opts: OpenRoomOptions): Promise<RoomSession> {
   const { trysteroTransport } = await import('./trystero');
-  const transport = trysteroTransport(opts.code);
+  const transport = trysteroTransport(opts.code, opts.turn ?? null);
   const now = () => performance.now();
   const session: RoomSession =
     opts.role === 'host'

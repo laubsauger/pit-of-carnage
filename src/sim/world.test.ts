@@ -176,6 +176,7 @@ describe('the closing wall is solid', () => {
   it('after sudden death starts, no living fighter is outside the bounds for more than one tick', () => {
     let contacts = 0;
     let checkedTicks = 0;
+    let stuckChecked = 0;
     for (const mapId of Object.keys(MAPS)) {
       const runs: [string, Match][] = [];
       for (const seed of [1, 2]) {
@@ -201,12 +202,23 @@ describe('the closing wall is solid', () => {
             const inside = it.pos.x >= z.bounds.x && it.pos.x <= z.bounds.x + z.bounds.w && it.pos.y >= z.bounds.y && it.pos.y <= z.bounds.y + z.bounds.h;
             expect(inside, `${label}: floor item ${it.id} left behind the wall at tick ${m.state.tick}`).toBe(true);
           }
+          // Arrows and axes stuck in walls and props are knocked out as the wall passes their pickup point.
+          for (const st of m.state.stuck) {
+            const q = st.pickupPos;
+            if (!q) continue;
+            stuckChecked++;
+            const inside = q.x >= z.bounds.x && q.x <= z.bounds.x + z.bounds.w && q.y >= z.bounds.y && q.y <= z.bounds.y + z.bounds.h;
+            expect(inside, `${label}: stuck ${st.kind} ${st.id} left behind the wall at tick ${m.state.tick}`).toBe(true);
+          }
         }
         expect(m.isOver, `${label} did not finish within the tick cap`).toBe(true);
       }
     }
-    expect(checkedTicks).toBeGreaterThan(10000);
+    // Enough sudden death to mean something (matches got shorter with the pass-3 balance: the
+    // shrine recharges far slower, so fewer fighters stall into the wall).
+    expect(checkedTicks).toBeGreaterThan(6000);
     expect(contacts).toBeGreaterThan(1000);
+    expect(stuckChecked, 'no stuck ammo was ever reachable in sudden death: the invariant above checked nothing').toBeGreaterThan(0);
   });
 
   // Impenetrable: push, push, push. A fighter who just stands there is shoved back in every time

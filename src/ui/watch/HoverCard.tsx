@@ -64,7 +64,7 @@ const KIND_LABEL: Record<MapObjectKind, string> = { shrine: 'Shrine', pickup: 'P
  * its live state ("Recharging, 3.2 s"). Polled while open; it disappears when the object does
  * (a broken keg, dried acid).
  */
-export const ObjectCard = forwardRef<HTMLDivElement, { controller: GameController; kind: MapObjectKind; id: string }>(function ObjectCard({ controller, kind, id }, ref) {
+export const ObjectCard = forwardRef<HTMLDivElement, { controller: GameController; kind: MapObjectKind; id: string; codex: boolean }>(function ObjectCard({ controller, kind, id, codex }, ref) {
   const info = usePolled<ObjectInfo | null>(
     controller,
     () => {
@@ -85,6 +85,8 @@ export const ObjectCard = forwardRef<HTMLDivElement, { controller: GameControlle
           {info.state}
         </div>
       ) : null}
+      {/* The card follows the pointer, so it cannot hold a link: a click on the object opens the entry. */}
+      {codex ? <div className="hc-foot faint">Click it for the Codex entry</div> : null}
     </div>
   );
 });

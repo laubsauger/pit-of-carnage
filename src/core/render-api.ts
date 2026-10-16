@@ -76,28 +76,41 @@ export type BloodAmount = 'light' | 'normal' | 'carnage';
  * only: nothing here reaches the sim. The controller owns the current value, persists it in
  * localStorage, and pushes the full object to the renderer (which forwards it to fx) and the
  * volume to audio whenever any field changes.
+ *
+ * Watch-screen shortcuts (SPEC "Keyboard"): the letter matches the word, e.g. H hearing, B HP bars,
+ * O fog, T name tags, A barks, V cinematic. The UI's view model owns the key table; the letters in
+ * the field docs below are the binding scheme.
  */
 export type ViewSettings = {
-  /** Damage popups, coloured by the attacker; crits bigger, backstabs labelled. */
+  /** Damage popups, coloured by the attacker; crits bigger, backstabs labelled (N). */
   damageNumbers: boolean;
+  /** Speech bubbles: off, key moments, all (A cycles). */
   barks: BarkMode;
-  /** Bangers kill stamps ("BACKSTAB", "SAWED"). */
+  /** Bangers kill stamps ("BACKSTAB", "SAWED") (K). */
   killStamps: boolean;
+  /** Name tags over fighters (T). */
   nameTags: boolean;
+  /** HP bars over fighters (B). */
   hpBars: boolean;
-  /** Vision cones. */
+  /** Vision cones: off, selected, all. */
   cones: ConeMode;
-  /** Steering ring and target line for the selected fighter. */
+  /** Steering ring and target line for the selected fighter (R). */
   rings: boolean;
-  /** Fog of war from the selected fighter's point of view (what it sees, hears and remembers). */
+  /** Fog of war from the selected fighter's point of view (what it sees, hears and remembers) (O). */
   fog: boolean;
-  /** Hearing ripples: rough rings where the selected fighter hears enemies (never an exact marker). */
+  /** Hearing ripples: rough rings where the selected fighter hears enemies (never an exact marker) (H). */
   hearing: boolean;
-  /** Screen shake: only on kills, or never. Ordinary hits never shake the camera. */
+  /** Screen shake: only on kills, or never. Ordinary hits never shake the camera (S). */
   shake: ShakeMode;
   blood: BloodAmount;
-  /** Master volume 0..1. */
+  /** Master volume 0..1 (M mutes and restores). */
   volume: number;
+  /**
+   * Cinematic view (V, and a button): all HUD chrome hidden except the match clock, the arena full
+   * screen. V again or any HUD key brings the HUD back. A UI-only switch: the renderer frames the
+   * whole canvas because the UI reports zero view insets while it is on.
+   */
+  cinematic: boolean;
 };
 
 export const DEFAULT_VIEW_SETTINGS: Readonly<ViewSettings> = {
@@ -115,6 +128,7 @@ export const DEFAULT_VIEW_SETTINGS: Readonly<ViewSettings> = {
   /** Carnage by default: vicious, violent splatter is the point (user request). */
   blood: 'carnage',
   volume: 0.7,
+  cinematic: false,
 };
 
 export interface GameRenderer {

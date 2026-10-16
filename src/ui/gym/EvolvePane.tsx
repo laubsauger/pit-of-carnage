@@ -2,6 +2,7 @@
 import { MAX_FIGHTERS, MIN_FIGHTERS, hashString, strategyKey } from '../../core';
 import type { EvolveGeneration, EvolveRequest, SavedStrategy, Strategy } from '../../core';
 import type { ArchiveCell } from '../../gym';
+import { evolutionMatch } from '../../gym';
 import type { WatchRequest } from '../App';
 import { evolveProblem, sanitizeForm } from '../batch';
 import type { EvolveForm } from '../batch';
@@ -84,19 +85,27 @@ export function EvolvePane({ houseStacks, saved, parent, job, outcome, onRun, on
   const lastPromotion = outcome ? [...outcome.generations].reverse().find((g) => g.promoted)?.generation ?? outcome.generations.length : 0;
 
   /**
-   * Watch an entry fight. Generation matches are not recorded, so this is a fresh match against the
-   * run's own field on its maps, seeded from the run and the entry: the same button shows the same fight.
+   * Watch an entry fight: the match it really played in that generation (its typical one), rebuilt
+   * from what the gym recorded. Without a recorded match, a fresh match against the run's own field
+   * on its maps, seeded from the run and the entry: the same button shows the same fight.
    */
   const watchEntry = (s: Strategy, generation: number) => {
     const req = outcome?.request;
     if (!req) return;
+    const origin = { label: `Evolution, ${strategyLabel(s.name, s.version)}`, tab: 'evolve' as const, matchIndex: null };
+    const pin = { keys: [strategyKey(s)], source: 'gym' as const };
+    const played = evolutionMatch(outcome.generations, req.field, s, generation);
+    if (played) {
+      onWatch({ config: played.config, focusId: played.fighterId, origin, pin });
+      return;
+    }
     const mapId = req.mapIds[(Math.max(1, generation) - 1) % req.mapIds.length] ?? req.mapIds[0]!;
     const config = exhibitionConfig(s, req.field, mapId, req.fighters, hashString(`${req.seed}:${strategyKey(s)}`));
     if (!config) {
       toast('This run had no field to fight.');
       return;
     }
-    onWatch({ config, focusId: SEAT_0_FIGHTER, origin: { label: `Evolution, ${strategyLabel(s.name, s.version)}`, tab: 'evolve', matchIndex: null } });
+    onWatch({ config, focusId: SEAT_0_FIGHTER, origin, pin });
   };
 
   return (
@@ -289,7 +298,7 @@ function GenerationCard({ gen, onWatch }: { gen: EvolveGeneration; onWatch: (s: 
                 <td className="num">{formatPercent(c.aggregate.winRate)}</td>
                 <td className={`num${vs.placeGain > 0 ? '' : ' faint'}`}>{formatSigned(vs.placeGain)}</td>
                 <td className="r">
-                  <button type="button" className="btn btn-sm btn-quiet" onClick={() => onWatch(c.strategy)} title="Watch it fight the run's field (a fresh match; generation matches are not recorded)">
+                  <button type="button" className="btn btn-sm btn-quiet" onClick={() => onWatch(c.strategy)} title="Watch the match it played in this generation">
                     Watch
                   </button>
                 </td>

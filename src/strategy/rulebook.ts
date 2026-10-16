@@ -28,6 +28,8 @@ import {
   SKILLS,
   SKILL_IDS,
   SPEED_SCALE,
+  STUCK_AMMO,
+  STUCK_AMMO_DOCS,
   STANCES,
   STAT_DOCS,
   STEER_DIRS,
@@ -286,7 +288,7 @@ function policies(): string {
       ...ATTACK_POLICIES.map((p) => [code(p.name), p.doc]),
       ['any expression', 'Attack the target when the expression is above 0. It does not check reach: combine with `target.in_reach` unless you want to swing at air.'],
     ]),
-    `The skill policy is an expression; the skill fires when it is above 0, the skill is off cooldown and you are not stunned. ${SKILLS.SHADOWSTEP.name} also needs a target within ${SKILLS.SHADOWSTEP.maxRange} px. ${SKILLS.DASH.name} bursts along your current steering heading, so it works for chasing and for running away.`,
+    `The skill policy is an expression; the skill fires when it is above 0, the skill is off cooldown and you are not stunned. ${SKILLS.SHADOWSTEP.name} also needs a target within ${SKILLS.SHADOWSTEP.maxRange} px, ${SKILLS.HOOK.name} a target in sight with a clear line within ${SKILLS.HOOK.maxRange} px. ${SKILLS.SECOND_WIND.name} needs you hurt (at full health it does not fire and the cooldown is kept). ${SKILLS.DASH.name} bursts along your current steering heading, so it works for chasing and for running away.`,
     `Reach: melee range + ${STEERING.bodyAllowance} px (the game measures melee to the victim's edge; the brain counts a typical body). Ranged: weapon range, and the line to the target must be clear. Without the weapon arm, or out of ammo, you punch (reach ${COMBAT.punchRange} + ${STEERING.bodyAllowance} px, ${COMBAT.punchDamage} damage).`,
   );
 }
@@ -318,6 +320,10 @@ function builds(): string {
     'Damage before power, berserk, backstab, crit and armor. Cooldown counts from the strike. Phases are windup/strike/recovery ticks; the blow lands on the first strike tick. Projectile speed is px/tick. Vision bonus is px; fov is radians before perception; move and turn are multipliers.',
     table(['Weapon', 'Family', 'Range', 'Damage', 'Cooldown', 'Phases', 'Knockback', 'Arc', 'Cleave', 'Backstab x', 'Ammo', 'Proj. speed', 'Vision +', 'FOV', 'Move x', 'Turn x', 'Notes'], weaponRows),
     `Projectiles stop at the first wall, pillar, prop or fighter in their path (any fighter, so crowds take stray shots). Shields: greatsword and warhammer users in guard stance block every projectile arriving within ${COMBAT.shieldArc} rad of their facing; a blocked staff orb bursts on the shield and its splash spares the bearer. Shots spread with the shooter's speed and the distance, lead the target imperfectly, and hit for x${COMBAT.pointBlankMul} under ${COMBAT.pointBlankRange} px. Melee strikes lunge forward and interrupt a ranged windup; walking backwards is slow (x${COMBAT.backpedalMoveMul}), and a ranged attacker plants (x${COMBAT.rangedPlantMoveMul}) while shooting.`,
+    `Hand weapons: ${WEAPON_IDS.filter((id) => WEAPONS[id].handDamage > 0).map((id) => `${WEAPONS[id].name} ${WEAPONS[id].handDamage}`).join(', ')} base damage for a blow up close (punch reach ${COMBAT.punchRange} px) instead of a shot, and when out of ammo; without one it is fists for ${COMBAT.punchDamage}.`,
+    '### Stuck arrows and axes',
+    'Arrows and thrown axes stick where they hit: in walls, pillars and props at the angle they hit, and in bodies. Walk up to a stuck one to take it back. Ammo in a living body is out of play until that fighter dies; then it drops to the floor around the corpse. `ammo.distance` and the place `ammo` include stuck ammo you can take back.',
+    table(['Rule', 'Value', 'Meaning'], (Object.keys(STUCK_AMMO) as (keyof typeof STUCK_AMMO)[]).map((k) => [k, num(STUCK_AMMO[k]), STUCK_AMMO_DOCS[k]])),
     '### Skills',
     table(['Skill', 'Name', 'Effect'], skillRows),
     '### Combat rules',

@@ -20,16 +20,16 @@
  */
 
 import type {
-  BackgroundJob, GameController, GameEvent, GameRenderer, LoadingStageId, MapObjectKind, MatchPhase, MatchSignal, RenderInitStage, UiSnapshot, ViewInsets, ViewSettings,
-  WorldState,
+  BackgroundJob, GameController, GameEvent, GameRenderer, Lineup, LoadingStageId, MapObjectKind, MatchPhase, MatchRules, MatchSignal, MatchStream, RenderInitStage,
+  UiSnapshot, ViewInsets, ViewSettings, WorldState,
 } from '../core';
-import { DEFAULT_MAP_ID, DEFAULT_TIME_LIMIT_TICKS, LOADING_STAGES, NO_VIEW_INSETS, clamp } from '../core';
+import { DEFAULT_MAP_ID, DEFAULT_TIME_LIMIT_TICKS, LOADING_STAGES, NO_VIEW_INSETS, clamp, lineupFromConfig, matchWinners, rulesFromConfig } from '../core';
 import { createAudio } from '../audio';
-import { createGymApi } from '../gym';
+import { createGymApi, reportToText } from '../gym';
 import type { GymService } from '../gym';
-import type { MatchStream, StreamWatcher } from '../net/watch';
-import { gatedBrainFactory } from '../strategy';
+import { HOUSE_STACKS, gatedBrainFactory } from '../strategy';
 import { copyInto } from './copy';
+import { DEFAULT_MATCH_RULES, emptyLineup, nextMapId, planMatch, shuffleLineup } from './lineup';
 import { objectInfo } from './objects';
 import { FINAL_SECONDS, RoundFlow } from './round';
 import { MatchSession, validatedConfig } from './session';
@@ -44,8 +44,13 @@ const DRAG_SLOP_PX = 4;
 /** Wheel zoom per pixel of scroll: one 100 px notch zooms about 14%. */
 const WHEEL_ZOOM_PER_PX = 0.0015;
 
-/** The real controller; it can also show a room's stream (`watchStream`, see src/net/watch.ts). */
-export function createController(): GameController & StreamWatcher {
+/** A fresh match seed ("Next match", "Shuffle field"). App-side randomness: the sim only sees the number. */
+function freshSeed(): number {
+  return (Math.random() * 2 ** 32) >>> 0;
+}
+
+/** The real controller; it can also show a room's stream (`watchStream`). */
+export function createController(): GameController {
   const listeners = new Set<() => void>();
   const clock = new FixedStep();
   const director = new TimeDirector();
@@ -67,12 +72,25 @@ export function createController(): GameController & StreamWatcher {
   let viewInsets: ViewInsets = { ...NO_VIEW_INSETS };
   /** A room's match shown instead of the local one (null: the local match). */
   let stream: MatchStream | null = null;
+  /**
+   * The lineup the next match plays: the last match's (given to `startMatch`, else derived from its
+   * config) until `setLineup`, `shuffleField` or `startMatchup` changes it. Before any match: every
+   * slot open, so the first "Next match" draws house stacks.
+   */
+  let lineup: Lineup = emptyLineup();
+  /** The rules next to the lineup (the last match's, plus the map rotation switch). */
+  let rules: MatchRules = { ...DEFAULT_MATCH_RULES };
   /** The stream's state last drawn (map-object cards read it). */
   let streamState: WorldState | null = null;
   /** The stream's match last drawn, and the end of its final moment (performance.now ms). */
   let streamMatchId = -1;
   let streamFinalUntil = 0;
   let streamAdmiredId = -1;
+  /**
+   * The end card state last told to renderer and audio for the local match (`end_card` signal);
+   * null after the renderer was reset, so the next frame tells it again.
+   */
+  let cardSent: boolean | null = null;
   /** Gym jobs for the top-bar chip (the gym publishes them through `onJobsChange`). */
   let jobs: BackgroundJob[] = [];
   /** Renderer init stages reached so far (`createRenderer`'s onProgress). */
@@ -83,7 +101,10 @@ export function createController(): GameController & StreamWatcher {
   const audio = createAudio();
   audio.setVolume(view.volume);
   // init() must run synchronously inside the gesture, or the browser keeps the AudioContext muted.
-  if (typeof window !== 'undefined') {
+  // `?mute` never creates the AudioContext: automated browser checks must not play sound on the
+  // user's machine.
+  const muted = typeof location !== 'undefined' && new URLSearchParams(location.search).has('mute');
+  if (typeof window !== 'undefined' && !muted) {
     const startAudio = () => void audio.init();
     window.addEventListener('pointerdown', startAudio, { once: true, capture: true });
     window.addEventListener('keydown', startAudio, { once: true, capture: true });
@@ -125,10 +146,12 @@ export function createController(): GameController & StreamWatcher {
   function streamPhase(ready: boolean): MatchPhase {
     if (!ready) return 'loading';
     if (!round.entered) return 'splash';
-    const v = stream?.view() ?? null;
-    if (!v) return 'live';
+    const st = stream;
+    const v = st?.view() ?? null;
+    if (!st || !v) return 'live';
     if (v.countdown !== null && v.countdown > 0) return 'countdown';
-    if (v.finished) return performance.now() < streamFinalUntil ? 'final' : 'ended';
+    // Joined on a decided match, the stream shows its card at once; else our final moment runs first.
+    if (v.finished) return !st.endCardShown && performance.now() < streamFinalUntil ? 'final' : 'ended';
     return 'live';
   }
 
@@ -234,8 +257,8 @@ export function createController(): GameController & StreamWatcher {
       if (e.type === 'kill' && e.final) round.signal({ type: 'final_kill', killerId: e.killerId, victimId: e.victimId, pos: { x: e.pos.x, y: e.pos.y } });
     }
     if (directed) director.onEvents(events);
-    // Decided live: the final moment, once per match.
-    if (s.over) round.decided();
+    // Decided live: the final moment and the victory, once per match.
+    if (s.over) round.decided({ type: 'victory', winnerIds: matchWinners(s.state), ending: s.state.ending ?? 'elimination' });
   }
 
   function flushEvents(s: MatchSession): void {
@@ -291,6 +314,12 @@ export function createController(): GameController & StreamWatcher {
       dirty = true;
     }
     sendSignals(round.takeSignals());
+    // The end card comes and goes (seeks included): the renderer poses the winner, the audio hushes.
+    const card = round.phase(true, s.state.finished) === 'ended';
+    if (card !== cardSent) {
+      cardSent = card;
+      sendSignals([{ type: 'end_card', shown: card, winnerIds: card ? matchWinners(s.state) : [] }]);
+    }
 
     // Behind the splash nothing animates or sounds; during the countdown the arena breathes at speed.
     const scale = !round.entered || paused ? 0 : held ? speed : speed * slow;
@@ -353,6 +382,7 @@ export function createController(): GameController & StreamWatcher {
   function showMatch(r: GameRenderer, s: MatchSession): void {
     r.setMap(s.match.map);
     r.reset();
+    cardSent = null;
   }
 
   /** Jump to `tick`. `fresh`: the renderer drew nothing of this match yet, so repaint from tick 0. */
@@ -383,8 +413,8 @@ export function createController(): GameController & StreamWatcher {
     r.setSelected(selectedId);
     r.setHovered(hoveredId);
     r.setFollow(followId);
-    r.setDecisionProvider((id) => (stream ? null : session?.match.lastDecision(id) ?? null));
-    r.setKnowledgeProvider((id) => (stream ? [] : session?.match.knowledge(id) ?? []));
+    r.setDecisionProvider((id) => controller.decision(id));
+    r.setKnowledgeProvider((id) => controller.knowledge(id));
     r.setViewInsets(viewInsets);
     if (stream) stream.requestReset();
     else if (session) seekTo(session.tick, true);
@@ -406,7 +436,7 @@ export function createController(): GameController & StreamWatcher {
     }
   }
 
-  const controller: GameController & StreamWatcher = {
+  const controller: GameController = {
     getSnapshot: () => snapshot,
 
     subscribe(fn) {
@@ -429,8 +459,10 @@ export function createController(): GameController & StreamWatcher {
       notify();
     },
 
-    startMatch(config) {
+    startMatch(config, next) {
       const s = new MatchSession(validatedConfig(config), gatedBrainFactory);
+      lineup = next ?? lineupFromConfig(config);
+      rules = { ...rulesFromConfig(config), rotateMaps: rules.rotateMaps };
       stream = null;
       streamState = null;
       session = s;
@@ -447,7 +479,37 @@ export function createController(): GameController & StreamWatcher {
     },
 
     restart() {
-      if (session && !stream) controller.startMatch(session.config);
+      if (session && !stream) controller.startMatch(session.config, lineup);
+    },
+
+    nextMatch() {
+      // The lineup as it stands (pinned picks and the field as drawn) with a new seed; open slots fill
+      // from the house stacks. A watched room's match is not ours to repeat.
+      if (stream) return;
+      const seed = freshSeed();
+      const next = rules.rotateMaps && session ? { ...rules, mapId: nextMapId(rules.mapId) } : rules;
+      const plan = planMatch(lineup, next, HOUSE_STACKS, seed);
+      controller.startMatch(plan.config, plan.lineup);
+      rules = next;
+    },
+
+    getLineup: () => lineup,
+
+    setLineup(next) {
+      lineup = next;
+      notify();
+    },
+
+    shuffleField() {
+      lineup = shuffleLineup(lineup, rules, HOUSE_STACKS, freshSeed());
+      notify();
+    },
+
+    startMatchup(m) {
+      const plan = planMatch(m.lineup, m.rules, HOUSE_STACKS, m.seed);
+      controller.startMatch(plan.config, plan.lineup);
+      // startMatch reads the rules back from the config; keep the ones asked for (squad size, rotation).
+      rules = { ...m.rules };
     },
 
     setPaused(p) {
@@ -482,6 +544,8 @@ export function createController(): GameController & StreamWatcher {
 
     select(id) {
       selectedId = id;
+      // A room's host streams the selected fighter's thinking only.
+      stream?.select(id);
       renderer?.setSelected(id);
       notify();
     },
@@ -518,9 +582,9 @@ export function createController(): GameController & StreamWatcher {
       notify();
     },
 
-    decision: (id) => (stream ? null : session?.match.lastDecision(id) ?? null),
+    decision: (id) => (stream ? stream.decision(id) : session?.match.lastDecision(id) ?? null),
 
-    knowledge: (id) => (stream ? [] : session?.match.knowledge(id) ?? []),
+    knowledge: (id) => (stream ? stream.knowledge(id) : session?.match.knowledge(id) ?? []),
 
     fighter: (id) => (stream ? stream.fighter(id) : session?.state.fighters.find((f) => f.id === id) ?? null),
 
@@ -555,6 +619,12 @@ export function createController(): GameController & StreamWatcher {
     },
 
     lastReport: () => (!stream && session?.state.finished ? session.report : null),
+
+    lastReportText() {
+      if (stream) return stream.reportText();
+      const report = controller.lastReport();
+      return report ? reportToText(report) : null;
+    },
 
     mountCanvas(el) {
       const canvas = document.createElement('canvas');

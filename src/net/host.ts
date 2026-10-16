@@ -7,24 +7,33 @@
  *
  * Everything a peer sends is checked (`parsePeerMessage`), rate-limited, and every strategy goes
  * through the gate with source `network` before it can enter the pool.
+ *
+ * Beyond the stream: each viewer's selected fighter gets its decisions and knowledge (`mind`, only
+ * to whoever asked), a late joiner gets the gore so far (`gore`), and every finished match gets a
+ * battle report (`report`) and, when the host turns on the reveal, its strategies as codes (`reveal`).
  */
 
-import { DEFAULT_FIGHTERS, DEFAULT_TIME_LIMIT_TICKS, FIGHTER_COLORS, MAX_FIGHTERS, MIN_FIGHTERS, Rng, clamp, matchHardCapTicks } from '../core';
+import { DEFAULT_TIME_LIMIT_TICKS, FIGHTER_COLORS, MAX_FIGHTERS, MIN_FIGHTERS, Rng, clamp, matchHardCapTicks } from '../core';
 import type { GameEvent, MapDef, Match, MatchConfig, Strategy, StrategySource, ValidStrategy } from '../core';
 import { FixedStep, TimeDirector } from '../app/time';
+import { MatchRecorder } from '../gym/recorder';
+import { reportToText } from '../gym/text';
 import { MAPS, MAP_IDS, createMatch } from '../sim';
-import { HOUSE_STACKS, encodeStrategyCode, headlessBrainFactory, loadStrategy } from '../strategy';
+import { HOUSE_STACKS, encodeStrategyCode, gatedBrainFactory, loadStrategy } from '../strategy';
 import { RoomBoard } from './board';
 import type { BoardSeat } from './board';
+import { GoreLog } from './gore';
+import type { WireGore } from './gore';
+import { decodeMind, encodeMind } from './mind';
 import { StreamPlayer } from './player';
 import { RoomPool, entryKey, pickLineup } from './pool';
 import type { PoolEntry, Seat } from './pool';
-import { MAX_HISTORY, MAX_MEMBERS, PROTOCOL_VERSION, checkHistory, parseHostMessage, parsePeerMessage } from './protocol';
-import type { MatchSummary, PeerMessage, RoomSettings, RoomState } from './protocol';
+import { DEFAULT_ROOM_SETTINGS, MAX_HISTORY, MAX_MEMBERS, MAX_REPORT_TEXT, PROTOCOL_VERSION, checkHistory, parseHostMessage, parsePeerMessage } from './protocol';
+import type { HostMessage, MatchSummary, PeerMessage, RevealedStrategy, RoomSettings, RoomState } from './protocol';
 import { hostStorageKey } from './saved';
 import type { SavedRoom } from './saved';
-import { ViewState } from './session';
-import type { RoomSession, RoomView } from './session';
+import { ViewState, keepExtras } from './session';
+import type { MatchExtras, RoomSession, RoomView } from './session';
 import { cloneEvent, decodeFrame, encodeFrame, mapFingerprint } from './snapshot';
 import type { StreamMatchInfo, WireFrame } from './snapshot';
 import type { Transport } from './transport';
@@ -40,9 +49,11 @@ export type HostTiming = {
   idleFrameMs: number;
   /** Shortest gap between two room-state broadcasts. */
   stateMs: number;
+  /** Shortest gap between two minds of a selected fighter (brains think 10 times a second). */
+  mindMs: number;
 };
 
-export const HOST_TIMING: HostTiming = { introMs: 3600, outroMs: 8000, frameMs: 50, idleFrameMs: 400, stateMs: 250 };
+export const HOST_TIMING: HostTiming = { introMs: 3600, outroMs: 8000, frameMs: 50, idleFrameMs: 400, stateMs: 250, mindMs: 100 };
 
 /** Messages a peer may send in a burst, and refilled per second (peers talk rarely; this stops floods). */
 const RATE_BURST = 20;
@@ -72,6 +83,16 @@ type Running = {
   info: StreamMatchInfo;
   map: MapDef;
   match: Match;
+  /** The battle report as the match goes (the same recorder as local matches). */
+  recorder: MatchRecorder;
+  /** Gore sent so far, for late joiners. */
+  gore: GoreLog;
+  /** Tick of the last frame sent (a late joiner's gore covers up to it). */
+  sentTick: number;
+  lastMindAt: number;
+  /** After the end: the report text and revealed strategies (null: none or kept), for late joiners too. */
+  report: string | null;
+  revealed: RevealedStrategy[] | null;
   /** Seat per roster index. */
   seats: Seat[];
   index: Map<string, number>;
@@ -119,8 +140,11 @@ export class RoomHost implements RoomSession {
   private readonly members = new Map<string, Member>();
   private readonly pool = new RoomPool();
   private board = new RoomBoard();
-  private settings: RoomSettings = { fighters: DEFAULT_FIGHTERS, mapId: 'rotate', fillWithHouse: true, running: true };
+  private settings: RoomSettings = { ...DEFAULT_ROOM_SETTINGS };
   private history: MatchSummary[] = [];
+  /** Which fighter each peer's inspector shows (peer id -> fighter id of the running match). */
+  private readonly watching = new Map<string, string>();
+  private extrasList: MatchExtras[] = [];
   private running: Running | null = null;
   private matchCount = 0;
   private mapTurn = 0;
@@ -195,6 +219,11 @@ export class RoomHost implements RoomSession {
     this.t.leave();
     this.running = null;
     this.view.changed();
+    this.view.flush(); // the pump stops with the room
+  }
+
+  extras(matchId: number): MatchExtras | null {
+    return this.extrasList.find((x) => x.matchId === matchId) ?? null;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -210,6 +239,7 @@ export class RoomHost implements RoomSession {
       this.lastStateAt = now;
       this.t.send({ t: 'state', state: this.publicState() });
     }
+    this.view.flush();
   }
 
   private runMatch(now: number): void {
@@ -233,6 +263,7 @@ export class RoomHost implements RoomSession {
         const events = m.match.step();
         for (const e of events) m.events.push(cloneEvent(e));
         m.director.onEvents(events);
+        m.recorder.observe(events, m.match.state, (id) => m.match.lastDecision(id));
       }
       if (m.match.isOver) {
         this.sendFrame(m, now);
@@ -282,8 +313,11 @@ export class RoomHost implements RoomSession {
       suddenDeath: true,
     };
     let match: Match;
+    let recorder: MatchRecorder;
     try {
-      match = createMatch(config, headlessBrainFactory);
+      // Brains fill the inspector's data: viewers may select any fighter and see its thinking.
+      match = createMatch(config, gatedBrainFactory);
+      recorder = new MatchRecorder(config, match.state, { mapName: (id) => MAPS[id]?.name ?? id });
     } catch (err) {
       this.view.say(`A match could not start: ${err instanceof Error ? err.message : String(err)}`, 'bad');
       this.settings = { ...this.settings, running: false };
@@ -307,9 +341,10 @@ export class RoomHost implements RoomSession {
       })),
     };
     this.running = {
-      info, map, match, seats, index: new Map(match.state.fighters.map((f, i) => [f.id, i])), phase: 'intro', endedAt: 0,
-      lastStepAt: now, lastFrameAt: -Infinity, events: [], clock: new FixedStep(), director: new TimeDirector(), scale: 1,
+      info, map, match, recorder, gore: new GoreLog(), sentTick: 0, lastMindAt: -Infinity, report: null, revealed: null, seats, index: new Map(match.state.fighters.map((f, i) => [f.id, i])),
+      phase: 'intro', endedAt: 0, lastStepAt: now, lastFrameAt: -Infinity, events: [], clock: new FixedStep(), director: new TimeDirector(), scale: 1,
     };
+    this.watching.clear(); // fighter ids repeat: a selection from the last match means nothing now
     this.t.send({ t: 'match', info });
     this.player.begin(info, map);
     this.sendFrame(this.running, now);
@@ -318,13 +353,41 @@ export class RoomHost implements RoomSession {
 
   private sendFrame(m: Running, now: number): void {
     const frame: WireFrame = encodeFrame(m.info.id, now, m.scale, m.match.state, m.events, m.index);
+    m.gore.add(m.events);
     m.events = [];
     m.lastFrameAt = now;
+    m.sentTick = m.match.state.tick;
     this.t.send(frame);
     // The host watches exactly what the peers get: the same frame, through JSON and the same checks.
     const decoded = decodeFrame(JSON.parse(JSON.stringify(frame)), m.info, m.map);
     if (decoded) this.player.push(decoded, now);
     else this.player.dropped++;
+    this.sendMinds(m, now);
+  }
+
+  /**
+   * The thinking of every fighter someone selected, to exactly those who selected it (the host's
+   * own view included, looped through the codec like frames). On the frames' clock, so a viewer
+   * sees the decision that goes with the picture.
+   */
+  private sendMinds(m: Running, now: number): void {
+    const own = this.player.selected;
+    if (this.watching.size === 0 && own === null) return;
+    if (now - m.lastMindAt < this.timing.mindMs) return;
+    m.lastMindAt = now;
+    const byFighter = new Map<string, string[]>();
+    for (const [peer, fid] of this.watching) byFighter.set(fid, [...(byFighter.get(fid) ?? []), peer]);
+    if (own !== null && !byFighter.has(own)) byFighter.set(own, []);
+    const state = m.match.state;
+    for (const [fid, peers] of byFighter) {
+      const mind = encodeMind(m.info.id, now, state.tick, fid, m.match.lastDecision(fid), m.match.knowledge(fid), m.index);
+      for (const peer of peers) this.t.send(mind, peer);
+      if (fid === own) {
+        const d = decodeMind(JSON.parse(JSON.stringify(mind)), m.info, matchHardCapTicks(m.info.timeLimitTicks) + 600);
+        if (d) this.player.pushMind(d);
+        else this.player.dropped++;
+      }
+    }
   }
 
   private finish(m: Running, now: number): void {
@@ -348,7 +411,39 @@ export class RoomHost implements RoomSession {
       },
       ...this.history,
     ].slice(0, MAX_HISTORY);
+    this.afterMatch(m);
     this.touch(true);
+  }
+
+  /** The battle report for everyone, and the strategies when the host reveals them. */
+  private afterMatch(m: Running): void {
+    let report: string | null = null;
+    try {
+      report = cut(reportToText(m.recorder.finish(m.match.result())), MAX_REPORT_TEXT);
+    } catch (err) {
+      // A report is a nicety: the match still counts without one.
+      console.warn('Room match report failed.', err);
+    }
+    const fighters = m.match.state.fighters;
+    const revealed: RevealedStrategy[] | null = this.settings.revealStrategies
+      ? fighters.map((f, i) => ({ fighterId: f.id, code: encodeStrategyCode(m.seats[i]!.strategy) }))
+      : null;
+    const id = m.info.id;
+    m.report = report;
+    m.revealed = revealed;
+    if (report !== null) {
+      this.t.send({ t: 'report', match: id, text: report });
+      this.player.setReport(id, report);
+    }
+    if (revealed) {
+      this.t.send({ t: 'reveal', match: id, list: revealed });
+      this.player.setRevealed(id, revealed);
+    }
+    this.extrasList = keepExtras(this.extrasList, {
+      matchId: id,
+      report,
+      revealed: revealed?.map((r, i) => ({ ...r, name: fighters[i]!.name, owner: m.info.fighters[i]!.owner, weapon: fighters[i]!.weapon, skill: fighters[i]!.skill })) ?? null,
+    });
   }
 
   // -------------------------------------------------------------------------------------------
@@ -381,6 +476,15 @@ export class RoomHost implements RoomSession {
     }
     if (msg.t === 'add') this.peerAdd(member, msg.strategy, from);
     else if (msg.t === 'remove' && this.pool.remove(msg.entry, member.id, false)) this.touch(true);
+    else if (msg.t === 'watch') this.peerWatch(msg, from);
+  }
+
+  /** A peer's inspector shows another fighter: from now on its minds go to that peer. */
+  private peerWatch(msg: Extract<PeerMessage, { t: 'watch' }>, from: string): void {
+    const m = this.running;
+    if (!m || msg.match !== m.info.id) return; // about a match that is over: nothing to send
+    if (msg.fighter !== null && m.index.has(msg.fighter)) this.watching.set(from, msg.fighter);
+    else this.watching.delete(from);
   }
 
   /** Token bucket per peer: a flood is dropped, not processed. */
@@ -426,8 +530,18 @@ export class RoomHost implements RoomSession {
     this.pool.renameOwner(m.id, m.name);
     this.t.send({ t: 'you', v: PROTOCOL_VERSION, member: m.id }, from);
     this.t.send({ t: 'state', state: this.publicState() }, from);
-    if (this.running) this.t.send({ t: 'match', info: this.running.info }, from);
+    if (this.running) this.catchUp(this.running, from);
     this.touch(true);
+  }
+
+  /** Someone arrives during a match: the match, the gore so far, and after the end what it left. */
+  private catchUp(m: Running, peer: string): void {
+    const say = (msg: HostMessage | WireGore) => this.t.send(msg, peer);
+    say({ t: 'match', info: m.info });
+    const gore = m.phase === 'intro' ? [] : m.gore.events();
+    if (gore.length > 0) say({ t: 'gore', m: m.info.id, k: m.sentTick, e: gore });
+    if (m.report !== null) say({ t: 'report', match: m.info.id, text: m.report });
+    if (m.revealed) say({ t: 'reveal', match: m.info.id, list: m.revealed });
   }
 
   private peerAdd(member: Member, text: string, from: string): void {
@@ -446,6 +560,7 @@ export class RoomHost implements RoomSession {
 
   private peerLeft(peer: string): void {
     this.buckets.delete(peer);
+    this.watching.delete(peer);
     const m = this.memberOf(peer);
     if (m) {
       m.peer = null;
@@ -565,7 +680,15 @@ export function sanitizeSettings(base: RoomSettings, patch: Partial<RoomSettings
   if (typeof patch.mapId === 'string' && (patch.mapId === 'rotate' || Object.hasOwn(MAPS, patch.mapId))) s.mapId = patch.mapId;
   if (typeof patch.fillWithHouse === 'boolean') s.fillWithHouse = patch.fillWithHouse;
   if (typeof patch.running === 'boolean') s.running = patch.running;
+  if (typeof patch.revealStrategies === 'boolean') s.revealStrategies = patch.revealStrategies;
   return s;
+}
+
+/** `text` within `max` characters, saying so when it had to be cut. */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const note = '\n\n(The report was cut here: it was too long to send.)';
+  return text.slice(0, max - note.length) + note;
 }
 
 function firstError(errors: readonly { path: string; message: string }[]): string {

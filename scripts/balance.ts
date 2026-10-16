@@ -19,22 +19,35 @@
 import { writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
-import { DEFAULT_MAP_ID } from '../src/core';
+import { DEFAULT_MAP_ID, WEAPONS, matchHardCapTicks } from '../src/core';
 import type { MatchConfig, MatchReport } from '../src/core';
-import { analyseBalance, balanceMarkdown, balancePlan, type BalanceOptions } from '../src/gym/balance';
+import { ammoMeter, analyseBalance, balanceMarkdown, balancePlan, type AmmoUse, type BalanceOptions } from '../src/gym/balance';
 import { createSimRunner } from '../src/gym/runner';
 import { MAPS, MAP_IDS, createMatch } from '../src/sim';
 import { HOUSE_STACKS, headlessBrainFactory } from '../src/strategy';
 
-type Job = { index: number; config: MatchConfig };
-type Done = { index: number; report: MatchReport } | { index: number; error: string };
+type Job = { index: number; config: MatchConfig; meter: boolean };
+type Done = { index: number; report: MatchReport; ammo: AmmoUse[] } | { index: number; error: string };
+
+/** Replays a match (the sim is deterministic: the same match) and measures how its ranged fighters used their ammo. */
+function measureAmmo(config: MatchConfig): AmmoUse[] {
+  if (!config.entrants.some((e) => WEAPONS[e.strategy.build.weapon].family === 'ranged')) return [];
+  const m = createMatch(config, headlessBrainFactory);
+  const meter = ammoMeter(m.state);
+  const cap = matchHardCapTicks(config.timeLimitTicks) + 600;
+  while (!m.isOver) {
+    if (m.state.tick > cap) throw new Error(`ammo replay of seed ${config.seed} ran past tick ${cap} without ending`);
+    meter.step(m.step());
+  }
+  return meter.uses();
+}
 
 function workerMain(): void {
   const run = createSimRunner({ createMatch, brainFactory: headlessBrainFactory, mapName: (id) => MAPS[id]?.name ?? id });
   parentPort!.on('message', (job: Job) => {
     let done: Done;
     try {
-      done = { index: job.index, report: run(job.config) };
+      done = { index: job.index, report: run(job.config), ammo: job.meter ? measureAmmo(job.config) : [] };
     } catch (e) {
       done = { index: job.index, error: e instanceof Error ? e.message : String(e) };
     }
@@ -70,24 +83,28 @@ function parseArgs(argv: readonly string[]): Args {
   return args;
 }
 
-/** Play every config on a pool of worker threads; reports come back in config order. */
-function playAll(configs: readonly MatchConfig[], threads: number): Promise<MatchReport[]> {
+/**
+ * Play every config on a pool of worker threads; reports come back in config order. The first
+ * `metered` configs (the duels) are also replayed to measure the ranged fighters' ammo.
+ */
+function playAll(configs: readonly MatchConfig[], threads: number, metered: number): Promise<{ reports: MatchReport[]; ammo: AmmoUse[] }> {
   const reports = new Array<MatchReport>(configs.length);
+  const ammo: AmmoUse[][] = new Array(configs.length);
   let next = 0;
   let finished = 0;
   let lastShown = -1;
   return new Promise((resolve, reject) => {
-    if (configs.length === 0) return resolve(reports);
+    if (configs.length === 0) return resolve({ reports, ammo: [] });
     const pool: Worker[] = [];
     const stop = (err?: Error) => {
       for (const w of pool) void w.terminate();
       if (err) reject(err);
-      else resolve(reports);
+      else resolve({ reports, ammo: ammo.flat() });
     };
     const feed = (w: Worker) => {
       if (next < configs.length) {
         const index = next++;
-        w.postMessage({ index, config: configs[index]! } satisfies Job);
+        w.postMessage({ index, config: configs[index]!, meter: index < metered } satisfies Job);
       }
     };
     for (let t = 0; t < Math.min(threads, configs.length); t++) {
@@ -95,6 +112,7 @@ function playAll(configs: readonly MatchConfig[], threads: number): Promise<Matc
       w.on('message', (done: Done) => {
         if ('error' in done) return stop(new Error(`Match ${done.index} (seed ${configs[done.index]!.seed}, ${configs[done.index]!.mapId}) failed: ${done.error}`));
         reports[done.index] = done.report;
+        ammo[done.index] = done.ammo;
         finished++;
         const shown = Math.floor((finished / configs.length) * 10);
         if (shown !== lastShown) {
@@ -132,10 +150,10 @@ async function main(): Promise<void> {
   const configs = [...plan.duels, ...plan.ffas];
   console.log(`Balance: ${plan.duels.length} duels on ${options.duelMapId} and ${plan.ffas.length} FFAs on ${options.mapIds.join(', ')}, ${args.threads} threads.`);
   const started = performance.now();
-  const reports = await playAll(configs, args.threads);
+  const { reports, ammo } = await playAll(configs, args.threads, plan.duels.length);
   const seconds = ((performance.now() - started) / 1000).toFixed(1);
 
-  const report = analyseBalance(options, reports.slice(0, plan.duels.length), reports.slice(plan.duels.length));
+  const report = analyseBalance(options, reports.slice(0, plan.duels.length), reports.slice(plan.duels.length), ammo);
   writeFileSync(args.out, balanceMarkdown(report));
   console.log(`Played ${configs.length} matches in ${seconds} s.`);
   for (const c of report.checks) console.log(`${c.guideline ? (c.pass ? 'inside ' : 'outside') : c.pass ? 'PASS   ' : 'FAIL   '}  ${c.target}: ${c.measured}`);

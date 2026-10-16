@@ -271,3 +271,32 @@ describe('chant tempo encoding', () => {
 function d0(): CrowdDirector {
   return new CrowdDirector(crowdProfile(42));
 }
+
+describe('the end of the match', () => {
+  // The winner's moment tops everything; then, under the end card, the crowd falls silent and
+  // makes no reactions until the card goes away (a seek back or a new match).
+  it('swells for the victory and hushes under the end card', () => {
+    const c = new CrowdDirector(crowdProfile(4));
+    c.onSignal({ type: 'victory', winnerIds: ['f0'], ending: 'elimination' });
+    expect(c.intensity).toBe(1);
+    c.onSignal({ type: 'end_card', shown: true, winnerIds: ['f0'] });
+    expect(c.intensity).toBe(0);
+    const s = world(spread(), 3000);
+    const out: Cue[] = [];
+    for (let i = 0; i < 20; i++) c.onEvent(hitEvent('f0', 'f1', 60, 3000 + i), s, out, always);
+    c.update(1);
+    expect(out).toEqual([]);
+    expect(c.intensity).toBe(0);
+    c.onSignal({ type: 'end_card', shown: false, winnerIds: [] });
+    c.onEvent(hitEvent('f0', 'f1', 60, 3100), s, out, always);
+    expect(c.intensity).toBeGreaterThan(0);
+  });
+
+  it('forgets the hush on a new round', () => {
+    const c = new CrowdDirector(crowdProfile(4));
+    c.onSignal({ type: 'end_card', shown: true, winnerIds: [] });
+    c.reset(crowdProfile(5));
+    c.bump(0.5);
+    expect(c.intensity).toBeGreaterThan(0);
+  });
+});

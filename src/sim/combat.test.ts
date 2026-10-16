@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COMBAT, HAZARD_RULES, WEAPONS, angleDiff, damageMultiplier, resolveDamage, shotSpread } from '../core';
+import { COMBAT, HAZARD_RULES, SKILLS, WEAPONS, angleDiff, damageMultiplier, resolveDamage, shotSpread } from '../core';
 import type { BrainFactory, GameEvent } from '../core';
 import { MAPS } from './maps';
 import { createMatch } from './match';
@@ -90,9 +90,11 @@ describe('projectiles', () => {
     expect(arrow!.ahead).toBeGreaterThan(8);
     expect(arrow!.ahead).toBeLessThan(25);
     expect(Math.abs(arrow!.right)).toBeLessThan(8);
-    // Axes come from alternating hands: four in hand, so left, right, left.
+    // Axes come from alternating hands: an odd count throws from the right (five in hand since
+    // pass 3), so right, left, right.
     const axes = shots('THROWING_AXES', 3);
-    expect(axes.map((a) => Math.sign(a.right))).toEqual([-1, 1, -1]);
+    expect(WEAPONS.THROWING_AXES.ammo % 2).toBe(1);
+    expect(axes.map((a) => Math.sign(a.right))).toEqual([1, -1, 1]);
     for (const a of axes) {
       expect(a.ahead).toBeGreaterThan(8);
       expect(Math.abs(a.right)).toBeGreaterThan(10);
@@ -140,31 +142,139 @@ describe('projectiles', () => {
     expect(s.f('Hugger').damageTaken).toBeGreaterThan(0);
   });
 
-  // Ammo is a resource: spent arrows land on the floor and only come back if you walk over them.
-  it('spent arrows land on the floor and must be picked up', () => {
+  // Ammo is a resource: an arrow that hits a body sticks in it (the comic pincushion) and is out of
+  // play while the victim lives; it comes back to the floor only with the corpse, and an archer
+  // only gets it back by walking over it. Without this the bow's quiver would never run dry.
+  it('an arrow in a body rides along, is out of play until the victim dies, then drops by the corpse', () => {
     const s = stage([
-      { name: 'Archer', weapon: 'LONGBOW', pos: [400, 196], facing: 0, script: { attack: true } },
+      { name: 'Archer', weapon: 'LONGBOW', pos: [400, 196], facing: 0, attributes: SHARP, script: { attack: true } },
       { name: 'Mark', weapon: 'GREATSWORD', pos: [700, 196], facing: 0 },
+      // Keeps the match going after Mark dies.
+      { name: 'Witness', weapon: 'GREATSWORD', pos: [1250, 760], facing: 0 },
+    ]);
+    const archer = s.f('Archer');
+    const mark = s.f('Mark');
+    s.scripts.Archer!.targetId = mark.id;
+    while (of(s.events, 'ammo_stick').length === 0 && s.match.state.tick < 300) s.run(1);
+    // Stop shooting and let a second shot already on its way land, so the count below is settled.
+    s.scripts.Archer = { attack: false };
+    s.run(60);
+    expect(of(s.events, 'ammo_stick').every((e) => e.in.kind === 'fighter'), 'a second arrow missed Mark').toBe(true);
+    const ammo = archer.ammo;
+    const stick = of(s.events, 'ammo_stick')[0];
+    expect(stick, 'the first arrow never stuck anywhere in 300 ticks').toBeDefined();
+    // Same tick, right after the arrow's end, naming the projectile that hit.
+    const end = of(s.events, 'projectile_end').find((e) => e.projectileId === stick!.projectileId)!;
+    expect(end.hitId).toBe(mark.id);
+    expect(s.events.indexOf(stick!)).toBe(s.events.indexOf(end) + 1);
+    expect(stick!.in.kind).toBe('fighter');
+    expect(s.match.state.floor.filter((i) => i.kind === 'arrow')).toHaveLength(0);
+    const [stuck] = s.match.state.stuck;
+    expect(s.match.state.stuck.every((x) => x.pickupPos === null)).toBe(true);
+
+    // It rides along with the body: same offset in the body frame wherever Mark goes.
+    const before = { d: Math.hypot(stuck!.pos.x - mark.pos.x, stuck!.pos.y - mark.pos.y), turn: stuck!.angle - mark.facing };
+    mark.pos.x = 640;
+    mark.pos.y = 700;
+    mark.facing = 2;
+    s.run(1);
+    expect(Math.hypot(stuck!.pos.x - mark.pos.x, stuck!.pos.y - mark.pos.y)).toBeCloseTo(before.d, 5);
+    expect(Math.cos(stuck!.angle - mark.facing - before.turn)).toBeCloseTo(1, 5);
+    // The archer standing right next to the body cannot pull it out.
+    archer.pos.x = mark.pos.x - mark.radius - archer.radius - 2;
+    archer.pos.y = mark.pos.y;
+    s.run(60);
+    expect(archer.ammo).toBe(ammo);
+
+    // Mark dies (the archer finishes him from range): every arrow in him drops by the corpse.
+    archer.pos.x = 400;
+    archer.pos.y = 700;
+    archer.facing = 0;
+    mark.hp = 1;
+    s.scripts.Archer = { attack: true, targetId: mark.id };
+    while (mark.alive && s.match.state.tick < 900) s.run(1);
+    expect(mark.alive, 'the archer never finished Mark').toBe(false);
+    s.scripts.Archer = { attack: false };
+    s.run(1);
+    const drops = of(s.events, 'ammo_unstick').filter((e) => e.reason === 'drop');
+    expect(drops.map((d) => d.stuckId)).toContain(stuck!.id);
+    expect(s.match.state.stuck).toHaveLength(0);
+    const arrows = s.match.state.floor.filter((i) => i.kind === 'arrow');
+    expect(arrows.length).toBeGreaterThanOrEqual(2); // the one in him and the one that killed him
+    for (const d of drops) expect(arrows.some((a) => a.id === d.floorItemId)).toBe(true);
+    for (const a of arrows) expect(Math.hypot(a.pos.x - mark.pos.x, a.pos.y - mark.pos.y)).toBeLessThan(40);
+
+    // Walking over them brings them back, one pickup per arrow.
+    const spent = WEAPONS.LONGBOW.ammo - archer.ammo;
+    for (const a of arrows) {
+      for (let t = 0; t < 600 && s.match.state.floor.some((i) => i.id === a.id); t++) {
+        s.scripts.Archer = { heading: Math.atan2(a.pos.y - archer.pos.y, a.pos.x - archer.pos.x), speed: 1 };
+        s.run(1);
+      }
+    }
+    expect(archer.ammo).toBe(WEAPONS.LONGBOW.ammo - spent + arrows.length);
+  });
+
+  // A miss is not lost: it sticks in the wall it hit and is pulled out from the open side, at the base.
+  it('an arrow that misses sticks in the wall and is taken back from in front of it', () => {
+    const s = stage([
+      { name: 'Archer', weapon: 'LONGBOW', pos: [900, 196], facing: 0, attributes: SHARP, script: { attack: true } },
+      { name: 'Mark', weapon: 'GREATSWORD', pos: [1150, 196], facing: 0 },
     ]);
     const archer = s.f('Archer');
     s.scripts.Archer!.targetId = s.f('Mark').id;
     while (of(s.events, 'projectile').length === 0 && s.match.state.tick < 200) s.run(1);
     s.scripts.Archer = { attack: false };
-    while (of(s.events, 'projectile_end').length === 0 && s.match.state.tick < 400) s.run(1);
-    expect(archer.ammo).toBe(WEAPONS.LONGBOW.ammo - 1);
-    const arrows = s.match.state.floor.filter((i) => i.kind === 'arrow');
-    expect(arrows).toHaveLength(1);
-    // Mark steps out of the lane so the walk to the arrow is about ammo, not about bodies.
+    // Mark steps out of the line: the arrow flies on into the outer wall.
     s.f('Mark').pos.x = 680;
     s.f('Mark').pos.y = 760;
+    while (of(s.events, 'projectile_end').length === 0 && s.match.state.tick < 400) s.run(1);
+    const [stuck] = s.match.state.stuck;
+    expect(stuck?.in.kind).toBe('wall');
+    const pp = stuck!.pickupPos!;
+    // The tip is at the wall; the pickup point sits in open floor just in front of it.
+    expect(stuck!.pos.x).toBeGreaterThan(1360 - 24 - 2);
+    expect(pp.x).toBeLessThan(stuck!.pos.x - 10);
     s.run(120);
     expect(archer.ammo).toBe(WEAPONS.LONGBOW.ammo - 1); // standing still: nothing comes back
+    // Brains find it like any spent arrow (the `ammo` place and `ammo.distance`), at its pickup point.
+    expect(s.lastView('Archer').world.nearestFloorItem(archer.pos, ['arrow'])).toEqual(pp);
 
-    s.scripts.Archer = { heading: Math.atan2(arrows[0]!.pos.y - archer.pos.y, arrows[0]!.pos.x - archer.pos.x), speed: 1 };
-    s.run(400);
-    expect(archer.ammo).toBe(WEAPONS.LONGBOW.ammo);
-    expect(s.match.state.floor.filter((i) => i.kind === 'arrow')).toHaveLength(0);
-    expect(of(s.events, 'pickup').some((p) => p.kind === 'arrow' && p.fighterId === archer.id)).toBe(true);
+    // The quiver refills slowly (ammoRegenTicks); empty it a bit so only room decides the pickup.
+    archer.ammo = 3;
+    for (let t = 0; t < 600 && s.match.state.stuck.length > 0; t++) {
+      s.scripts.Archer = { heading: Math.atan2(pp.y - archer.pos.y, pp.x - archer.pos.x), speed: 1 };
+      s.run(1);
+    }
+    expect(s.match.state.stuck, 'the archer never pulled the arrow out of the wall').toHaveLength(0);
+    expect(archer.ammo).toBeGreaterThanOrEqual(4);
+    const pulled = of(s.events, 'ammo_unstick').find((e) => e.stuckId === stuck!.id)!;
+    expect(pulled).toMatchObject({ reason: 'pickup', fighterId: archer.id, floorItemId: null });
+    // The usual pickup event follows on the same tick, for the cue and the reports.
+    const pick = s.events[s.events.indexOf(pulled) + 1]!;
+    expect(pick).toMatchObject({ type: 'pickup', kind: 'arrow', fighterId: archer.id });
+  });
+});
+
+describe('stuck ammo in props', () => {
+  // A crate full of arrows is a stash, not a sink: when it breaks, everything in it falls out.
+  it('arrows stuck in a crate drop to the floor when it breaks', () => {
+    const s = stage([
+      { name: 'Archer', weapon: 'LONGBOW', pos: [300, 104], facing: 0, attributes: SHARP, script: { attack: true } },
+      { name: 'Mark', weapon: 'GREATSWORD', pos: [600, 104], facing: 0 },
+    ]);
+    s.scripts.Archer!.targetId = s.f('Mark').id;
+    while (of(s.events, 'prop_break').length === 0 && s.match.state.tick < 900) s.run(1);
+    const brk = of(s.events, 'prop_break')[0];
+    expect(brk?.kind, 'the archer never broke the crate between them').toBe('crate');
+    s.scripts.Archer = { attack: false };
+    s.run(1);
+    const inCrate = of(s.events, 'ammo_stick').filter((e) => e.in.kind === 'prop' && e.in.propId === brk!.propId);
+    expect(inCrate.length).toBeGreaterThan(0);
+    const drops = of(s.events, 'ammo_unstick').filter((e) => e.reason === 'drop');
+    expect(drops.map((d) => d.stuckId).sort()).toEqual(inCrate.map((e) => e.stuckId).sort());
+    expect(s.match.state.stuck.some((x) => x.in.kind === 'prop')).toBe(false);
+    for (const d of drops) expect(s.match.state.floor.find((i) => i.id === d.floorItemId)?.kind).toBe('arrow');
   });
 });
 
@@ -225,6 +335,105 @@ describe('melee', () => {
     expect(hit.source).toBe('punch');
     expect(hit.weapon).toBeNull();
     expect(hit.amount).toBe(resolveDamage(COMBAT.punchDamage, damageMultiplier(BALANCED, false), BALANCED));
+  });
+
+  // Axes stick in whoever they hit, so an axe thrower soon has none left. It keeps a hatchet back:
+  // up close it hacks instead of throwing (no axe spent, full damage), and with no axes left it
+  // still hacks. A bow has nothing like it and punches.
+  it('an axe thrower hacks with its hatchet up close and when out of axes; an archer punches', () => {
+    const first = (weapon: 'THROWING_AXES' | 'LONGBOW', ammo: number | null) => {
+      const s = stab(Math.PI, (st) => {
+        const f = st.f('Stabber');
+        f.weapon = weapon;
+        if (ammo !== null) f.ammo = ammo;
+        else f.ammo = f.maxAmmo = WEAPONS[weapon].ammo;
+      });
+      return { hit: of(s.events, 'hit')[0]!, shots: of(s.events, 'projectile').length, ammo: s.f('Stabber').ammo };
+    };
+    const mult = damageMultiplier(BALANCED, false);
+    const close = first('THROWING_AXES', null);
+    expect(close.shots).toBe(0);
+    expect(close.ammo).toBe(WEAPONS.THROWING_AXES.ammo);
+    expect(close.hit).toMatchObject({ source: 'weapon', weapon: 'THROWING_AXES' });
+    expect(close.hit.amount).toBe(resolveDamage(WEAPONS.THROWING_AXES.handDamage, mult, BALANCED));
+    const dry = first('THROWING_AXES', 0);
+    expect(dry.hit.amount).toBe(resolveDamage(WEAPONS.THROWING_AXES.handDamage, mult, BALANCED));
+    const bow = first('LONGBOW', 0);
+    expect(bow.hit).toMatchObject({ source: 'punch', weapon: null });
+    expect(bow.hit.amount).toBe(resolveDamage(COMBAT.punchDamage, mult, BALANCED));
+  });
+});
+
+describe('skills', () => {
+  // HOOK answers kiting: a target in sight is yanked in front of the user and dazed, so a melee
+  // fighter gets its swing. Out of range or out of sight it does nothing and costs nothing.
+  it('a hook yanks a target in sight to the user and stuns it', () => {
+    const s = stage([
+      { name: 'Hooker', weapon: 'GREATSWORD', skill: 'HOOK', pos: [400, 196], facing: 0, script: { useSkill: true } },
+      { name: 'Archer', weapon: 'LONGBOW', pos: [600, 196], facing: Math.PI },
+    ]);
+    s.scripts.Hooker!.targetId = s.f('Archer').id;
+    s.f('Hooker').skillCd = 0;
+    while (of(s.events, 'skill').length === 0 && s.match.state.tick < 60) s.run(1);
+    expect(of(s.events, 'skill')[0]?.skill, 'the hook never fired at a target in sight').toBe('HOOK');
+    s.scripts.Hooker = {};
+    const hit = of(s.events, 'hit').find((h) => h.victimId === s.f('Archer').id)!;
+    expect(hit).toMatchObject({ source: 'skill', attackerId: s.f('Hooker').id });
+    expect(s.f('Archer').stunTicks).toBeGreaterThan(SKILLS.HOOK.stunTicks - 4);
+    s.run(45);
+    const gap = Math.hypot(s.f('Archer').pos.x - s.f('Hooker').pos.x, s.f('Archer').pos.y - s.f('Hooker').pos.y) - s.f('Archer').radius - s.f('Hooker').radius;
+    expect(gap).toBeLessThan(SKILLS.HOOK.distance + 20);
+    expect(gap).toBeGreaterThan(-4);
+
+    const far = stage([
+      { name: 'Hooker', weapon: 'GREATSWORD', skill: 'HOOK', pos: [300, 196], facing: 0, script: { useSkill: true } },
+      { name: 'Archer', weapon: 'LONGBOW', pos: [300 + SKILLS.HOOK.maxRange + 60, 196], facing: Math.PI },
+    ]);
+    far.scripts.Hooker!.targetId = far.f('Archer').id;
+    far.f('Hooker').skillCd = 0;
+    far.run(60);
+    expect(of(far.events, 'skill')).toHaveLength(0);
+    expect(far.f('Hooker').skillCd).toBe(0);
+  });
+
+  // SECOND_WIND heals over time, so it is a plan (break off, breathe, come back), and hitting the
+  // breather stops it: the counterplay is to keep the pressure on.
+  it('second wind heals in gulps and stops at the first hit', () => {
+    const breathe = (interrupt: boolean) => {
+      const s = stage([
+        { name: 'Breather', weapon: 'GREATSWORD', skill: 'SECOND_WIND', pos: [400, 196], facing: 0, script: { useSkill: true } },
+        { name: 'Mark', weapon: 'LONGBOW', pos: [1100, 760], facing: 0 },
+      ]);
+      const f = s.f('Breather');
+      f.skillCd = 0;
+      f.hp = Math.round(f.maxHp * 0.4);
+      while (of(s.events, 'skill').length === 0 && s.match.state.tick < 30) s.run(1);
+      s.scripts.Breather = {};
+      expect(of(s.events, 'skill')[0]?.skill).toBe('SECOND_WIND');
+      if (interrupt) {
+        s.run(70);
+        f.lastHitTick = s.match.state.tick; // as if hit right now
+      }
+      s.run(240);
+      return { heals: of(s.events, 'heal').filter((h) => h.fighterId === f.id), f };
+    };
+    const full = breathe(false);
+    const gulps = Math.floor(SKILLS.SECOND_WIND.healTicks / SKILLS.SECOND_WIND.healEvery);
+    expect(full.heals).toHaveLength(gulps);
+    expect(full.heals.every((h) => h.shrineId === null)).toBe(true);
+    const total = full.heals.reduce((n, h) => n + h.amount, 0);
+    expect(total).toBeGreaterThanOrEqual(Math.round(full.f.maxHp * SKILLS.SECOND_WIND.heal) - gulps);
+    expect(total).toBeLessThanOrEqual(Math.round(full.f.maxHp * SKILLS.SECOND_WIND.heal) + gulps);
+    // Hit after two gulps: no more.
+    expect(breathe(true).heals).toHaveLength(2);
+  });
+
+  it('second wind is not spent at full health', () => {
+    const s = stage([{ name: 'Fresh', weapon: 'GREATSWORD', skill: 'SECOND_WIND', pos: [400, 196], facing: 0, script: { useSkill: true } }, { name: 'Mark', weapon: 'LONGBOW', pos: [1100, 760], facing: 0 }]);
+    s.f('Fresh').skillCd = 0;
+    s.run(30);
+    expect(of(s.events, 'skill')).toHaveLength(0);
+    expect(s.f('Fresh').skillCd).toBe(0);
   });
 });
 

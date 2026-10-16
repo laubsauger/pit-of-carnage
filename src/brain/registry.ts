@@ -197,7 +197,7 @@ const SELF_SENSORS: readonly Omit<SensorDef, 'scope'>[] = [
   { name: 'self.hp_abs', unit: 'hp', range: '0..490', doc: 'Your HP in points.', get: (c) => c.self.hp },
   { name: 'self.ammo', unit: 'count', range: `0..${UNLIMITED_AMMO}`, doc: `Projectiles or charges left. Melee weapons read ${UNLIMITED_AMMO}.`, get: (c) => (WEAPONS[c.self.weapon].ammo === 0 ? UNLIMITED_AMMO : c.self.ammo) },
   { name: 'self.ranged', unit: '0/1', range: '0 or 1', doc: '1 when your weapon is ranged. Lets one behaviour serve melee and ranged builds.', get: (c) => bit(WEAPONS[c.self.weapon].family === 'ranged') },
-  { name: 'self.reach', unit: 'px', range: '52..430', doc: `How far your attack reaches right now: melee range + ${STEERING.bodyAllowance} px of body, or ranged range; punch reach (${COMBAT.punchRange} + ${STEERING.bodyAllowance}) without a weapon arm or ammo.`, get: (c) => c.reach },
+  { name: 'self.reach', unit: 'px', range: '52..430', doc: `How far your attack reaches right now: melee range + ${STEERING.bodyAllowance} px of body, or ranged range; punch reach (${COMBAT.punchRange} + ${STEERING.bodyAllowance}) without a weapon arm or ammo (throwing axes and the staff then hit with their hand weapon at that reach; see the weapons' handDamage).`, get: (c) => c.reach },
   { name: 'self.in_shadow', unit: '0/1', range: '0 or 1', doc: `1 when you stand in shadow (light below ${PERCEPTION.shadowLight}): enemies only see you within ${PERCEPTION.shadowVisionMul * 100}% of their range.`, get: (c) => bit(c.self.inShadow) },
   { name: 'self.light', unit: 'level', range: '0..1', doc: 'Light level where you stand (0 dark, 1 fully lit).', get: (c) => c.world.lightAt(c.self.pos) },
   { name: 'self.speed', unit: 'px/tick', range: '0..20', doc: 'Your current speed (a dash or a big knockback can briefly push it far above walking speed).', get: (c) => Math.hypot(c.self.vel.x, c.self.vel.y) },
@@ -218,7 +218,7 @@ const SELF_SENSORS: readonly Omit<SensorDef, 'scope'>[] = [
   { name: 'ally.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance to your nearest living squadmate. ${FAR} when there is none.`, get: nearestAllyDistance },
   { name: 'shrine.ready', unit: '0/1', range: '0 or 1', doc: 'The nearest shrine can heal right now.', get: (c) => bit(c.world.nearestShrine(c.self.pos)?.ready ?? false) },
   { name: 'shrine.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance to the nearest shrine (ready or not). ${FAR} when the map has none.`, get: (c) => { const s = c.world.nearestShrine(c.self.pos); return s ? v2Dist(c.self.pos, s.pos) : FAR; } },
-  { name: 'ammo.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance to the nearest arrow or axe you can pick up (bow and axes only). ${FAR} when there is none.`, get: (c) => { const kinds = ownAmmoKinds(c); if (kinds.length === 0) return FAR; const p = c.world.nearestFloorItem(c.self.pos, kinds); return p ? v2Dist(c.self.pos, p) : FAR; } },
+  { name: 'ammo.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance to the nearest arrow or axe you can take back (bow and axes only): spent ones on the floor, and ones stuck in a wall, prop or the floor (measured to the spot in front of it you pick it up from). Ammo stuck in a living body does not count until that body drops it. ${FAR} when there is none.`, get: (c) => { const kinds = ownAmmoKinds(c); if (kinds.length === 0) return FAR; const p = c.world.nearestFloorItem(c.self.pos, kinds); return p ? v2Dist(c.self.pos, p) : FAR; } },
   { name: 'hazard.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance from you to the centre of the nearest active hazard. ${FAR} when there is none.`, get: (c) => nearestHazardDistance(c, c.self.pos.x, c.self.pos.y) },
   { name: 'pickup.haste.ready', unit: '0/1', range: '0 or 1', doc: 'The nearest haste pedestal has its power-up on it right now.', get: (c) => pickupReady(c, 'haste') },
   { name: 'pickup.haste.distance', unit: 'px', range: `0..${FAR}`, doc: `Distance to the nearest haste pedestal, ready or not. ${FAR} when the map has none. ${PICKUP_EFFECT}`, get: (c) => pickupDistance(c, 'haste') },
@@ -608,7 +608,7 @@ export const PLACES: readonly PlaceDef[] = [
   },
   {
     name: 'ammo', args: [],
-    doc: 'The nearest of your own kind of spent projectile on the floor (arrows for the bow, axes for throwing axes). Nothing for other weapons.',
+    doc: 'The nearest of your own kind of spent projectile you can take back (arrows for the bow, axes for throwing axes): lying on the floor, or stuck in a wall, prop or the floor (the spot in front of it where you pull it out). Ammo stuck in a living body is out of play. Nothing for other weapons.',
     build: () => (c, out) => {
       const kinds = ownAmmoKinds(c);
       if (kinds.length === 0) return false;

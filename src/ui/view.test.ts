@@ -23,8 +23,8 @@ describe('View popover model', () => {
     expect(new Set(shortcuts).size).toBe(shortcuts.length);
     for (const s of shortcuts) {
       expect(s).toMatch(/^[A-Z]$/);
-      // C is kept free for "Reset camera".
-      expect(['F', 'C']).not.toContain(s);
+      // F follows, C resets the camera, I opens the overview.
+      expect(['F', 'C', 'I']).not.toContain(s);
     }
   });
 

@@ -75,4 +75,18 @@ describe('event checks', { timeout: 60_000 }, () => {
     expect(checkEvent(judges, refs, ALL_TICKS)).toEqual(judges);
     expect(checkEvent({ ...judges, survivors: [{ id: 'f0', hpFraction: 3, damageDealt: 30, kills: 1 }] }, refs, ALL_TICKS)).toBe(BAD);
   });
+
+  // Stuck arrows pin to a body by fighter id: a ghost id would make the renderer look up a fighter
+  // that does not exist, and an unknown surface kind has no drawing rule.
+  it('checks what stuck ammo sits in', () => {
+    const inBody = { type: 'ammo_stick', tick: 5, stuckId: 's1', projectileId: 'p9', kind: 'arrow', ownerId: 'f0', pos: { x: 10, y: 20 }, angle: 1, in: { kind: 'fighter', fighterId: 'f1', u: 4, v: -3, turn: 0.5 } };
+    expect(checkEvent(inBody, refs, ALL_TICKS)).toEqual(inBody);
+    expect(checkEvent({ ...inBody, in: { kind: 'fighter', fighterId: 'ghost', u: 4, v: -3, turn: 0.5 } }, refs, ALL_TICKS)).toBe(BAD);
+    expect(checkEvent({ ...inBody, in: { kind: 'prop', propId: 'crate_1' } }, refs, ALL_TICKS)).toEqual({ ...inBody, in: { kind: 'prop', propId: 'crate_1' } });
+    expect(checkEvent({ ...inBody, in: { kind: 'wall', extra: 1 } }, refs, ALL_TICKS)).toEqual({ ...inBody, in: { kind: 'wall' } });
+    expect(checkEvent({ ...inBody, in: { kind: 'ceiling' } }, refs, ALL_TICKS)).toBe(BAD);
+    const pulled = { type: 'ammo_unstick', tick: 6, stuckId: 's1', kind: 'arrow', pos: { x: 10, y: 20 }, reason: 'pickup', fighterId: 'f0', floorItemId: null };
+    expect(checkEvent(pulled, refs, ALL_TICKS)).toEqual(pulled);
+    expect(checkEvent({ ...pulled, reason: 'stolen' }, refs, ALL_TICKS)).toBe(BAD);
+  });
 });

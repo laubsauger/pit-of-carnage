@@ -12,12 +12,12 @@
 
 import { hashString, initialSuddenDeathState, matchHardCapTicks } from '../core';
 import type {
-  Attributes, FighterState, FloorItem, GameEvent, HazardState, MapDef, MatchFormat, PickupState, ProjectileState, PropState, Rect, SkillId,
-  SuddenDeathState, WeaponId, WorldState,
+  Attributes, BleedState, FighterState, FloorItem, GameEvent, HazardState, MapDef, MatchFormat, PickupState, ProjectileState, PropState, Rect, SkillId,
+  StuckAmmo, StuckIn, SuddenDeathState, WeaponId, WorldState,
 } from '../core';
 import { MAPS } from '../sim';
 import {
-  ANIM_PHASES, BAD, FLOOR_KINDS, HAZARD_KINDS, MATCH_ENDINGS, MATCH_FORMATS, MAX_BEHAVIOUR, SKILL_IDS, STANCES, SUDDEN_DEATH_REASONS, WEAPON_IDS,
+  AMMO_KINDS, ANIM_PHASES, BAD, FLOOR_KINDS, HAZARD_KINDS, MATCH_ENDINGS, MATCH_FORMATS, MAX_BEHAVIOUR, SKILL_IDS, STANCES, SUDDEN_DEATH_REASONS, WEAPON_IDS,
   NO_REFS, bool, checkEvent, id, int, isObj, num, oneOf, text,
 } from './check';
 import type { Bad, Refs } from './check';
@@ -69,7 +69,7 @@ export type DecodedFrame = {
 };
 
 /** Most fighters, projectiles, floor items and spilled hazards a frame may carry. */
-export const FRAME_LIMITS = { fighters: 16, projectiles: 512, floor: 512, extraHazards: 128, events: 2000 } as const;
+export const FRAME_LIMITS = { fighters: 16, projectiles: 512, floor: 512, extraHazards: 128, stuck: 256, events: 2000 } as const;
 /** Longest fighter name on the wire (strategy names are at most 40 characters; mirrors add " XVI"). */
 export const MAX_NAME = 48;
 
@@ -87,9 +87,17 @@ const F = {
   x: 0, y: 1, vx: 2, vy: 3, facing: 4, head: 5, hp: 6, maxHp: 7, bits: 8, died: 9, phase: 10, animT: 11, animDur: 12, walk: 13,
   attackCd: 14, skillCd: 15, parryTicks: 16, parryCd: 17, stun: 18, ammo: 19, maxAmmo: 20, haste: 21, berserk: 22, slow: 23,
   flash: 24, eyePop: 25, stance: 26, kills: 27, dealt: 28, taken: 29, lastHitTick: 30, place: 31, target: 32, lastHitBy: 33,
-  behaviour: 34,
+  behaviour: 34, bleedTicks: 35, bleedDamage: 36, bleedSource: 37,
 } as const;
-const F_LEN = 35;
+const F_LEN = 38;
+
+/** `bleedTicks` when the fighter has no `bleed` field at all, and when it is null (not bleeding). */
+const BLEED_ABSENT = -2;
+const BLEED_NONE = -1;
+
+/** What a stuck arrow or axe sits in, by wire index. */
+const STUCK_IN_KINDS: readonly StuckIn['kind'][] = ['wall', 'prop', 'fighter', 'floor'];
+const STUCK_LEN = 16;
 
 const BIT = { alive: 1, helmet: 2, shadow: 4, seen: 8, armL: 16, armR: 32, legL: 64, legR: 128 } as const;
 
@@ -111,6 +119,12 @@ export type WireFrame = {
   p: Tuple[];
   /** Floor items: id, kind index, x, y, owner index. */
   i: Tuple[];
+  /**
+   * Stuck arrows and axes: id, kind index, owner index, x, y, angle, what it sits in (index), prop
+   * id ('' unless a prop), fighter index (-1 unless a body), u, v, turn, has a pickup spot (0/1),
+   * pickup x, pickup y, tick it stuck.
+   */
+  a: Tuple[];
   /** Props in map order: alive (0/1), hp. */
   o: number[][];
   /** Hazards: id, kind index, x, y, radius, phase, active (0/1), ttl (-1 = permanent). */
@@ -158,10 +172,18 @@ export function encodeFrame(
         r2(f.parryCd), r2(f.stunTicks), f.ammo, f.maxAmmo, r2(f.buffs.haste), r2(f.buffs.berserk), r2(f.buffs.slow), r2(f.hitFlash),
         r2(f.eyePop), STANCES.indexOf(f.stance), f.kills, r1(f.damageDealt), r1(f.damageTaken), f.lastHitTick ?? -1, f.place ?? 0,
         ix(f.targetId), ix(f.lastHitBy), f.behaviour,
+        f.bleed === undefined ? BLEED_ABSENT : f.bleed === null ? BLEED_NONE : f.bleed.ticks,
+        f.bleed ? r2(f.bleed.damagePerTick) : 0, f.bleed ? ix(f.bleed.sourceId) : -1,
       ];
     }),
     p: state.projectiles.map((p) => [p.id, ix(p.ownerId), WEAPON_IDS.indexOf(p.weapon), r2(p.pos.x), r2(p.pos.y), r3(p.vel.x), r3(p.vel.y), r2(p.ttl), r2(p.origin.x), r2(p.origin.y)]),
     i: state.floor.map((it) => [it.id, FLOOR_KINDS.indexOf(it.kind), r2(it.pos.x), r2(it.pos.y), ix(it.ownerId)]),
+    a: state.stuck.map((s) => [
+      s.id, AMMO_KINDS.indexOf(s.kind), ix(s.ownerId), r2(s.pos.x), r2(s.pos.y), r3(s.angle), STUCK_IN_KINDS.indexOf(s.in.kind),
+      s.in.kind === 'prop' ? s.in.propId : '', s.in.kind === 'fighter' ? ix(s.in.fighterId) : -1,
+      s.in.kind === 'fighter' ? r2(s.in.u) : 0, s.in.kind === 'fighter' ? r2(s.in.v) : 0, s.in.kind === 'fighter' ? r3(s.in.turn) : 0,
+      s.pickupPos ? 1 : 0, s.pickupPos ? r2(s.pickupPos.x) : 0, s.pickupPos ? r2(s.pickupPos.y) : 0, s.tick,
+    ]),
     o: state.props.map((p) => [p.alive ? 1 : 0, r1(p.hp)]),
     z: state.hazards.map((h) => [h.id, HAZARD_KINDS.indexOf(h.kind), r2(h.pos.x), r2(h.pos.y), r2(h.radius), r3(h.phase), h.active ? 1 : 0, h.ttl ?? -1]),
     sh: state.shrines.map((s) => s.cooldown),
@@ -310,7 +332,9 @@ export function decodeFrame(v: unknown, info: StreamMatchInfo, map: MapDef): Dec
     const died = t.int(F.died, -1, cap);
     const lastHitTick = t.int(F.lastHitTick, -1, cap);
     const place = t.int(F.place, 0, n);
-    fighters.push({
+    const bleedTicks = t.int(F.bleedTicks, BLEED_ABSENT, cap);
+    const bleed: BleedState | null = bleedTicks < 0 ? null : { ticks: bleedTicks, damagePerTick: t.n(F.bleedDamage, 0, 10_000), sourceId: who(t.int(F.bleedSource, -1, n - 1)) };
+    const fighter: FighterState = {
       id: ro.id, entrantId: ro.entrantId, squad: ro.squad, name: ro.name, color: ro.color, weapon: ro.weapon, skill: ro.skill,
       attributes: { ...ro.attributes }, radius: ro.radius,
       pos: { x: t.n(F.x, -BIG, BIG), y: t.n(F.y, -BIG, BIG) },
@@ -346,7 +370,9 @@ export function decodeFrame(v: unknown, info: StreamMatchInfo, map: MapDef): Dec
       lastHitBy: who(t.int(F.lastHitBy, -1, n - 1)),
       lastHitTick: lastHitTick < 0 ? null : lastHitTick,
       place: place === 0 ? null : place,
-    });
+    };
+    if (bleedTicks !== BLEED_ABSENT) fighter.bleed = bleed;
+    fighters.push(fighter);
     if (t.bad) return null;
   }
 
@@ -370,6 +396,25 @@ export function decodeFrame(v: unknown, info: StreamMatchInfo, map: MapDef): Dec
     const t = tuple(raw, 5);
     if (!t) return null;
     floor.push({ id: t.str(0, id), kind: FLOOR_KINDS[t.int(1, 0, FLOOR_KINDS.length - 1)]!, pos: { x: t.n(2, -BIG, BIG), y: t.n(3, -BIG, BIG) }, ownerId: who(t.int(4, -1, n - 1)) });
+    if (t.bad) return null;
+  }
+
+  if (!Array.isArray(v.a) || v.a.length > FRAME_LIMITS.stuck) return null;
+  const stuck: StuckAmmo[] = [];
+  for (const raw of v.a as unknown[]) {
+    const t = tuple(raw, STUCK_LEN);
+    if (!t) return null;
+    const kind = STUCK_IN_KINDS[t.int(6, 0, STUCK_IN_KINDS.length - 1)]!;
+    let where: StuckIn;
+    if (kind === 'prop') where = { kind, propId: t.str(7, id) };
+    else if (kind === 'fighter') where = { kind, fighterId: roster[t.int(8, 0, n - 1)]!.id, u: t.n(9, -BIG, BIG), v: t.n(10, -BIG, BIG), turn: t.n(11, -100, 100) };
+    else where = { kind };
+    const pickup = t.int(12, 0, 1) === 1;
+    stuck.push({
+      id: t.str(0, id), kind: AMMO_KINDS[t.int(1, 0, AMMO_KINDS.length - 1)]!, ownerId: who(t.int(2, -1, n - 1)),
+      pos: { x: t.n(3, -BIG, BIG), y: t.n(4, -BIG, BIG) }, angle: t.n(5, -100, 100), in: where,
+      pickupPos: pickup ? { x: t.n(13, -BIG, BIG), y: t.n(14, -BIG, BIG) } : null, tick: t.int(15, 0, cap),
+    });
     if (t.bad) return null;
   }
 
@@ -453,7 +498,7 @@ export function decodeFrame(v: unknown, info: StreamMatchInfo, map: MapDef): Dec
   }
 
   const state: WorldState = {
-    tick, mapId: map.id, fighters, projectiles, floor, props, hazards, shrines, pickups, suddenDeath, finished,
+    tick, mapId: map.id, fighters, projectiles, floor, props, hazards, shrines, stuck, pickups, suddenDeath, finished,
     ending: endingIx < 0 ? null : MATCH_ENDINGS[endingIx]!, placements,
   };
   return { matchId: info.id, tick, ms, scale, state, events, droppedEvents };

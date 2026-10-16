@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLOOD_FLOOR, BLOOD_RAMP, DRYING, LUMA, bloodAlbedo, bloodLit, dryFraction, srgbToLinear, wetAfter } from './palette';
+import { BLOOD_FLOOR, BLOOD_RAMP, DRYING, LUMA, bloodAlbedo, bloodFreshness, bloodLit, dryFraction, srgbToLinear, wetAfter, wetDensityAfter } from './palette';
 import type { Rgb } from './palette';
 
 const DENSITIES = [0.02, 0.1, 0.3, 0.6, 1, 2, 4, 8, 20, 60];
@@ -23,7 +23,7 @@ describe('floor blood gradient', () => {
     for (const d of DENSITIES) {
       for (const wet of SHARES) {
         for (const tone of SHARES) {
-          bloodAlbedo(c, d, wet, tone);
+          bloodAlbedo(c, d, d * wet, tone);
           expect(redness(c), `density ${d}, wet ${wet}, tone ${tone}`).toBeGreaterThan(4);
           // Darkness floor: never below the darkest stop of the gradient.
           expect(c.r).toBeGreaterThanOrEqual(BLOOD_RAMP.dry[2].r - 1e-9);
@@ -41,17 +41,20 @@ describe('floor blood gradient', () => {
     for (const wet of [0, 1]) {
       let last = Infinity;
       for (const d of DENSITIES) {
-        const l = lum(bloodAlbedo(c, d, wet, BLOOD_FLOOR.tone));
+        const l = lum(bloodAlbedo(c, d, d * wet, BLOOD_FLOOR.tone));
         expect(l).toBeLessThanOrEqual(last + 1e-12);
         last = l;
       }
-      expect(lum(bloodAlbedo(c, 0.3, wet, BLOOD_FLOOR.tone))).toBeGreaterThan(lum(bloodAlbedo(c, 8, wet, BLOOD_FLOOR.tone)) * 1.5);
+      expect(lum(bloodAlbedo(c, 0.3, 0.3 * wet, BLOOD_FLOOR.tone))).toBeGreaterThan(lum(bloodAlbedo(c, 8, 8 * wet, BLOOD_FLOOR.tone)) * 1.5);
     }
   });
 
-  it('paints a fresh thin spray bright arterial red', () => {
-    bloodAlbedo(c, 0.4, 1, 1);
-    expect(c.r).toBeGreaterThan(0.4);
+  // User feedback (pass 3): fresh blood read neon. It is a deep arterial red now: clearly bright and
+  // red, but well under the old #d2261d top stop.
+  it('paints a fresh thin spray deep arterial red, not neon', () => {
+    bloodAlbedo(c, 0.4, 0.4, 1);
+    expect(c.r).toBeGreaterThan(0.38);
+    expect(c.r).toBeLessThan(srgbToLinear(0xd2) * 0.8);
     expect(redness(c)).toBeGreaterThan(10);
   });
 
@@ -59,13 +62,13 @@ describe('floor blood gradient', () => {
   // without losing its hue: never toward grey.
   it('dries toward maroon: darker, still red', () => {
     for (const d of [0.3, 1, 4]) {
-      const wet = { ...bloodAlbedo(c, d, 1, BLOOD_FLOOR.tone) };
+      const wet = { ...bloodAlbedo(c, d, d, BLOOD_FLOOR.tone) };
       const dry = { ...bloodAlbedo(c, d, 0, BLOOD_FLOOR.tone) };
       expect(lum(dry)).toBeLessThan(lum(wet));
       expect(redness(dry)).toBeGreaterThan(4);
       let last = Infinity;
       for (let w = 1; w >= 0; w -= 0.1) {
-        const l = lum(bloodAlbedo(c, d, w, BLOOD_FLOOR.tone));
+        const l = lum(bloodAlbedo(c, d, d * w, BLOOD_FLOOR.tone));
         expect(l).toBeLessThanOrEqual(last + 1e-12);
         last = l;
       }
@@ -84,7 +87,7 @@ describe('lit floor blood', () => {
   it('stays red and visible in the darkest, coolest shadow', () => {
     for (const d of DENSITIES) {
       for (const wet of [0, 1]) {
-        bloodLit(out, bloodAlbedo(c, d, wet, BLOOD_FLOOR.tone), catacombs, wet);
+        bloodLit(out, bloodAlbedo(c, d, d * wet, BLOOD_FLOOR.tone), catacombs, wet);
         expect(redness(out), `density ${d}, wet ${wet}`).toBeGreaterThan(4);
         // Never below the darkness floor, which is itself a visible dark red on screen.
         expect(out.r).toBeGreaterThanOrEqual(BLOOD_FLOOR.darkest.r);
@@ -98,7 +101,7 @@ describe('lit floor blood', () => {
   it('keeps fresh blood brighter than dried blood under the same light', () => {
     for (const light of [catacombs, torch]) {
       for (const d of [0.4, 1, 3]) {
-        const fresh = lum(bloodLit(out, bloodAlbedo(c, d, 1, BLOOD_FLOOR.tone), light, 1));
+        const fresh = lum(bloodLit(out, bloodAlbedo(c, d, d, BLOOD_FLOOR.tone), light, 1));
         const dry = lum(bloodLit(out, bloodAlbedo(c, d, 0, BLOOD_FLOOR.tone), light, 0));
         expect(fresh, `density ${d}`).toBeGreaterThan(dry * 1.15);
       }
@@ -115,7 +118,7 @@ describe('lit floor blood', () => {
   // "Reads from straight above": the wet highlight is a faint red gain, never a light film that
   // could grey dense blood out (the old sheen did exactly that).
   it('adds only a faint, red wet highlight', () => {
-    bloodAlbedo(c, 4, 1, BLOOD_FLOOR.tone);
+    bloodAlbedo(c, 4, 4, BLOOD_FLOOR.tone);
     const wet = { ...bloodLit(out, c, torch, 1) };
     const matte = { ...bloodLit(out, c, torch, 0) };
     expect(wet.r - matte.r).toBeLessThanOrEqual(lum(torch) * 0.06);
@@ -142,5 +145,61 @@ describe('drying blood', () => {
   it('dries in steps big enough for the half-float target', () => {
     const halfUlpNearOne = 2 ** -12;
     expect(0.05 * dryFraction(DRYING.interval)).toBeGreaterThan(halfUlpNearOne);
+  });
+});
+
+describe('blood ages', () => {
+  const c: Rgb = { r: 0, g: 0, b: 0 };
+  /** Colour of a splat of `density` spilled `seconds` ago (the decal target's drying, then the gradient). */
+  const aged = (density: number, seconds: number): Rgb => ({ ...bloodAlbedo(c, density, wetDensityAfter(density, seconds), BLOOD_FLOOR.tone) });
+  const dist = (a: Rgb, b: Rgb) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+
+  // User feedback: blood should dry to maroon-brown over about 30 s of game time, so the floor tells
+  // old fights from new ones. Fresh at 0 s, clearly on its way at 10 s, mostly dry by 30 s.
+  it('dries from fresh red to maroon-brown over about 30 seconds', () => {
+    for (const d of [0.4, 1, 4]) {
+      const fresh = aged(d, 0);
+      const dry = aged(d, 600);
+      const span = dist(fresh, dry);
+      expect(dist(aged(d, 10), dry), `density ${d} at 10 s`).toBeLessThan(span * 0.9);
+      expect(dist(aged(d, 30), dry), `density ${d} at 30 s`).toBeLessThan(span * 0.35);
+      expect(dist(aged(d, 30), dry), `density ${d} at 30 s`).toBeGreaterThan(0);
+      let last = Infinity;
+      for (let t = 0; t <= 60; t += 2) {
+        const l = lum(aged(d, t));
+        expect(l, `density ${d} at ${t} s gets darker, never brighter`).toBeLessThanOrEqual(last + 1e-12);
+        last = l;
+      }
+    }
+  });
+
+  // "Never grey": dried blood is browner than fresh blood (more green than blue relative to red),
+  // but still red several times over.
+  it('dries toward brown, never grey', () => {
+    for (const d of [0.4, 1, 4, 12]) {
+      const dry = aged(d, 600);
+      expect(redness(dry)).toBeGreaterThan(4);
+      expect(dry.g).toBeGreaterThan(dry.b);
+      const fresh = aged(d, 0);
+      expect(dry.g / dry.r).toBeGreaterThan(fresh.g / fresh.r);
+    }
+  });
+
+  // Late in a long match you must still see where the latest hits landed: a thin fresh spray over an
+  // old dried pool reads fresh (much brighter and redder than the pool around it).
+  it('lets new blood on old stand out', () => {
+    const pool = aged(4, 120);
+    const W = 0.5;
+    const spot = { ...bloodAlbedo(c, 4 + W, W, BLOOD_FLOOR.tone) };
+    expect(bloodFreshness(4 + W, W)).toBeGreaterThan(0.6);
+    expect(spot.r).toBeGreaterThan(pool.r * 2);
+    expect(lum(spot)).toBeGreaterThan(lum(pool) * 1.5);
+    expect(redness(spot)).toBeGreaterThan(redness(pool));
+  });
+
+  it('counts a single fresh splat as fully fresh and dried blood as not fresh', () => {
+    for (const d of [0.05, 0.4, 4]) expect(bloodFreshness(d, d)).toBeCloseTo(1, 9);
+    expect(bloodFreshness(4, 0)).toBe(0);
+    expect(bloodFreshness(0, 0)).toBe(0);
   });
 });

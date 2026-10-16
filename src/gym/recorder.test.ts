@@ -32,7 +32,7 @@ function setup(): { config: MatchConfig; state: WorldState; recorder: MatchRecor
   const state: WorldState = {
     tick: 0, mapId: 'pit',
     fighters: [fighter(0, 'Gary', 'GREATSWORD', 'brawl'), fighter(1, 'Brenda', 'LONGBOW', 'kite'), fighter(2, 'Doug', 'TWIN_DAGGERS', 'brawl')],
-    projectiles: [], floor: [], props: [], hazards: [], shrines: [], pickups: [],
+    projectiles: [], floor: [], props: [], hazards: [], shrines: [], stuck: [], pickups: [],
     suddenDeath: initialSuddenDeathState({ width: 1360, height: 860 }), finished: false, ending: null, placements: [],
   };
   return { config, state, recorder: new MatchRecorder(config, state) };

@@ -166,7 +166,7 @@ describe('sanitizeSetup', () => {
 
 describe('buildPool', () => {
   const saved = (name: string, version: number): SavedStrategy => ({
-    id: `${name}@v${version}`, name, version, savedAt: 0, strategy: strat(name, version), code: '', parentId: null, origin: null,
+    id: `${name}@v${version}`, name, version, savedAt: 0, strategy: strat(name, version), code: '', parentId: null, parentVersion: null, origin: null,
   });
 
   it('lists house stacks first, then saved strategies newest version first, so the newest is the obvious pick', () => {

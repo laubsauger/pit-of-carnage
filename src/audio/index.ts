@@ -13,7 +13,9 @@
  *   fighters never clip. The crowd director reads the same events and state: the bed swells with
  *   the action and falls nearly silent in lulls, with sparse gasps, whistles, boos and chants.
  * - `onSignal` plays the countdown, FIGHT and the final-kill sting (unbent by slow motion). The
- *   final sting plays once whether the kill event or the signal arrives first.
+ *   final sting plays once whether the kill event or the signal arrives first. The victory gets one
+ *   big roar; while the end card is up the arena is hushed (no combat sounds, no crowd, a low
+ *   ambience), until the card goes away or a new round starts.
  * - `update(dt, timeScale)` bends pitch and tempo with slow motion and suspends the context when the
  *   game stays paused (timeScale 0 longer than a hit-stop), so sound pauses with the game. A hidden
  *   page suspends it too: rAF stops there, and the crowd should not murmur on in a background tab.

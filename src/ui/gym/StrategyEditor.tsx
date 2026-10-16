@@ -1,37 +1,50 @@
 // Owned by: ui
-import { Fragment, Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import {
   ATTRIBUTE_BUDGET,
   ATTRIBUTE_DOCS,
   ATTRIBUTE_MAX,
   ATTRIBUTE_MIN,
+  DEFAULT_FIGHTERS,
+  DEFAULT_MAP_ID,
   SKILLS,
   SKILL_IDS,
   STAT_DOCS,
   WEAPONS,
   deriveStats,
+  strategyKey,
 } from '../../core';
-import type { DerivedStats, GameController, LoadReport, MatchConfig, SavedStrategy, SkillId, Strategy, ValidationIssue } from '../../core';
+import type { CompareRequest, DerivedStats, GameController, LoadReport, MatchConfig, SavedOrigin, SavedStrategy, SkillId, Strategy, ValidationIssue } from '../../core';
 import { reportToText } from '../../gym';
 import { buildLlmPrompt, encodeStrategyCode } from '../../strategy';
-import { budget, completeAttributes, issueAtCaret, lineCol, parseJson, placeIssues, prettyJson, readAttributes, readWeapon } from '../editor';
+import { budget, completeAttributes, inlineJson, issueAtCaret, lineCol, parseJson, placeIssues, prettyJson, readAttributes, readWeapon } from '../editor';
 import type { IssueSpan, JsonParse } from '../editor';
 import { Builder } from '../editor/Builder';
 import type { BuilderApi } from '../editor/Builder';
+import { HistoryPanel } from '../editor/History';
+import type { CompareSide } from '../editor/History';
 import { SEVERITY_SVG, fixText, suggestionLine } from '../editor/issues';
-import { setAt } from '../editor/edit';
+import { setAt, stampVersion } from '../editor/edit';
 import type { PathSeg } from '../editor/jsontext';
+import { SaveDialog } from '../editor/SaveDialog';
+import { EDITOR_SIDE, EDITOR_SIDE_KEY, dragSideWidth, sanitizeSideWidth } from '../editor/sidepane';
+import { baseLine, draftIdentity, draftBase, nextVersionOf, savePlan, savedMessage, withoutVersion } from '../editor/versions';
+import type { SaveChoice, SavePlan } from '../editor/versions';
 import type { CardBuild } from '../editor/WordCard';
-import { buildLine, formatAgo, formatStat, strategyLabel } from '../format';
+import { buildLine, formatStat, strategyLabel } from '../format';
 import { useStoredState } from '../hooks';
 import { CloseIcon, ImportIcon } from '../icons';
 import { issueSpot } from '../importer';
 import { RANDOM_SLOT, buildMatchConfig, buildPool, defaultSetup, randomSeed } from '../setup';
-import { copyAndToast, toast } from '../toast';
+import { copyAndToast, copyText, toast } from '../toast';
 import { ATTRIBUTE_LABEL } from '../widgets';
 import type { CodeAreaApi } from './CodeArea';
+import { CompareView } from './CompareView';
+import type { CompareOutcome } from './CompareView';
 import type { BatchOutcome } from './GymScreen';
 import { ImportDialog } from './ImportDialog';
+import type { LlmPaste } from './ImportDialog';
 import '../editor/editor.css';
 
 // CodeMirror and the Codex are big: each gets its own chunk, loaded when first shown.
@@ -72,6 +85,26 @@ const asMode = (v: unknown, fallback: ViewMode): ViewMode => (v === 'visual' || 
 const DRAFT_REF = 'draft';
 const STAT_KEYS = Object.keys(STAT_DOCS) as (keyof DerivedStats)[];
 
+/**
+ * Where an opened import or LLM answer came from, until it is saved: Save then records that origin
+ * (and, for "Improve this with an LLM", the version it improves as parent). It applies only while
+ * the draft still has that name and no saved version as its base.
+ */
+type Pending = { name: string; origin: SavedOrigin; parentId: string | null };
+const asPending = (v: unknown, fallback: Pending | null): Pending | null => {
+  const p = v as Partial<Pending> | null;
+  if (!p || typeof p.name !== 'string' || typeof p.origin !== 'object' || p.origin === null) return fallback;
+  const kind = (p.origin as { kind?: unknown }).kind;
+  if (kind !== 'import' && kind !== 'llm-paste') return fallback;
+  return { name: p.name, origin: { kind }, parentId: typeof p.parentId === 'string' ? p.parentId : null };
+};
+
+/** An LLM round trip in progress: the prompt and the version it was asked to improve. */
+type LlmRound = LlmPaste & { parentId: string | null };
+
+/** "Compare" in the history panel: shared seeds against the house stacks on the default map. */
+const HISTORY_COMPARE_MATCHES = 16;
+
 export function StrategyEditor(props: Props) {
   const { controller, draft, setDraft, markSaved, onLoad, parsed, checked, report, strategy, houseStacks, saved, refreshSaved, lastBatch } = props;
   const code = useRef<CodeAreaApi | null>(null);
@@ -106,10 +139,39 @@ export function StrategyEditor(props: Props) {
   const unplaced = issues.filter((i) => !spans.some((sp) => sp.issue === i));
   const atCaret = checked === draft ? issueAtCaret(spans, draft, caret) : null;
   const caretAt = lineCol(draft, caret);
-  const versions = saved.filter((s) => s.name === name).sort((a, b) => b.version - a.version);
   const shadowsHouse = name !== null && houseStacks.some((h) => h.name === name);
   const showCode = mode !== 'visual';
   const showBuilder = mode !== 'code';
+
+  // ---- Versions: what the draft is based on and what Save will do.
+  const store = controller.strategies;
+  const [pending, setPending] = useStoredState<Pending | null>('poc.editor.pending.v1', () => null, asPending);
+  const base = useMemo(() => draftBase(value, saved), [value, saved]);
+  // The version the draft was last based on, to remember where a renamed copy came from.
+  const lastBase = useRef<SavedStrategy | null>(null);
+  if (base) lastBase.current = base;
+  const identity = draftIdentity(value);
+  const copiedFrom = !base && lastBase.current && identity.version === lastBase.current.version && name !== lastBase.current.name ? lastBase.current : null;
+  const pendingNow = pending && !base && pending.name === name ? pending : null;
+  const pendingParent = pendingNow?.parentId ? (saved.find((s) => s.id === pendingNow.parentId) ?? null) : null;
+  const nextVersion = useCallback((n: string) => nextVersionOf(store, saved, n), [store, saved]);
+  const plan: SavePlan | null = name ? savePlan(name, base ?? (pendingParent?.name === name ? pendingParent : null), saved, nextVersion, copiedFrom ?? pendingParent) : null;
+  // Saving an untouched version would only add a copy under a new number.
+  const unchanged = base !== null && strategy !== null && inlineJson({ ...strategy, version: base.version }) === inlineJson(base.strategy);
+  const [ask, setAsk] = useState<SavePlan | null>(null);
+  const [llm, setLlm] = useState<LlmRound | null>(null);
+  const [sideWidth, setSideWidth] = useStoredState<number>(EDITOR_SIDE_KEY, () => EDITOR_SIDE.initial, sanitizeSideWidth);
+  const [comparing, setComparing] = useState<{ done: number; total: number } | null>(null);
+  const [comparison, setComparison] = useState<CompareOutcome | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const historyName = name ?? base?.name ?? null;
+  const history = useMemo(() => (historyName ? store.history(historyName) : null), [store, historyName, saved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cardBuild = useMemo<CardBuild>(() => {
     const attributes = completeAttributes(readAttributes(value));
@@ -144,40 +206,119 @@ export function StrategyEditor(props: Props) {
     [draft, live.ok, setDraft],
   );
 
-  const save = () => {
-    if (!strategy) return;
-    const entry = controller.strategies.save(strategy, { origin: { kind: 'editor' } });
-    refreshSaved();
-    const text = prettyJson({ ...entry.strategy, version: entry.version });
+  /** Store `s` as `plan` and `choice` say; null (with a toast) when the library refuses it. */
+  const commitSave = (s: Strategy, p: SavePlan, choice: SaveChoice, origin: SavedOrigin): SavedStrategy | null => {
+    const renamed = choice.kind === 'rename';
+    // A version added to another lineage, or a copy kept apart, records no parent in that lineage.
+    const parentId = p.kind === 'collision' ? null : p.parentId;
+    try {
+      const entry = store.save(renamed ? { ...s, name: choice.name } : s, { parentId, origin });
+      refreshSaved();
+      return entry;
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not save.');
+      return null;
+    }
+  };
+
+  const save = (choice?: SaveChoice) => {
+    if (!strategy || !plan) return;
+    if (!choice && plan.kind === 'collision') {
+      setAsk(plan);
+      return;
+    }
+    if (!choice && unchanged && base) {
+      toast(`No changes since v${base.version}: nothing to save.`);
+      return;
+    }
+    const entry = commitSave(strategy, plan, choice ?? { kind: 'plan' }, pendingNow?.origin ?? { kind: 'editor' });
+    if (!entry) return;
+    // Stamp the library's number (and a new name) into the text that was saved, keeping its layout.
+    let text: string | null = checked;
+    if (choice?.kind === 'rename') text = parseJson(text).ok ? setAt(text, ['name'], entry.name) : null;
+    text = text === null ? null : stampVersion(text, entry.version);
+    if (text === null || !parseJson(text).ok) text = prettyJson(entry.strategy);
     setDraft(text);
     markSaved(text);
-    toast(`Saved ${strategyLabel(entry.name, entry.version)}.`);
+    setPending(null);
+    setAsk(null);
+    toast(savedMessage(entry));
   };
 
-  const copyPrompt = () => {
-    const report = lastBatch?.result.aggregate ?? controller.lastReport();
-    let goal: string | undefined;
-    if (!parsed.ok) {
-      goal = `My strategy JSON does not parse (${parsed.message}, line ${parsed.line}, column ${parsed.col}). Return a corrected strategy. Here is what I have:\n\n${draft}`;
-    } else if (errors.length) {
-      goal = `Fix these validation errors, then improve the strategy:\n${errors.map((i) => `- ${i.path || '(root)'}: ${i.message}`).join('\n')}`;
+  /** "New fighter with an LLM" / "Improve this with an LLM": copy the prompt and wait for the reply. */
+  const startLlm = async (llmMode: 'new' | 'improve') => {
+    let text: string;
+    if (llmMode === 'new') {
+      text = buildLlmPrompt({ mode: 'new' });
+    } else {
+      const report = lastBatch?.result.aggregate ?? controller.lastReport();
+      let goal: string | undefined;
+      if (!parsed.ok) {
+        goal = `My strategy JSON does not parse (${parsed.message}, line ${parsed.line}, column ${parsed.col}). Return a corrected strategy. Here is what I have:\n\n${draft}`;
+      } else if (errors.length) {
+        goal = `Fix these validation errors, then improve the strategy:\n${errors.map((i) => `- ${i.path || '(root)'}: ${i.message}`).join('\n')}`;
+      }
+      text = buildLlmPrompt({ strategy: parsed.ok ? (parsed.value as Strategy) : undefined, reportText: report ? reportToText(report) : undefined, goal, mode: 'improve' });
     }
-    const text = buildLlmPrompt({
-      strategy: parsed.ok ? (parsed.value as Strategy) : undefined,
-      reportText: report ? reportToText(report) : undefined,
-      goal,
-    });
-    const what = lastBatch ? 'LLM prompt with the last gym report' : report ? 'LLM prompt with the last match report' : 'LLM prompt';
-    void copyAndToast(text, what);
+    const copied = await copyText(text);
+    toast(copied ? 'Prompt copied. Paste it into any chat model, then paste its reply here.' : 'The browser blocked the clipboard: use “Copy the prompt” in the dialog.');
+    const parent = llmMode === 'improve' ? (base ?? pendingParent) : null;
+    setLlm({ prompt: text, copied, improving: llmMode === 'improve' ? (name ?? 'this strategy') : null, parentId: parent?.id ?? null });
   };
 
-  const saveImported = (s: Strategy): string => {
-    const entry = controller.strategies.save(s, { origin: { kind: 'import' } });
-    refreshSaved();
-    const label = strategyLabel(entry.name, entry.version);
-    toast(`Saved ${label}.`);
-    return label;
+  const llmParent = llm?.parentId ? (saved.find((s) => s.id === llm.parentId) ?? null) : null;
+  /** What saving an imported or pasted strategy would do; an improved version keeps its parent. */
+  const planForIncoming = (s: Strategy) => savePlan(s.name, llmParent && llmParent.name === s.name ? llmParent : null, saved, nextVersion, llmParent);
+  const saveIncoming = (origin: SavedOrigin) => (s: Strategy, choice: SaveChoice): string => {
+    const entry = commitSave(s, planForIncoming(s), choice, origin);
+    if (!entry) return 'not saved';
+    toast(savedMessage(entry));
+    return strategyLabel(entry.name, entry.version);
   };
+  const openIncoming = (origin: SavedOrigin) => (s: Strategy) => {
+    // Its own "version" is never trusted: the library numbers it on Save.
+    onLoad(withoutVersion(s));
+    setPending({ name: s.name, origin, parentId: origin.kind === 'llm-paste' ? (llmParent?.id ?? null) : null });
+    toast(`Opened ${s.name}. Save it to give it a version.`);
+  };
+
+  const runCompare = async (a: CompareSide, b: CompareSide) => {
+    const keys = new Set([strategyKey(a.strategy), strategyKey(b.strategy)]);
+    const req: CompareRequest = {
+      a: a.strategy,
+      b: b.strategy,
+      field: houseStacks.filter((h) => !keys.has(strategyKey(h))),
+      mapIds: [DEFAULT_MAP_ID],
+      matches: HISTORY_COMPARE_MATCHES,
+      fighters: DEFAULT_FIGHTERS,
+      seed: randomSeed(),
+    };
+    setComparing({ done: 0, total: req.matches * 2 });
+    try {
+      const result = await controller.gym.compare(req, (done, total) => mounted.current && setComparing({ done, total }));
+      if (mounted.current) setComparison({ request: req, result });
+      else toast(`Comparison done: ${result.findings[0] ?? 'open the history to run it again.'}`);
+    } catch (err) {
+      toast(err instanceof Error && err.name === 'AbortError' ? 'Comparison stopped.' : `Comparison failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (mounted.current) setComparing(null);
+    }
+  };
+
+  // The draft as a side to compare: only when it is valid, of this strategy, and not a saved version.
+  const draftSide: CompareSide | null =
+    strategy && plan && !unchanged && historyName === strategy.name ? { label: 'the editor', strategy: { ...strategy, version: plan.version } } : null;
+
+  const saveLabel = !plan ? 'Save' : plan.kind === 'collision' ? 'Save…' : `Save as v${plan.version}`;
+  const saveTitle = !strategy
+    ? 'Fix the errors first'
+    : unchanged && base
+      ? `No changes since v${base.version}`
+      : plan?.kind === 'collision'
+        ? `“${plan.name}” is already in your library: choose how to save (Cmd/Ctrl+S)`
+        : plan?.kind === 'version'
+          ? `Save as ${plan.name} v${plan.version}, from v${plan.parentVersion} (Cmd/Ctrl+S)`
+          : `Save as ${plan?.name} v${plan?.version}, a new strategy (Cmd/Ctrl+S)`;
 
   const watchIt = () => {
     if (!strategy) return;
@@ -192,7 +333,8 @@ export function StrategyEditor(props: Props) {
 
   return (
     <div
-      className={`editor editor-${mode}`}
+      className={`editor editor-${mode} editor-sized`}
+      style={{ '--side-w': `${sideWidth}px` } as CSSProperties}
       onKeyDown={(e) => {
         // Save from anywhere in the editor; the code view handles its own (and marks it handled).
         if (e.key === 's' && (e.metaKey || e.ctrlKey) && !e.defaultPrevented) {
@@ -211,9 +353,13 @@ export function StrategyEditor(props: Props) {
       }}
     >
       <div className="editor-main">
+        <div className="editor-head" aria-live="polite">
+          <span className={`ed-dot${unchanged ? '' : ' on'}`} title={unchanged ? 'Saved' : 'Unsaved changes'} aria-label={unchanged ? 'Saved' : 'Unsaved changes'} />
+          <span className="ed-base">{baseLine(name, base, pendingNow?.origin ?? null, Date.now())}</span>
+        </div>
         <div className="editor-bar">
-          <button type="button" className="btn btn-primary btn-sm" disabled={!strategy} onClick={save} title="Save as the next version (Cmd/Ctrl+S)">
-            Save version
+          <button type="button" className="btn btn-primary btn-sm" disabled={!strategy || (unchanged && base !== null)} onClick={() => save()} title={saveTitle}>
+            {saveLabel}
           </button>
           {showCode ? (
             <button type="button" className="btn btn-sm" disabled={!parsed.ok} onClick={() => parsed.ok && setDraft(prettyJson(parsed.value))} title="Lay the JSON out the editor's way">
@@ -221,8 +367,16 @@ export function StrategyEditor(props: Props) {
             </button>
           ) : null}
           <span className="bar-sep" />
-          <button type="button" className="btn btn-sm" onClick={copyPrompt} title="Rulebook, this strategy and the latest report, ready to paste into an LLM">
-            Copy LLM prompt
+          <button type="button" className="btn btn-sm" onClick={() => void startLlm('new')} title="Copy a prompt that has a chat model interview you and design a brand-new fighter; paste its reply back here">
+            New fighter with an LLM
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => void startLlm('improve')}
+            title={lastBatch || controller.lastReport() ? 'Copy a prompt with this strategy and its last battle report; paste the reply back as a new version' : 'Copy a prompt with this strategy; paste the reply back as a new version'}
+          >
+            Improve this with an LLM
           </button>
           <button
             type="button"
@@ -280,7 +434,7 @@ export function StrategyEditor(props: Props) {
                 checked={checked}
                 spans={spans}
                 onCaret={setCaret}
-                onSave={save}
+                onSave={() => save()}
                 build={cardBuild}
                 onOpenCodex={openCodex}
               />
@@ -302,6 +456,8 @@ export function StrategyEditor(props: Props) {
         </div>
       </div>
 
+      <div className="editor-side-wrap">
+      <SideHandle width={sideWidth} setWidth={setSideWidth} />
       <aside className="editor-side" aria-label="Strategy checks">
         <section className="side-section">
           <div className="side-title">
@@ -379,56 +535,91 @@ export function StrategyEditor(props: Props) {
         {showBuilder ? null : <BudgetSection value={value} />}
         <StatsSection value={value} />
 
-        {name ? (
+        {history ? (
           <section className="side-section">
             <div className="side-title">
-              <span>Versions</span>
-              <span className="dim">{versions.length ? `${versions.length} saved` : 'not saved yet'}</span>
+              <span>History</span>
+              <span className="dim">{history.entries.length ? `${history.entries.length} saved` : 'not saved yet'}</span>
             </div>
-            {versions.length ? (
-              <div className="versions">
-                {versions.map((v) => (
-                  <div className="version" key={v.id}>
-                    <span className="num">v{v.version}</span>
-                    <span className="faint">{formatAgo(v.savedAt, Date.now())}</span>
-                    <span className="spacer" />
-                    <button type="button" className="btn btn-sm btn-quiet" onClick={() => onLoad({ ...v.strategy, version: v.version })}>
-                      Load
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-icon btn-quiet"
-                      aria-label={`Delete v${v.version}`}
-                      title="Delete this version"
-                      onClick={() => {
-                        if (!window.confirm(`Delete ${strategyLabel(v.name, v.version)}? Its code still works if you copied it.`)) return;
-                        controller.strategies.remove(v.id);
-                        refreshSaved();
-                      }}
-                    >
-                      <CloseIcon size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
+            {history.entries.length ? (
+              <HistoryPanel
+                history={history}
+                base={base}
+                draft={draftSide}
+                nowMs={Date.now()}
+                onOpen={(v) => onLoad({ ...v.strategy, version: v.version })}
+                onDelete={(v) => {
+                  if (!window.confirm(`Delete ${strategyLabel(v.name, v.version)}? Its code still works if you copied it, and its number is never given out again.`)) return;
+                  store.remove(v.id);
+                  refreshSaved();
+                }}
+                onCompare={(a, b) => void runCompare(a, b)}
+                running={comparing}
+                onStop={() => controller.gym.cancel()}
+              />
             ) : (
-              <p className="side-note">Save to keep a version you can test, share and roll back to.</p>
+              <p className="side-note">Save to keep a version you can test, share, compare and roll back to.</p>
             )}
           </section>
         ) : null}
       </aside>
+      </div>
 
       {importing ? (
         <ImportDialog
           initialFiles={importing}
           houseNames={houseStacks.map((h) => h.name)}
-          onOpen={(s) => {
-            onLoad(s);
-            toast(`Opened ${strategyLabel(s.name, s.version)}.`);
-          }}
-          onSave={saveImported}
+          planFor={(s) => savePlan(s.name, null, saved, nextVersion)}
+          onOpen={openIncoming({ kind: 'import' })}
+          onSave={saveIncoming({ kind: 'import' })}
           onClose={() => setImporting(null)}
         />
+      ) : null}
+
+      {llm ? (
+        <ImportDialog
+          initialFiles={[]}
+          houseNames={houseStacks.map((h) => h.name)}
+          llm={llm}
+          planFor={planForIncoming}
+          onOpen={openIncoming({ kind: 'llm-paste' })}
+          onSave={saveIncoming({ kind: 'llm-paste' })}
+          onClose={() => setLlm(null)}
+        />
+      ) : null}
+
+      {ask ? (
+        <SaveDialog
+          plan={ask}
+          taken={[...new Set(saved.map((v) => v.name))]}
+          what={pendingNow?.origin.kind === 'llm-paste' ? 'an LLM’s answer' : pendingNow?.origin.kind === 'import' ? 'an import' : copiedFrom ? `a copy of ${copiedFrom.name}` : 'a new fighter'}
+          onChoose={(choice) => save(choice)}
+          onClose={() => setAsk(null)}
+        />
+      ) : null}
+
+      {comparison ? (
+        <div
+          className="dialog-scrim"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setComparison(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setComparison(null);
+          }}
+        >
+          <div className="dialog compare-dialog" role="dialog" aria-modal="true" aria-label="Comparison">
+            <div className="dialog-head">
+              <h2>Compare</h2>
+              <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={() => setComparison(null)} aria-label="Close" autoFocus>
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <CompareView outcome={comparison} onWatch={(req) => props.onWatch(req.config)} />
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {codexAt !== null ? (
@@ -436,6 +627,59 @@ export function StrategyEditor(props: Props) {
           <CodexDialog initial={codexAt} build={cardBuild} onClose={() => setCodexAt(null)} />
         </Suspense>
       ) : null}
+    </div>
+  );
+}
+
+/** The side panel's drag handle (SPEC "Resizable panes"): drag, double-click to reset, arrow keys to nudge. */
+function SideHandle({ width, setWidth }: { width: number; setWidth: (w: number) => void }) {
+  const drag = useRef<{ x: number; w: number } | null>(null);
+  const [shown, setShown] = useState<number | null>(null);
+  return (
+    <div
+      className={`pane-handle right${shown !== null ? ' dragging' : ''}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the side panel"
+      aria-valuenow={width}
+      aria-valuemin={EDITOR_SIDE.min}
+      aria-valuemax={EDITOR_SIDE.max}
+      tabIndex={0}
+      title="Drag to resize the side panel, double-click to reset"
+      onMouseDown={(e) => e.preventDefault()}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { x: e.clientX, w: width };
+        setShown(width);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const next = dragSideWidth(d.w, d.x, e.clientX);
+        setShown(next);
+        if (next !== width) setWidth(next);
+      }}
+      onPointerUp={() => {
+        drag.current = null;
+        setShown(null);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setShown(null);
+      }}
+      onDoubleClick={() => setWidth(EDITOR_SIDE.initial)}
+      onKeyDown={(e) => {
+        const step = e.key === 'ArrowLeft' ? 16 : e.key === 'ArrowRight' ? -16 : 0;
+        if (!step) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // The handle moves with the arrow: left widens this right-hand panel.
+        setWidth(dragSideWidth(width, 0, -step));
+      }}
+    >
+      {shown !== null ? <span className="pane-width num">{shown}</span> : null}
     </div>
   );
 }

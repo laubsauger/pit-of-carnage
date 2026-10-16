@@ -11,7 +11,7 @@
 
 import { ATTRIBUTE_BUDGET, ATTRIBUTE_MAX, ATTRIBUTE_MIN, DEFAULT_TIME_LIMIT_TICKS, SPEED_SCALE, TICK_HZ } from './constants';
 import { clamp } from './math';
-import type { Attributes, BarkKind, HazardKind, MapDef, PickupKind, PropKind, Rect, SkillId, Stance, SuddenDeathState, Vec2, WeaponFamily, WeaponId } from './types';
+import type { Attributes, BarkKind, FighterState, HazardKind, HazardState, MapDef, PickupKind, PropKind, Rect, SkillId, Stance, SuddenDeathState, Vec2, WeaponFamily, WeaponId } from './types';
 
 /** Doc table with exactly one entry per key of T, enforced by the compiler. */
 export type DocsFor<T> = { readonly [K in keyof T]: string };
@@ -96,7 +96,7 @@ export type WeaponRule = {
   ammo: number;
   /** Spent projectiles land on the floor and must be walked over to recover. */
   ammoPickup: boolean;
-  /** Ticks to regenerate one charge (0 = no regeneration). */
+  /** Ticks to regenerate one charge or arrow, up to `ammo` (0 = no regeneration). */
   ammoRegenTicks: number;
   /** Splash radius around the impact point (0 = none). */
   splash: number;
@@ -118,6 +118,13 @@ export type WeaponRule = {
   turnMul: number;
   /** Melee: px the attacker lunges forward during each strike (0 for ranged). */
   lunge: number;
+  /**
+   * Ranged: base damage of a blow with a hand weapon kept back (a hatchet), used instead of
+   * throwing at an enemy within punch reach and instead of fists when out of ammo; it swings like a
+   * punch (reach COMBAT.punchRange, punch phases) on the weapon's own cooldown. 0 = fists
+   * (COMBAT.punchDamage every COMBAT.punchCooldown).
+   */
+  handDamage: number;
 };
 
 export const WEAPON_IDS: readonly WeaponId[] = ['GREATSWORD', 'WARHAMMER', 'TWIN_DAGGERS', 'THROWING_AXES', 'LONGBOW', 'ARCANE_STAFF'];
@@ -126,52 +133,105 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponRule>> = {
   GREATSWORD: {
     id: 'GREATSWORD', name: 'Greatsword', family: 'melee',
     doc: 'Wide 135° cleave that hits everyone in the arc. Slow to wind up, rude to stand next to. Shield in guard stance.',
-    range: 82, damage: 30, cooldown: 42, windup: 14, strike: 11, recovery: 12, knockback: 10,
+    range: 82, damage: 35, cooldown: 36, windup: 14, strike: 11, recovery: 12, knockback: 10,
     arc: 2.35, cleave: true, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: true,
-    visionBonus: 0, fov: 1.95, moveMul: 1.06, turnMul: 0.84, lunge: 30,
+    visionBonus: 0, fov: 1.95, moveMul: 1.06, turnMul: 0.84, lunge: 30, handDamage: 0,
   },
   WARHAMMER: {
     id: 'WARHAMMER', name: 'Warhammer', family: 'melee',
-    doc: 'Single-target smash. Stuns for 34 ticks and sends the victim across the room. Shield in guard stance.',
-    range: 70, damage: 26, cooldown: 44, windup: 15, strike: 12, recovery: 13, knockback: 16,
-    arc: 1.65, cleave: false, backstabMult: 1.45, stunTicks: 34, slowTicks: 0,
+    doc: 'Single-target smash with the longest melee reach. Stuns for 16 ticks and sends the victim across the room. Shield in guard stance.',
+    range: 76, damage: 30, cooldown: 38, windup: 15, strike: 12, recovery: 13, knockback: 16,
+    arc: 1.65, cleave: false, backstabMult: 1.45, stunTicks: 16, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: true,
-    visionBonus: -15, fov: 1.8, moveMul: 1.02, turnMul: 0.78, lunge: 24,
+    visionBonus: -15, fov: 1.8, moveMul: 1.0, turnMul: 0.78, lunge: 24, handDamage: 0,
   },
   TWIN_DAGGERS: {
     id: 'TWIN_DAGGERS', name: 'Twin daggers', family: 'melee',
-    doc: 'Short, fast stabs. Backstabs deal x2.35. Light enough to turn on a coin.',
-    range: 56, damage: 16, cooldown: 18, windup: 6, strike: 8, recovery: 6, knockback: 3,
-    arc: 1.35, cleave: false, backstabMult: 2.35, stunTicks: 0, slowTicks: 0,
+    doc: 'Short, quick stabs. Backstabs deal x2.2. Light enough to turn on a coin, but no shield and the shortest reach.',
+    range: 58, damage: 22, cooldown: 27, windup: 6, strike: 8, recovery: 6, knockback: 3,
+    arc: 1.35, cleave: false, backstabMult: 2.2, stunTicks: 0, slowTicks: 0,
     projectileSpeed: 0, ammo: 0, ammoPickup: false, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 35, fov: 2.25, moveMul: 1.15, turnMul: 1.38, lunge: 36,
+    visionBonus: 35, fov: 2.25, moveMul: 1.08, turnMul: 1.38, lunge: 22, handDamage: 0,
   },
   THROWING_AXES: {
     id: 'THROWING_AXES', name: 'Throwing axes', family: 'ranged',
-    doc: 'Four axes, thrown hard. Each one lands on the floor and has to be picked up again.',
-    range: 265, damage: 21, cooldown: 26, windup: 8, strike: 9, recovery: 7, knockback: 6,
+    doc: 'Five axes, thrown hard; they stick in whatever they hit and have to be pulled back out. Keeps a hatchet back for anyone who gets close (28 damage), and for when the axes are gone.',
+    range: 265, damage: 21, cooldown: 42, windup: 8, strike: 9, recovery: 7, knockback: 6,
     arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
-    projectileSpeed: 10.6, ammo: 4, ammoPickup: true, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 45, fov: 2.05, moveMul: 1.0, turnMul: 1.12, lunge: 0,
+    projectileSpeed: 10.6, ammo: 5, ammoPickup: true, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
+    visionBonus: 45, fov: 2.05, moveMul: 1.0, turnMul: 1.12, lunge: 0, handDamage: 28,
   },
   LONGBOW: {
     id: 'LONGBOW', name: 'Longbow', family: 'ranged',
-    doc: 'Longest reach in the pit. Arrows slow the victim for 75 ticks. Ten arrows; spent ones must be picked up.',
-    range: 430, damage: 20, cooldown: 33, windup: 11, strike: 8, recovery: 8, knockback: 4,
-    arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 75,
-    projectileSpeed: 12.2, ammo: 10, ammoPickup: true, ammoRegenTicks: 0, splash: 0, splashMul: 0, shield: false,
-    visionBonus: 130, fov: 1.65, moveMul: 0.96, turnMul: 1.15, lunge: 0,
+    doc: 'Longest reach in the pit. Arrows slow the victim for 105 ticks. Twelve arrows that stick where they hit (pull them back out), and the quiver finds one more every 4 s.',
+    range: 430, damage: 20, cooldown: 37, windup: 11, strike: 8, recovery: 8, knockback: 4,
+    arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 105,
+    projectileSpeed: 12.2, ammo: 12, ammoPickup: true, ammoRegenTicks: 240, splash: 0, splashMul: 0, shield: false,
+    visionBonus: 130, fov: 1.65, moveMul: 0.96, turnMul: 1.15, lunge: 0, handDamage: 0,
   },
   ARCANE_STAFF: {
     id: 'ARCANE_STAFF', name: 'Arcane staff', family: 'ranged',
-    doc: 'Slow orbs that burst on impact, splashing 60% damage within 72 px. Recharges instead of using ammo.',
-    range: 375, damage: 25, cooldown: 43, windup: 12, strike: 10, recovery: 10, knockback: 8,
+    doc: 'Slow orbs that burst on impact, splashing 60% damage within 72 px. Four charges, one back every 65 ticks. Whacks anyone who gets close with the staff itself (16 damage).',
+    range: 375, damage: 26, cooldown: 38, windup: 12, strike: 10, recovery: 10, knockback: 4,
     arc: 0, cleave: false, backstabMult: 1.45, stunTicks: 0, slowTicks: 0,
-    projectileSpeed: 9.6, ammo: 4, ammoPickup: false, ammoRegenTicks: 90, splash: 72, splashMul: 0.6, shield: false,
-    visionBonus: 95, fov: 1.9, moveMul: 0.95, turnMul: 1.02, lunge: 0,
+    projectileSpeed: 9.6, ammo: 4, ammoPickup: false, ammoRegenTicks: 65, splash: 72, splashMul: 0.6, shield: false,
+    visionBonus: 95, fov: 1.9, moveMul: 0.95, turnMul: 1.02, lunge: 0, handDamage: 16,
   },
 };
+
+// ---------------------------------------------------------------------------------------------
+// Muzzles: where projectiles leave the weapon (shared by the sim and the renderer's rig)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Body radius (px) the fighter rig is drawn at. The renderer scales each fighter's rig by
+ * `radius / RIG_NOMINAL_RADIUS`, and `MUZZLES` are measured at this size.
+ */
+export const RIG_NOMINAL_RADIUS = 18;
+
+/** A point in a fighter's body frame: `u` px ahead along its facing, `v` px toward its right hand. */
+export type BodyOffset = { u: number; v: number };
+
+/**
+ * Where each weapon lets go of its projectile, in the shooter's body frame at `RIG_NOMINAL_RADIUS`
+ * (scaled by `radius / RIG_NOMINAL_RADIUS`, like the drawn rig): the staff's orb tip at the end of
+ * the windup (about 70 px ahead, so an enemy inside the staff's reach is still hit), the bow string
+ * at rest, and the throwing hand as the axe leaves it (a left-hand throw mirrors `v`, see
+ * `muzzleSide`). Melee weapons have none (0, 0). Read off the renderer's rig at release (render
+ * fighters.ts with SWING_KEYS in rig.ts): change the rig and these together.
+ */
+export const MUZZLES: Readonly<Record<WeaponId, BodyOffset>> = {
+  GREATSWORD: { u: 0, v: 0 },
+  WARHAMMER: { u: 0, v: 0 },
+  TWIN_DAGGERS: { u: 0, v: 0 },
+  THROWING_AXES: { u: 16, v: 15 },
+  LONGBOW: { u: 13, v: -3 },
+  ARCANE_STAFF: { u: 69.5, v: 20 },
+};
+
+/**
+ * Which hand a shot leaves from: 1 = right, -1 = left. Throwing axes alternate hands while both arms
+ * are there: an odd ammo count (before the throw) throws from the right (the hand that holds a lone
+ * axe), an even count from the left. Everything else shoots from the right.
+ */
+export function muzzleSide(weapon: WeaponId, ammo: number, hasLeftArm: boolean): 1 | -1 {
+  return weapon === 'THROWING_AXES' && hasLeftArm && ammo % 2 === 0 ? -1 : 1;
+}
+
+/** World position of `f`'s muzzle (see `MUZZLES`, `muzzleSide`), written into `out`. */
+export function muzzlePoint(f: Pick<FighterState, 'pos' | 'facing' | 'radius' | 'weapon' | 'ammo' | 'limbs'>, out: Vec2): Vec2 {
+  const m = MUZZLES[f.weapon];
+  const side = muzzleSide(f.weapon, f.ammo, f.limbs.armL);
+  const s = f.radius / RIG_NOMINAL_RADIUS;
+  const u = m.u * s;
+  const v = m.v * side * s;
+  const c = Math.cos(f.facing);
+  const n = Math.sin(f.facing);
+  out.x = f.pos.x + u * c - v * n;
+  out.y = f.pos.y + u * n + v * c;
+  return out;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Skills
@@ -194,7 +254,7 @@ export type SkillRule = {
   stunTicks: number;
   /** Parry window granted to the user. */
   parryTicks: number;
-  /** SHADOWSTEP: how far behind the target the user lands (px). */
+  /** SHADOWSTEP: how far behind the target the user lands (px). HOOK: the gap (px) left between the bodies when the pull ends. */
   distance: number;
   /** DASH: impulse along the current steering heading, px/tick before SPEED_SCALE. */
   impulse: number;
@@ -205,13 +265,20 @@ export type SkillRule = {
   /** Needs a known target within `maxRange` px to be usable. */
   needsTarget: boolean;
   maxRange: number;
+  /** SECOND_WIND: share of max HP healed in all, in equal gulps every `healEvery` ticks over `healTicks`. */
+  heal: number;
+  healTicks: number;
+  healEvery: number;
+  /** The user cannot start an attack for this many ticks after the skill (SHADOWSTEP: stepping out of the shadows takes a moment). */
+  lockTicks: number;
 };
 
-export const SKILL_IDS: readonly SkillId[] = ['WHIRLWIND', 'SHADOWSTEP', 'DASH', 'SHOCKWAVE', 'BLOODRAGE'];
+export const SKILL_IDS: readonly SkillId[] = ['WHIRLWIND', 'SHADOWSTEP', 'DASH', 'SHOCKWAVE', 'BLOODRAGE', 'HOOK', 'SECOND_WIND'];
 
 const NO_SKILL_FIELDS = {
   radius: 0, arc: 0, damage: 0, powerScale: 0, knockback: 0, stunTicks: 0, parryTicks: 0,
   distance: 0, impulse: 0, hasteTicks: 0, berserkTicks: 0, activeTicks: 0, needsTarget: false, maxRange: 0,
+  heal: 0, healTicks: 0, healEvery: 0, lockTicks: 0,
 };
 
 export const SKILLS: Readonly<Record<SkillId, SkillRule>> = {
@@ -222,8 +289,8 @@ export const SKILLS: Readonly<Record<SkillId, SkillRule>> = {
   },
   SHADOWSTEP: {
     ...NO_SKILL_FIELDS, id: 'SHADOWSTEP', name: 'Shadowstep',
-    doc: 'Teleport 36 px behind the target (within 320 px), facing its back. Pairs well with daggers.',
-    distance: 36, needsTarget: true, maxRange: 320, activeTicks: 10,
+    doc: 'Teleport 36 px behind the target (within 320 px), facing its back. Stepping out of the shadows takes a moment: no attack for 30 ticks after. Pairs well with daggers.',
+    distance: 36, needsTarget: true, maxRange: 320, activeTicks: 10, lockTicks: 30,
   },
   DASH: {
     ...NO_SKILL_FIELDS, id: 'DASH', name: 'Dash',
@@ -232,13 +299,23 @@ export const SKILLS: Readonly<Record<SkillId, SkillRule>> = {
   },
   SHOCKWAVE: {
     ...NO_SKILL_FIELDS, id: 'SHOCKWAVE', name: 'Shockwave',
-    doc: 'Shield slam: parry window of 48 ticks, plus 19 damage and a 36-tick stun to everyone in a 96 px cone ahead.',
-    radius: 96, arc: 2.2, damage: 19, knockback: 16, stunTicks: 36, parryTicks: 48, activeTicks: 16,
+    doc: 'Shield slam: parry window of 36 ticks, plus 19 damage and a 24-tick stun to everyone in a 96 px cone ahead.',
+    radius: 96, arc: 2.2, damage: 19, knockback: 16, stunTicks: 24, parryTicks: 36, activeTicks: 16,
   },
   BLOODRAGE: {
     ...NO_SKILL_FIELDS, id: 'BLOODRAGE', name: 'Bloodrage',
     doc: 'Berserk (+35% damage) and haste (x1.45 speed) for 145 ticks.',
     hasteTicks: 145, berserkTicks: 145, activeTicks: 20,
+  },
+  HOOK: {
+    ...NO_SKILL_FIELDS, id: 'HOOK', name: 'Hook',
+    doc: 'Chain hook at the target (in sight, clear line, within 260 px): 8 damage, yanked to 20 px in front of you and stunned 24 ticks. Pull an archer off its perch, or a rival across the saw.',
+    damage: 8, stunTicks: 24, distance: 20, needsTarget: true, maxRange: 260, activeTicks: 14,
+  },
+  SECOND_WIND: {
+    ...NO_SKILL_FIELDS, id: 'SECOND_WIND', name: 'Second wind',
+    doc: 'Catch your breath: heal 24% of max HP over 3 s, a gulp every half second. Any damage taken ends it. Needs you hurt.',
+    heal: 0.24, healTicks: 180, healEvery: 30, activeTicks: 20,
   },
 };
 
@@ -435,6 +512,12 @@ export type HazardRule = {
    * the damage interval, so the slow holds while you stand in it and lingers a moment after.
    */
   slowTicks: number;
+  /**
+   * How far it reaches into a body: it touches a fighter whose centre is within its radius + this
+   * share of the fighter's body radius (see `hazardReach`). A pool needs you standing in it, a saw
+   * only has to graze you. The sim's damage and the renderer's "standing in acid" look use the same.
+   */
+  bodyShare: number;
 };
 
 const NO_HAZARD_FIELDS = { intervalTicks: 0, period: 0, triggerAt: 0, speed: 0, durationTicks: 0, knockback: 0, slowTicks: 0 };
@@ -443,24 +526,33 @@ export const HAZARD_RULES: Readonly<Record<HazardKind, HazardRule>> = {
   spike: {
     ...NO_HAZARD_FIELDS, kind: 'spike', name: 'Spike trap',
     doc: 'Thrusts at 88% of its 165-tick cycle for 36 damage. Watch the rhythm, then walk.',
-    damage: 36, radius: 42, period: 165, triggerAt: 0.88, knockback: 6,
+    damage: 36, radius: 42, period: 165, triggerAt: 0.88, knockback: 6, bodyShare: 0.5,
   },
   saw: {
     ...NO_HAZARD_FIELDS, kind: 'saw', name: 'Saw blade',
     doc: 'Rolls along its track and deals 22 damage every 12 ticks to anyone it touches. Faster in sudden death.',
-    damage: 22, intervalTicks: 12, radius: 26, speed: 1.6, knockback: 8,
+    damage: 22, intervalTicks: 12, radius: 26, speed: 1.6, knockback: 8, bodyShare: 1,
   },
   acid: {
     ...NO_HAZARD_FIELDS, kind: 'acid', name: 'Acid pool',
     doc: '11 damage every 24 ticks and a slow (x0.6 speed) while you stand in it, so wading out takes a while. Spilled pools dry up after 400 ticks.',
-    damage: 11, intervalTicks: 24, radius: 62, durationTicks: 400, slowTicks: 40,
+    damage: 11, intervalTicks: 24, radius: 62, durationTicks: 400, slowTicks: 40, bodyShare: 0.3,
   },
   fire: {
     ...NO_HAZARD_FIELDS, kind: 'fire', name: 'Fire pit',
     doc: '9 damage every 20 ticks while you stand in it. Also a light source.',
-    damage: 9, intervalTicks: 20, radius: 40,
+    damage: 9, intervalTicks: 20, radius: 40, bodyShare: 0.3,
   },
 };
+
+/**
+ * Distance (px) from a hazard's centre within which a fighter's centre is touched by it: the
+ * hazard's radius (the map's, else the rule's) + `bodyShare` x the fighter's body radius.
+ */
+export function hazardReach(h: Pick<HazardState, 'kind' | 'radius'>, bodyRadius: number): number {
+  const rule = HAZARD_RULES[h.kind];
+  return (h.radius || rule.radius) + bodyRadius * rule.bodyShare;
+}
 
 export type PickupRule = {
   name: string;
@@ -479,8 +571,8 @@ export type PickupRule = {
 
 export const PICKUP_RULES: Readonly<Record<'shrine' | PickupKind, PickupRule>> = {
   shrine: {
-    name: 'Shrine', doc: 'Heals 42% of max HP on touch, then needs 320 ticks to recharge.',
-    radius: 34, durationTicks: 0, cooldownTicks: 320, firstSpawnTicks: 0, amount: 0.42,
+    name: 'Shrine', doc: 'Heals 42% of max HP on touch, then needs 900 ticks (15 s) to recharge.',
+    radius: 34, durationTicks: 0, cooldownTicks: 900, firstSpawnTicks: 0, amount: 0.42,
   },
   haste: {
     name: 'Haste charm', doc: 'Move speed x1.45 for 200 ticks. First appears after 480 ticks, respawns 600 ticks after it is taken.',
@@ -522,6 +614,77 @@ export const PROP_RULES: Readonly<Record<PropKind, PropRule>> = {
     doc: 'Blocks movement and projectiles until someone breaks it.',
     hp: 45, blastDamage: 0, blastRadius: 0, knockback: 0, spills: null,
   },
+};
+
+// ---------------------------------------------------------------------------------------------
+// Stuck arrows and axes
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Arrows and thrown axes stick where they hit (`StuckAmmo` in `WorldState.stuck`): in a wall,
+ * pillar or prop at the impact point and angle, or in a body until it dies. They stay retrievable
+ * (walk up to `pickupPos`); ammo in a living body is out of play, and drops to the floor around the
+ * corpse when that body dies. Misses that run out of flight over open floor skid and lie there as
+ * plain floor items (or stick point-first with `floorStickChance`). Placeholder values: the balance
+ * pass tunes them against the bow's ammo economy.
+ */
+export const STUCK_AMMO = {
+  wallStickChance: 1,
+  propStickChance: 1,
+  bodyStickChance: 1,
+  floorStickChance: 0,
+  pickupOffset: 14,
+  pickupSlack: 14,
+  maxPerBody: 8,
+  maxStuck: 96,
+  bodyDropScatter: 22,
+} as const;
+
+export const STUCK_AMMO_DOCS: DocsFor<typeof STUCK_AMMO> = {
+  wallStickChance: 'Chance that an arrow or axe hitting a wall or pillar sticks in it; otherwise it drops to the floor in front of it.',
+  propStickChance: 'Chance that an arrow or axe hitting a crate, keg or amphora sticks in it. It drops to the floor when the prop breaks.',
+  bodyStickChance: 'Chance that an arrow or axe that hits a fighter sticks in the body. Out of play until that fighter dies, then it drops to the floor.',
+  floorStickChance: 'Chance that a shot running out of flight over open floor sticks point-first instead of skidding flat. Either way it can be picked up.',
+  pickupOffset: 'A stuck arrow or axe is taken back from this many px in front of the surface it hit.',
+  pickupSlack: 'A fighter takes back stuck ammo when its pickup point is within its body radius + this many px.',
+  maxPerBody: 'At most this many arrows and axes stick in one body; a hit beyond that drops its ammo at the victim\'s feet.',
+  maxStuck: 'At most this many stuck arrows and axes in the arena; the oldest drops to the floor when another sticks.',
+  bodyDropScatter: 'When a body full of arrows dies, they land on the floor up to this many px from the corpse.',
+};
+
+// ---------------------------------------------------------------------------------------------
+// Bleed (candidate rule, off)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Bleeding (`FighterState.bleed`), a candidate rule: disabled, every amount zero, until the balance
+ * harness shows it adds variety without dominating. Sketch: a lost limb always bleeds; dagger
+ * backstabs open a wound; damage over time per bleed tick; a shrine heal cures it; bleeding
+ * fighters leave a drip trail hunters can follow out of sight. While `enabled` is false the sim sets
+ * no bleed, no sensor ever reads true and the rulebook leaves it out.
+ */
+export const BLEED_RULES = {
+  enabled: false,
+  intervalTicks: 30,
+  limbLossTicks: 0,
+  limbLossDamage: 0,
+  backstabTicks: 0,
+  backstabDamage: 0,
+  maxTicks: 0,
+  shrineCures: true,
+  dripEveryTicks: 0,
+} as const;
+
+export const BLEED_RULES_DOCS: DocsFor<typeof BLEED_RULES> = {
+  enabled: 'Bleeding is in the game. While false nobody bleeds and these numbers do nothing.',
+  intervalTicks: 'A bleeding fighter takes its bleed damage every this many ticks.',
+  limbLossTicks: 'Losing a limb opens a wound that bleeds this many ticks.',
+  limbLossDamage: 'Damage per bleed tick of a lost limb.',
+  backstabTicks: 'A twin-dagger backstab opens a wound that bleeds this many ticks.',
+  backstabDamage: 'Damage per bleed tick of a backstab wound.',
+  maxTicks: 'Bleeding never lasts longer than this many ticks, however many wounds stack.',
+  shrineCures: 'A shrine heal stops the bleeding.',
+  dripEveryTicks: 'A bleeding fighter leaves a drop of blood on the floor this often (ticks): a trail hunters can follow.',
 };
 
 // ---------------------------------------------------------------------------------------------

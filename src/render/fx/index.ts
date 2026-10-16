@@ -64,6 +64,9 @@ const WEAPON_ARM: Limb = 'armR';
 /** Seconds a landed gib keeps oozing. */
 const OOZE_SECONDS = 1.7;
 /** Trail particles per second of game time, per projectile type. */
+/** The keg's blast-wave ring (linear): warm, dark soot with an ember glow. */
+const BLAST_SOOT: Readonly<Rgb> = { r: 0.32, g: 0.12, b: 0.04 };
+
 const TRAIL_RATE: Readonly<Record<ProjectileWeapon, number>> = { LONGBOW: 45, THROWING_AXES: 34, ARCANE_STAFF: 80 };
 /** Damage numbers for hits nobody landed (hazards, the closing wall). */
 const HAZARD_NUMBER: Rgb = { r: 1, g: 0.62, b: 0.28 };
@@ -692,7 +695,9 @@ export function createFx(): FxModule {
     gpu.shapes.flash(x, y, r * 1.05, 0.4, pcol.r, pcol.g, pcol.b, 1.0, 0.8);
     gpu.shapes.flash(x, y, r * 0.55, 0.22, 1, 0.75, 0.3, 2.4);
     gpu.shapes.ring(x, y, r * 0.25, r * 1.4, 0.38, pcol.r, pcol.g, pcol.b, 1.4, 0.3, 0.16);
-    gpu.shapes.ring(x, y, r * 0.5, r * 1.9, 0.9, dust.r, dust.g, dust.b, 1, 0.4, 0.3);
+    // The blast wave: hot, dark soot rolling out, never the floor's dust colour (pale stone dust
+    // over the dark Catacombs read as a grey haze ring).
+    gpu.shapes.ring(x, y, r * 0.45, r * 1.7, 0.55, BLAST_SOOT.r, BLAST_SOOT.g, BLAST_SOOT.b, 1, 0.3, 0.2);
     sparks(x, y, 44, 520, 1, 0.45, 0.08, 1.7);
     embers(x, y, 36, 300, pcol, 1.8, 1.2, 1.4);
     // Charred staves and dark, warm smoke (never a grey puff).
@@ -738,6 +743,17 @@ export function createFx(): FxModule {
       case 'BLOODRAGE':
         shapes?.ring(x, y, 10, 70, 0.4, 1, 0.12, 0.08, 3, 0, 0.2);
         mist(x, y, 0, 6, 20);
+        break;
+      case 'HOOK': {
+        // The chain flung out: steel sparks thrown ahead and a short clink flash at the hand.
+        const a = f ? f.facing : 0;
+        sparks(x + Math.cos(a) * 14, y + Math.sin(a) * 14, 8, 320, 0.85, 0.9, 1, 1.3, a, 0.25);
+        shapes?.flash(x + Math.cos(a) * 16, y + Math.sin(a) * 16, 18, 0.12, 0.85, 0.9, 1, 2);
+        break;
+      }
+      case 'SECOND_WIND':
+        // A deep breath: a soft green ring settles in around the fighter (the gulps bring their own heals).
+        shapes?.ring(x, y, 48, 14, 0.6, HEAL_GLOW.r, HEAL_GLOW.g, HEAL_GLOW.b, 1.2, 0, 0.12);
         break;
     }
   }

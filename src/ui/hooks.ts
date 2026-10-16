@@ -123,3 +123,18 @@ export function useHashScreen(): [Screen, (s: Screen) => void] {
   }, []);
   return [screen, go];
 }
+
+/** True while the window is narrower than `px` (phones, small tablets); follows resizes. */
+export function useNarrow(px: number): boolean {
+  const query = `(max-width: ${px}px)`;
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(query);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return narrow;
+}

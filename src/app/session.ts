@@ -47,6 +47,17 @@ export function possessive(name: string): string {
   return /s$/i.test(name) ? `${name}'` : `${name}'s`;
 }
 
+/**
+ * Fill `{k}`-style holes with names. A function replacer, never a replacement string: names come
+ * from strategies, and in a replacement string "$&", "$'" or "$1" are patterns, so a fighter called
+ * "Cash$&Carry" would print the hole's own text instead of its name.
+ */
+export function fillHoles(line: string, holes: Readonly<Record<string, string>>): string {
+  let out = line;
+  for (const [hole, value] of Object.entries(holes)) out = out.replaceAll(hole, () => value);
+  return out;
+}
+
 /** {k} killer, {v} victim, {v's} victim possessive. */
 const LIMB_LINES: Readonly<Record<Limb, { by: string; solo: string }>> = {
   armR: { by: "{k} took {v's} weapon arm. Fists it is.", solo: '{v} lost the weapon arm. Fists it is.' },
@@ -189,7 +200,8 @@ export class MatchSession {
           const by = e.attackerId;
           const lines = LIMB_LINES[e.limb];
           const v = this.name(state, e.victimId);
-          const text = (by ? lines.by : lines.solo).replaceAll('{k}', this.name(state, by)).replaceAll("{v's}", possessive(v)).replaceAll('{v}', v);
+          // {v's} before {v}: the possessive hole starts with the plain one.
+          const text = fillHoles(by ? lines.by : lines.solo, { '{k}': this.name(state, by), "{v's}": possessive(v), '{v}': v });
           this.feed.push({ tick: e.tick, text, kind: 'dismember', ids: by ? [by, e.victimId] : [e.victimId] });
           this.marks.push({
             tick: e.tick, kind: 'dismember', actorId: by, targetId: e.victimId, text,

@@ -2,7 +2,7 @@
 import { Fragment, useRef, useState } from 'react';
 import { STAT_DOCS, TICK_HZ, deriveStats } from '../../core';
 import type { DerivedStats, GameController, UiFighter, UiSnapshot } from '../../core';
-import { buildLine, formatPercent, formatPlace, formatStat, formatValue } from '../format';
+import { formatPercent, formatPlace, formatStat, formatValue } from '../format';
 
 /** The stats that explain a fight in progress: can it see, hear, catch, survive, parry. */
 const INSPECTOR_STATS: readonly (keyof DerivedStats)[] = ['visionRange', 'hearingRadius', 'moveSpeed', 'armorMitigation', 'parryChance'];
@@ -10,7 +10,8 @@ import { usePolled } from '../hooks';
 import { scoreBars } from '../hud';
 import { CloseIcon, ExpandIcon, FollowIcon } from '../icons';
 import type { PaneState } from '../panes';
-import { AttrChart, HpBar, PaneHandle, PaneToggle } from '../widgets';
+import { codexHash, sensorCodexId } from '../codexLink';
+import { AttrChart, BuildLinks, HpBar, PaneHandle, PaneToggle } from '../widgets';
 import { SteeringRing } from './SteeringRing';
 import { guardTripSummary, knowledgeRows, powerupLines, readLive, statusChips, zoneLines } from './fighterData';
 import type { InfoLine } from './fighterData';
@@ -69,7 +70,9 @@ function InspectorPanel({ controller, snap, fighter, setPane, onExpand }: Props)
           <div className="hc-name" style={{ color: fighter.color }}>
             {fighter.name}
           </div>
-          <div className="hc-build">{buildLine(fighter.weapon, fighter.skill)}</div>
+          <div className="hc-build">
+            <BuildLinks weapon={fighter.weapon} skill={fighter.skill} />
+          </div>
           {trips.total > 0 ? (
             <button
               type="button"
@@ -111,7 +114,7 @@ function InspectorPanel({ controller, snap, fighter, setPane, onExpand }: Props)
               </span>
             </div>
           ) : (
-            <div className="dim">Out in {fighter.place ? formatPlace(fighter.place) : '?'} place.</div>
+            <div className="dim">{fighter.place ? `Out in ${formatPlace(fighter.place)} place.` : 'Out.'}</div>
           )}
           {f ? (
             <div className="status-row">
@@ -268,7 +271,7 @@ function InspectorPanel({ controller, snap, fighter, setPane, onExpand }: Props)
             </div>
             <dl className="kv">
               {Object.entries(d.sensors).map(([k, v]) => (
-                <Kv key={k} k={k} v={formatValue(v)} />
+                <Kv key={k} k={k} v={formatValue(v)} codex={sensorCodexId(k)} />
               ))}
             </dl>
           </div>
@@ -295,10 +298,10 @@ function InspectorPanel({ controller, snap, fighter, setPane, onExpand }: Props)
             <div className="ins-title">
               <span>Build</span>
             </div>
-            <AttrChart attributes={f.attributes} />
+            <AttrChart attributes={f.attributes} codex />
             <dl className="kv" style={{ marginTop: 10 }}>
               {INSPECTOR_STATS.map((k) => (
-                <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} />
+                <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} codex={`stat:${k}`} />
               ))}
             </dl>
           </div>
@@ -327,10 +330,19 @@ export function InfoList({ lines }: { lines: InfoLine[] }) {
   );
 }
 
-export function Kv({ k, v }: { k: string; v: string }) {
+/** One row of a key-value list. `codex`: the entry the key opens (sensors, derived stats). */
+export function Kv({ k, v, codex = null }: { k: string; v: string; codex?: string | null }) {
   return (
     <>
-      <dt title={k}>{k}</dt>
+      <dt title={codex ? `${k}: open in the Codex` : k}>
+        {codex ? (
+          <a className="word-link" href={codexHash(codex)}>
+            {k}
+          </a>
+        ) : (
+          k
+        )}
+      </dt>
       <dd>{v}</dd>
     </>
   );

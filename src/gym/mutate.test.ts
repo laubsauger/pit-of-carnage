@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ATTRIBUTE_BUDGET, MAX_BEHAVIOURS, Rng, attributeTotal } from '../core';
 import type { Behaviour, Strategy } from '../core';
-import { collectTerms, crossover, materializeImports, mutate, nicheKey, nicheOf } from './mutate';
+import { TUNE_MUTATIONS, collectTerms, crossover, materializeImports, mutate, nicheKey, nicheOf } from './mutate';
 import { TEST_LIBRARY, makeStrategy, strictValidate } from './testkit';
 
 const pool = collectTerms(Object.values(TEST_LIBRARY));
@@ -32,6 +32,34 @@ describe('mutate', () => {
         expect(strategy).not.toEqual(parent);
       }
       expect(parent).toEqual(before);
+    }
+  });
+
+  // The tuner sharpens a strategy; it must not turn it into a different fighter. Its operators touch
+  // numbers and policies only, never the weapon, the skill or which move terms a behaviour has.
+  it('with the tuner\'s operators, keeps build, behaviours and move terms, and does tune policies', () => {
+    const shape = (s: Strategy) => Object.entries(s.behaviours).map(([n, b]) => `${n}:${b.move.map((t) => Object.keys(t).sort().join('+')).join(',')}`);
+    const seen = new Set<string>();
+    for (const parent of fixtures) {
+      for (let seed = 0; seed < 300; seed++) {
+        const { strategy, mutations } = mutate(parent, new Rng(seed), { termPool: pool, operators: TUNE_MUTATIONS });
+        expect(mutations).toHaveLength(1);
+        expect(errors(strategy)).toEqual([]);
+        expect(strategy.build.weapon).toBe(parent.build.weapon);
+        expect(strategy.build.skill).toBe(parent.build.skill);
+        expect(shape(strategy)).toEqual(shape(parent));
+        const kind = /: attack (in_range|if_blocked) -> /.test(mutations[0]!) ? 'attack' : /: stance /.test(mutations[0]!) ? 'stance' : /^commit /.test(mutations[0]!) ? 'commit' : 'other';
+        seen.add(kind);
+      }
+    }
+    expect(seen).toEqual(new Set(['attack', 'stance', 'commit', 'other']));
+  });
+
+  // Evolution's operator mix is tuned by its own tests; adding the policy operator must not change it.
+  it('offers the policy operator only when asked for', () => {
+    for (let seed = 0; seed < 300; seed++) {
+      const { mutations } = mutate(fixtures[0]!, new Rng(seed), { termPool: pool });
+      expect(mutations[0]).not.toMatch(/: stance |^commit |: attack (in_range|if_blocked) -> (in_range|if_blocked)$/);
     }
   });
 

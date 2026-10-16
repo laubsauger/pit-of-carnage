@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { TICK_HZ, createHeatmap, emptyFighterStats } from '../core';
+import { TICK_HZ, createHeatmap, emptyFighterStats, makeRating } from '../core';
 import { heatmapPhrase } from '../gym';
-import type { FighterReport, KillRecord, MatchReport, StrategyAggregate } from '../core';
+import type { FighterReport, KillRecord, MatchReport, Rating, StrategyAggregate } from '../core';
 import {
   DEATH_LEAD_IN_TICKS,
   PROVISIONAL_SIGMA,
@@ -16,6 +16,7 @@ import {
   inSentence,
   isProvisional,
   leadInTick,
+  ratingView,
   statLines,
   versusChampion,
   winRows,
@@ -110,8 +111,8 @@ describe('versusChampion and formatSigned', () => {
 
 describe('isProvisional', () => {
   it('marks new ratings as settling and settled ones as not', () => {
-    expect(isProvisional({ mu: 25, sigma: 25 / 3, ordinal: 0 })).toBe(true);
-    expect(isProvisional({ mu: 28, sigma: PROVISIONAL_SIGMA - 1, ordinal: 16 })).toBe(false);
+    expect(isProvisional({ mu: 25, sigma: 25 / 3, ordinal: 0, provisional: true })).toBe(true);
+    expect(isProvisional({ mu: 28, sigma: PROVISIONAL_SIGMA - 1, ordinal: 16, provisional: false })).toBe(false);
   });
 });
 
@@ -216,5 +217,30 @@ describe('heatmaps', () => {
 
   it('admits when there is no data instead of inventing a spot', () => {
     expect(heatSummary(createHeatmap(240, 240))).toBe('No time on this map.');
+  });
+});
+
+describe('ratingView', () => {
+  // The spec: uncertainty is shown, not hinted; a provisional rating is explained, never a bare "?".
+  it('shows a new rating as "1000 ±333" with a "new" card saying how many matches it rests on', () => {
+    const v = ratingView(makeRating(25, 25 / 3), 3);
+    expect(v.value).toBe('1000');
+    expect(v.plusMinus).toBe('±333');
+    expect(v.provisional).toBe(true);
+    expect(v.card).toBe('Provisional: rated from 3 matches. Settles after about 10.');
+    expect(`${v.value} ${v.plusMinus} ${v.card}`).not.toContain('?');
+  });
+
+  it('drops the mark once settled, and the ± shrinks with the evidence', () => {
+    const settled = ratingView(makeRating(30, 2), 40);
+    expect(settled.provisional).toBe(false);
+    expect(settled.plusMinus).toBe('±80');
+    expect(Number(settled.value)).toBeGreaterThan(1000);
+  });
+
+  it('reads ratings stored before the provisional flag existed from their sigma', () => {
+    const old = { mu: 25, sigma: 25 / 3, ordinal: 0 } as unknown as Rating;
+    expect(ratingView(old).provisional).toBe(true);
+    expect(ratingView(old).card).toContain('only a few matches');
   });
 });

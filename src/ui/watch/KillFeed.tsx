@@ -2,6 +2,7 @@
 import type { GameController, TimelineMark, UiSnapshot } from '../../core';
 import { formatClock } from '../format';
 import { KILL_LEAD_IN_TICKS, feedOpacity, markForFeed, seekTickForMark, segmentFeedText, visibleFeed } from '../hud';
+import { PaneToggle } from '../widgets';
 
 type Props = {
   controller: GameController;
@@ -9,16 +10,23 @@ type Props = {
   shifted: boolean;
   /** The timeline mark of the line under the pointer (null when none), so the timeline can point at it. */
   onLink: (mark: TimelineMark | null) => void;
+  /** Fold the feed to a small tab at the right edge (kept between visits). */
+  onCollapse: () => void;
 };
 
 /**
  * Right-side broadcast feed. Lines fade with game time. Each line is linked to its timeline mark:
  * pointing at it lights the mark up, clicking it replays the moment exactly as the mark would.
  */
-export function KillFeed({ controller, snap, shifted, onLink }: Props) {
+export function KillFeed({ controller, snap, shifted, onLink, onCollapse }: Props) {
   const items = visibleFeed(snap.feed, snap.tick);
   return (
     <div className={`feed${shifted ? ' shifted' : ''}`} aria-live="polite" aria-label="Kill feed" onPointerLeave={() => onLink(null)}>
+      {items.length ? (
+        <span className="feed-fold">
+          <PaneToggle side="right" collapsed={false} label="Kill feed" onToggle={onCollapse} />
+        </span>
+      ) : null}
       {items.map((item) => {
         const mark = markForFeed(item, snap.marks);
         return (

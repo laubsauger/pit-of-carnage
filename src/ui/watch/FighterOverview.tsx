@@ -9,14 +9,15 @@ import { STAT_DOCS, TICK_HZ, deriveStats } from '../../core';
 import type { DamageSource, DerivedStats, GameController, MatchReport, Strategy, UiFighter, UiSnapshot } from '../../core';
 import { encodeStrategyCode } from '../../strategy';
 import { prettyJson } from '../editor';
-import { buildLine, formatClock, formatPercent, formatPlace, formatStat, formatValue, skillName, weaponName } from '../format';
+import { formatClock, formatPercent, formatPlace, formatStat, formatValue, skillName } from '../format';
 import { Heatmap } from '../Heatmap';
 import { usePolled } from '../hooks';
 import { KILL_LEAD_IN_TICKS, scoreBars } from '../hud';
 import { CloseIcon, CopyIcon } from '../icons';
 import { howOut, leadInTick, statLines } from '../reports';
 import { copyAndToast } from '../toast';
-import { AttrChart, HpBar } from '../widgets';
+import { codexHash, sensorCodexId } from '../codexLink';
+import { AttrChart, BuildLinks, HpBar } from '../widgets';
 import { SteeringRing } from './SteeringRing';
 import { guardTripSummary, knowledgeRows, powerupLines, readLive, statusChips, zoneLines } from './fighterData';
 import { InfoList, Kv, knowsSummary } from './Inspector';
@@ -58,6 +59,7 @@ const SOURCE_LABEL: Record<DamageSource, string> = {
   hazard: 'Hazards',
   keg: 'Kegs',
   sudden_death: 'The wall',
+  bleed: 'Bleeding',
 };
 
 const PERCEPTION_STATS: readonly (keyof DerivedStats)[] = ['visionRange', 'visionFov', 'hearingRadius', 'parryChance'];
@@ -76,7 +78,7 @@ export function FighterOverview({ controller, snap, fighter, strategy, tab, setT
         <div className="ov-id">
           <h2 style={{ color: fighter.color }}>{fighter.name}</h2>
           <div className="dim">
-            {buildLine(fighter.weapon, fighter.skill)}
+            <BuildLinks weapon={fighter.weapon} skill={fighter.skill} />
             {strategy ? <span className="faint"> · {strategy.name} v{strategy.version ?? 1}</span> : null}
           </div>
         </div>
@@ -332,7 +334,7 @@ function OverviewBody({ controller, snap, fighter, strategy, report, onPip }: { 
                         {rows.map((s) => (
                           <tr key={s.name} title={s.doc}>
                             <td>
-                              <code>{s.name}</code>
+                              <SensorName name={s.name} />
                             </td>
                             <td className="num r">{sensorValueText(s.value, s.unit)}</td>
                             <td className="faint r">
@@ -396,7 +398,7 @@ function OverviewBody({ controller, snap, fighter, strategy, report, onPip }: { 
               </h3>
               <dl className="kv">
                 {PERCEPTION_STATS.map((k) => (
-                  <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} />
+                  <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} codex={`stat:${k}`} />
                 ))}
               </dl>
               {f ? (
@@ -465,13 +467,13 @@ function OverviewBody({ controller, snap, fighter, strategy, report, onPip }: { 
               <h3>
                 <span>Build</span>
                 <span className="dim">
-                  {weaponName(f.weapon)}, {skillName(f.skill)}
+                  <BuildLinks weapon={f.weapon} skill={f.skill} />
                 </span>
               </h3>
-              <AttrChart attributes={f.attributes} height={80} />
+              <AttrChart attributes={f.attributes} height={80} codex />
               <dl className="kv two" style={{ marginTop: 12 }}>
                 {BUILD_STATS.map((k) => (
-                  <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} />
+                  <Kv key={k} k={STAT_DOCS[k].label} v={formatStat(k, stats[k])} codex={`stat:${k}`} />
                 ))}
               </dl>
             </section>
@@ -653,10 +655,10 @@ function StrategyView({ strategy, color }: { strategy: Strategy; color: string }
             <h3>
               <span>Build</span>
               <span className="dim">
-                {weaponName(strategy.build.weapon)}, {skillName(strategy.build.skill)}
+                <BuildLinks weapon={strategy.build.weapon} skill={strategy.build.skill} />
               </span>
             </h3>
-            <AttrChart attributes={strategy.build.attributes} height={80} />
+            <AttrChart attributes={strategy.build.attributes} height={80} codex />
             <dl className="kv stack" style={{ marginTop: 12 }}>
               <Kv k="Target, highest wins" v={strategy.target} />
               <Kv k="Commit" v={`${strategy.commit} ticks (${(strategy.commit / TICK_HZ).toFixed(2)} s)`} />
@@ -728,5 +730,17 @@ function StrategyView({ strategy, color }: { strategy: Strategy; color: string }
         </div>
       )}
     </div>
+  );
+}
+
+/** A sensor's name, opening its Codex card when it has one (memory slots are the strategy's own words). */
+function SensorName({ name }: { name: string }) {
+  const id = sensorCodexId(name);
+  return id ? (
+    <a className="word-link" href={codexHash(id)} title="Open in the Codex">
+      <code>{name}</code>
+    </a>
+  ) : (
+    <code>{name}</code>
   );
 }

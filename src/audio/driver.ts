@@ -1,8 +1,9 @@
 // Owned by: audio
 /**
  * Everything between the game and one running engine: events and signals to cues, the round's
- * crowd (profile, director, babble), the final-sting gate, wall contact to the grind loop, and the
- * per-frame slow-motion bend. `createAudio` (index.ts) owns the AudioContext's life around it; the
+ * crowd (profile, director, babble), the final-sting gate, wall contact to the grind loop, the
+ * per-frame slow-motion bend, and the hush under the end card (combat sounds and the crowd stop,
+ * only a low ambience and announcer beats remain). `createAudio` (index.ts) owns the AudioContext's life around it; the
  * offline checks (dev/) drive the same class on an OfflineAudioContext, so what they measure is what
  * the game plays.
  */
@@ -10,7 +11,7 @@
 import type { GameEvent, MatchSignal, WorldState } from '../core';
 import { CrowdDirector, crowdProfile } from './crowd';
 import type { CrowdProfile } from './crowd';
-import { FinalGate, createCueMemory, cuesForEvent, cuesForSignal, finalKillIndex, isLive, rememberContacts, wallContact } from './cues';
+import { FinalGate, SOUND_SPECS, createCueMemory, cuesForEvent, cuesForSignal, finalKillIndex, isLive, rememberContacts, wallContact } from './cues';
 import type { Cue } from './cues';
 import type { AudioEngine } from './engine';
 import { approach, pitchForTimeScale } from './mix';
@@ -29,6 +30,8 @@ export class SoundDriver {
   private readonly cues: Cue[] = [];
   private readonly finalGate = new FinalGate();
   private rate = 1;
+  /** The end card is up: the arena is hushed. */
+  private hushed = false;
   /** Bumped per babble request, so a slow render for an old round never replaces a newer one. */
   private babbleRequest = 0;
   private stopped = false;
@@ -55,6 +58,7 @@ export class SoundDriver {
     if (fresh) this.profile = crowdProfile(next);
     this.crowd.reset(this.profile);
     this.engine.setWallMoving(false);
+    this.setHush(false);
     this.engine.setProfile(this.profile);
     // A restart of the same match keeps its crowd.
     if (fresh) this.requestBabble();
@@ -62,6 +66,7 @@ export class SoundDriver {
 
   onSignal(signal: MatchSignal): void {
     this.crowd.onSignal(signal);
+    if (signal.type === 'end_card') this.setHush(signal.shown);
     const cues = this.cues;
     cues.length = 0;
     cuesForSignal(signal, cues);
@@ -108,8 +113,23 @@ export class SoundDriver {
     this.engine.stopAll();
   }
 
-  /** Play one cue, after the round's crowd colours its roars and the final sting passes its gate. */
+  /** Whether the arena is hushed (the end card is up). */
+  get isHushed(): boolean {
+    return this.hushed;
+  }
+
+  private setHush(on: boolean): void {
+    if (on === this.hushed) return;
+    this.hushed = on;
+    this.engine.setHush(on);
+  }
+
+  /**
+   * Play one cue, after the round's crowd colours its roars and the final sting passes its gate.
+   * Hushed, only announcer beats (signals) play.
+   */
   private play(cue: Cue, finalVictim: string | null): void {
+    if (this.hushed && SOUND_SPECS[cue.sound].group !== 'signal') return;
     if (cue.sound === 'final_sting' && finalVictim !== null && !this.finalGate.take(finalVictim, this.engine.ctx.currentTime)) return;
     if (cue.sound === 'crowd_roar') {
       cue.pitch *= this.profile.pitch;

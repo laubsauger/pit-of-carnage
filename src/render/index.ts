@@ -11,17 +11,22 @@
  * Weight without rumble: only kills shake the camera (and only with the viewer's shake setting on);
  * ordinary hits land locally on the two fighters (hit-stop, flash, squash) and never move the camera.
  *
+ * The winner's moment (`victory` signal, or `end_card` after a seek onto the end): the director
+ * frames the winners, who strike their pose (fighters.ts) under a warm spotlight while the rest of
+ * the arena dims (post.ts); it holds under the end card and ends when the card goes away.
+ *
  * Init reports its stages through `options.onProgress` for the splash: `renderer` once the WebGPU
  * device is up, `shaders` after a warm-up frame has compiled the pipelines of every batch and the
  * post-processing chain (so the first match frame does not hitch), `ready` just before returning.
  */
 
 import * as THREE from 'three/webgpu';
-import { DEFAULT_VIEW_SETTINGS, LAYER_HEIGHT, LIVE_EVENT_TICKS, MAX_FIGHTERS, NO_VIEW_INSETS, WEAPONS, clamp } from '../core';
+import { DEFAULT_VIEW_SETTINGS, LAYER_HEIGHT, LIVE_EVENT_TICKS, MAX_FIGHTERS, NO_VIEW_INSETS, TICK_HZ, WEAPONS, clamp } from '../core';
 import type {
   Decision, FxModule, GameEvent, GameRenderer, KnownFighter, MapDef, RenderContext, RendererOptions, SkillId, ViewInsets, ViewSettings, WorldState,
 } from '../core';
 import { affine, setFrame } from './affine';
+import { AmmoLayer } from './ammo';
 import { ArenaLayer } from './arena';
 import { CameraDirector, eventMoment, eventTrauma } from './camera';
 import type { FrameInput } from './camera';
@@ -52,12 +57,20 @@ const CLEAR_COLOR = 0x090807;
  */
 const MAX_PIXEL_RATIO = 1.5;
 
+/** Victory: the spotlight's radius on screen and of its light on the floor (world px), and its ease in and out (real s). */
+const SPOT_RADIUS = 95;
+const SPOT_LIGHT_RADIUS = 170;
+const VICTORY_EASE_IN = 0.5;
+const VICTORY_EASE_OUT = 0.25;
+
 const SKILL_FLASH: Readonly<Record<SkillId, number>> = {
   WHIRLWIND: 0xffd27a,
   SHADOWSTEP: 0x9c7bff,
   DASH: 0x8fe6ff,
   SHOCKWAVE: 0xfff1c4,
   BLOODRAGE: 0xff3a24,
+  HOOK: 0xc9d6e4,
+  SECOND_WIND: 0x7dffb0,
 };
 
 export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = createFx(), options: RendererOptions = {}): Promise<GameRenderer> {
@@ -106,10 +119,11 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
     glow.data[k + 4] = 0.2;
   }, shadows);
   const projectiles = new ProjectileLayer(cutout);
+  const ammo = new AmmoLayer(cutout);
   const overlays = new OverlayLayer();
   const tags = new TagLayer();
   scene.add(
-    light.group, floor.mesh, shadows.mesh, zone.group, walls.mesh, arena.group, acid.mesh, fighters.group, projectiles.group, glow.mesh,
+    light.group, floor.mesh, shadows.mesh, zone.group, walls.mesh, arena.group, ammo.group, acid.mesh, fighters.group, projectiles.group, glow.mesh,
     fire.mesh, overlays.group, tags.group,
   );
 
@@ -134,6 +148,10 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
   let disposed = false;
   /** The state of the last frame drawn (map-object picking reads it). */
   let lastState: WorldState | null = null;
+  /** The match's winners while their moment lasts (victory signal, or the end card after a seek). */
+  let victoryIds: string[] = [];
+  /** Eased 0..1 strength of the victory spotlight and dimming (real time). */
+  let victoryDim = 0;
   const points = new Float32Array(MAX_FIGHTERS * 2);
   /** Canvas edges covered by UI panels; the camera frames the action inside the rest. */
   const viewInsets: ViewInsets = { ...NO_VIEW_INSETS };
@@ -154,12 +172,24 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
     renderer.setClearColor(savedClear, prevAlpha);
   }
 
+  /** Whether any of the winners is on screen (alive in the roster). */
+  function victorsPresent(): boolean {
+    for (const id of victoryIds) {
+      const i = fighters.indexOf(id);
+      if (i >= 0 && fighters.alive[i]) return true;
+    }
+    return false;
+  }
+
   function fillFrame(): void {
     frame.viewW = viewW;
     frame.viewH = viewH;
+    // The winners' moment: the director frames the winners only.
+    const onlyVictors = victoryIds.length > 0 && victorsPresent();
     let n = 0;
     for (let i = 0; i < fighters.count; i++) {
       if (!fighters.alive[i]) continue;
+      if (onlyVictors && !victoryIds.includes(fighters.ids[i]!)) continue;
       points[n * 2] = fighters.xs[i]!;
       points[n * 2 + 1] = fighters.ys[i]!;
       n++;
@@ -217,6 +247,34 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
     fighters.hit(e.victimId, attacker, e.dir, severity, impact);
   }
 
+  /** Winner spotlight (a warm light on the floor) and the arena dimming around it (post). */
+  function updateVictory(dt: number): void {
+    const w = victoryIds.length > 0 ? fighters.indexOf(victoryIds[0]!) : -1;
+    const on = w >= 0 && fighters.alive[w] === 1;
+    const target = on ? 1 : 0;
+    victoryDim += (target - victoryDim) * (1 - Math.exp(-dt / (on ? VICTORY_EASE_IN : VICTORY_EASE_OUT)));
+    if (victoryDim < 0.005 || w < 0) {
+      victoryDim = on ? victoryDim : 0;
+      post.dim.value = 0;
+      return;
+    }
+    const x = fighters.xs[w]!;
+    const y = fighters.ys[w]!;
+    const k = victoryDim;
+    light.frameLight(x, y, SPOT_LIGHT_RADIUS, 2.1 * k, 1.75 * k, 1.2 * k);
+    const nx = (x - (camera.position.x + camera.left)) / (camera.right - camera.left);
+    const ny = (y - (camera.position.z - camera.top)) / (camera.top - camera.bottom);
+    post.spot.value.set(nx, ny, (SPOT_RADIUS * director.zoom) / viewH);
+    post.dim.value = k;
+  }
+
+  function clearVictory(): void {
+    victoryIds = [];
+    victoryDim = 0;
+    fighters.setVictors([], true);
+    post.dim.value = 0;
+  }
+
   const api: GameRenderer = {
     setMap(m) {
       map = m;
@@ -230,6 +288,8 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       const dh = Math.min(DECAL_MAX, Math.round(m.height * DECAL_SCALE));
       if (decalTarget.width !== dw || decalTarget.height !== dh) decalTarget.setSize(dw, dh);
       clearDecals();
+      ammo.reset();
+      clearVictory();
       frame.mapW = m.width;
       frame.mapH = m.height;
       needsSnap = true;
@@ -262,6 +322,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       acid.begin();
       shadows.begin();
       fighters.update(prev, curr, a, time, gameDt, selectedId, hoveredId);
+      ammo.update(curr, (curr.tick - 1 + a) / TICK_HZ, time, gameDt, fighters);
       arena.update(curr, time, gameDt, fire, glow, light);
       projectiles.update(curr, a, time, glow, light, shadows);
       glow.end();
@@ -278,6 +339,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
         director.update(dt, frame);
       }
       applyCamera();
+      updateVictory(dt);
       const known = selectedId !== null ? knowledgeOf(selectedId) : null;
       overlays.update(curr, fighters, selectedId, selectedId !== null ? decisionOf(selectedId) : null, known, dt, time, 1 / director.zoom);
       tags.update(curr, fighters, director.zoom, gameDt, view.nameTags, view.hpBars, overlays.visibleToViewer);
@@ -310,6 +372,9 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
           case 'pickup_spawn':
           case 'heal':
             arena.onEvent(e, state, light);
+            break;
+          case 'ammo_unstick':
+            ammo.onEvent(e);
             break;
           case 'sudden_death':
           case 'escalation':
@@ -394,6 +459,20 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
           director.finalMoment(signal.pos.x, signal.pos.y);
           punch.kick(true);
           break;
+        case 'victory':
+          victoryIds = signal.winnerIds.slice();
+          fighters.setVictors(victoryIds, false);
+          break;
+        case 'end_card':
+          if (!signal.shown) {
+            clearVictory();
+          } else if (victoryIds.length === 0 && signal.winnerIds.length > 0) {
+            // A seek or replay landed on the decided end: the winner is already in full pose.
+            victoryIds = signal.winnerIds.slice();
+            fighters.setVictors(victoryIds, true);
+            victoryDim = 1;
+          }
+          break;
       }
     },
 
@@ -418,6 +497,8 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       light.clearDynamic();
       tags.reset();
       fighters.resetHits();
+      clearVictory();
+      ammo.reset();
       arena.resetPickups();
       zone.reset();
       punch.reset();
@@ -432,6 +513,7 @@ export async function createRenderer(canvas: HTMLCanvasElement, fx: FxModule = c
       fighters.dispose();
       arena.dispose();
       projectiles.dispose();
+      ammo.dispose();
       overlays.dispose();
       tags.dispose();
       shadows.dispose();

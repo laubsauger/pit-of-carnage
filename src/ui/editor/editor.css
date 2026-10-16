@@ -329,6 +329,18 @@ button.lx-chip:hover {
 .cm-x-paren { color: var(--text-faint); }
 .cm-x-unknown { color: #d7c9b4; }
 
+/* Numbers are dragged sideways to change them (cm.ts numberScrub). */
+.code-cm .cm-j-num,
+.code-cm .cm-x-num {
+  cursor: ew-resize;
+}
+
+.code-cm .cm-scrubbing,
+.code-cm .cm-scrubbing .cm-content {
+  cursor: ew-resize;
+  user-select: none;
+}
+
 /* Recognised words: a subtle badge in the word's kind colour. Padding with matching negative
    margin keeps every character on its column. */
 .cm-w {
@@ -470,4 +482,266 @@ button.lx-chip:hover {
 .issue code {
   word-break: normal;
   overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Versions: the base line over the bar, the side panel's handle and width, history, dialogs  */
+/* ------------------------------------------------------------------------------------------ */
+
+.editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 6px 16px 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+.ed-base {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unsaved changes: a small blood dot; saved: a hollow ring. */
+.ed-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--stone-5);
+  transition: background-color 160ms, box-shadow 160ms;
+}
+
+.ed-dot.on {
+  background: var(--blood-hi);
+  box-shadow: 0 0 0 3px var(--blood-wash);
+}
+
+/* The side panel takes the stored width (sidepane.ts) on screens wide enough for two columns. */
+@media (min-width: 901px) {
+  .editor.editor-sized,
+  .editor.editor-sized.editor-split,
+  .editor.editor-sized.editor-visual {
+    grid-template-columns: minmax(0, 1fr) var(--side-w, 300px);
+  }
+}
+
+.editor-side-wrap {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.editor-side-wrap > .editor-side {
+  flex: 1;
+  min-width: 0;
+}
+
+/* History */
+.hv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hv-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hv-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px 5px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: var(--stone-0);
+  font-size: var(--fs-small);
+}
+
+.hv-row.open {
+  border-color: var(--stone-4);
+}
+
+.hv-row.picked {
+  border-color: var(--text-dim);
+  background: var(--stone-2);
+}
+
+.hv-draft {
+  border-style: dashed;
+  border-color: var(--stone-4);
+}
+
+.hv-top {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.hv-v {
+  flex: none;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.hv-origin {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.hv-diff {
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hv-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hv-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
+  cursor: pointer;
+}
+
+.hv-pick input {
+  margin: 0;
+  accent-color: var(--blood-hi);
+}
+
+.hv-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: var(--fs-small);
+}
+
+.hv-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--stone-3);
+  overflow: hidden;
+}
+
+.hv-bar i {
+  display: block;
+  height: 100%;
+  background: var(--blood-hi);
+  transition: width 200ms;
+}
+
+/* Save under a taken name */
+.save-dialog {
+  width: min(560px, 100%);
+}
+
+.save-why {
+  margin: 0;
+}
+
+.save-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.save-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--stone-4);
+  border-radius: var(--r-panel);
+  background: var(--stone-0);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+button.save-option {
+  cursor: pointer;
+}
+
+button.save-option:hover,
+button.save-option:focus-visible {
+  outline: none;
+  border-color: var(--text-dim);
+  background: var(--stone-2);
+}
+
+.save-rename {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.save-rename .input {
+  flex: 1;
+}
+
+/* LLM round trip: three steps over the paste box */
+.llm-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.llm-steps li::marker {
+  color: var(--text-faint);
+  font-family: var(--font-num);
+}
+
+.llm-steps li.done::marker {
+  color: var(--blood-hi);
+}
+
+.llm-steps li.todo {
+  color: #f0a29d;
+}
+
+.llm-hint {
+  margin-top: -10px;
+  color: #e2c48a;
+}
+
+.dropzone[hidden] {
+  display: none;
+}
+
+.compare-dialog {
+  width: min(1100px, 100%);
+}
+
+@media (max-width: 900px) {
+  .editor-side-wrap > .pane-handle {
+    display: none;
+  }
 }

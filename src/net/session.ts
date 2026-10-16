@@ -4,7 +4,7 @@
  * (`RoomClient`). Both expose the same view, so the screen does not care which side it is on.
  */
 
-import type { StrategySource } from '../core';
+import type { SkillId, StrategySource, WeaponId } from '../core';
 import type { StreamPlayer } from './player';
 import type { RoomSettings, RoomState } from './protocol';
 
@@ -43,6 +43,21 @@ export type RoomView = {
 
 export const MAX_NOTICES = 6;
 
+/** Finished matches whose report and revealed strategies are kept (newest first). */
+export const MAX_EXTRAS = 4;
+
+/** One fighter of a finished match with its strategy as a code (`RoomSettings.revealStrategies`). */
+export type RevealedFighter = { fighterId: string; name: string; owner: string | null; weapon: WeaponId; skill: SkillId; code: string };
+
+/** What a finished match left behind for the room screen: its battle report and, if revealed, its strategies. */
+export type MatchExtras = {
+  matchId: number;
+  /** The battle report as text (`reportToText`), or null until the host sends it. */
+  report: string | null;
+  /** Null while the host keeps the strategies to itself. */
+  revealed: RevealedFighter[] | null;
+};
+
 export interface RoomSession {
   readonly role: RoomRole;
   readonly code: string;
@@ -61,18 +76,30 @@ export interface RoomSession {
   remove(entryId: string): void;
   /** Host only; ignored on a peer. */
   setSettings(patch: Partial<RoomSettings>): void;
-  /** Time-based work (matches, frames, timeouts). Called about 60 times a second while the room is open. */
+  /** Time-based work (matches, frames, timeouts), and telling subscribers what changed. Called about 60 times a second while the room is open. */
   pump(): void;
   leave(): void;
+  /** The report and revealed strategies of a recently finished match (see `MAX_EXTRAS`), or null. */
+  extras(matchId: number): MatchExtras | null;
 }
 
-/** Shared notice list and listener plumbing for both sides. */
+/** Keep `x` as the newest of a match's extras, at most `MAX_EXTRAS` matches. */
+export function keepExtras(list: MatchExtras[], x: MatchExtras): MatchExtras[] {
+  return [x, ...list.filter((e) => e.matchId !== x.matchId)].slice(0, MAX_EXTRAS);
+}
+
+/**
+ * Shared notice list and listener plumbing for both sides. Changes are collected and told to
+ * subscribers once per `flush` (every pump), so a burst of messages (a flood of bad ones from a
+ * hostile browser, say) costs one screen update, not one per message.
+ */
 export class ViewState {
   notices: Notice[] = [];
   rejected = 0;
   private nextNotice = 1;
   private listeners = new Set<() => void>();
   private cached: RoomView | null = null;
+  private pending = false;
 
   constructor(private readonly build: () => RoomView) {}
 
@@ -87,8 +114,16 @@ export class ViewState {
     };
   }
 
+  /** Something changed: the next `get` rebuilds the view, the next `flush` tells subscribers. */
   changed(): void {
     this.cached = null;
+    this.pending = true;
+  }
+
+  /** Tell subscribers, once, if anything changed since the last flush. */
+  flush(): void {
+    if (!this.pending) return;
+    this.pending = false;
     for (const fn of this.listeners) fn();
   }
 

@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p scripts",
     "test": "vitest run",
     "lint:strategy": "tsx scripts/lint-strategy.ts",
-    "balance": "tsx scripts/balance.ts"
+    "balance": "tsx scripts/balance.ts",
+    "tune": "tsx scripts/tune.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

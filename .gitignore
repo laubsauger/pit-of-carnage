@@ -3,3 +3,5 @@ dist
 .DS_Store
 *.log
 docs/screenshots/pass2-*
+docs/screenshots/pass3-*
+tuned/

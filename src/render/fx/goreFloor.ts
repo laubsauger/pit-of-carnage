@@ -7,7 +7,8 @@
  *
  * - Blood replaces the floor's albedo by its coverage (it does not multiply it), so it reads the
  *   same red on pale sand, dark flagstones and flesh.
- * - Colour comes from one gradient by thickness, wetness and tone: arterial red, deep red, maroon.
+ * - Colour comes from one gradient by thickness, freshness and tone: deep arterial red when fresh,
+ *   drying to maroon-brown over about 30 s; fresh blood over old shows fresh where it lies.
  *   The darkest stop is still clearly red, every light channel on blood is at least
  *   `BLOOD_FLOOR.minLight` and lit blood never drops below `BLOOD_FLOOR.darkest`, so overlaps,
  *   shadow and dark floors never turn it grey or black.
@@ -52,12 +53,16 @@ export function goreFloor(ground: V3, decal: V4, light: V3, ao: F, groundTint: V
   const D = log(max(decal.x, 1e-6)).negate();
   const T = log(max(decal.z, 1e-6)).negate();
   const tone = D.greaterThan(EPS).select(clamp(T.div(max(D, EPS)), 0, 1), float(F.tone));
-  // Wet coverage 0..1 (the drying pass shrinks it linearly), then the wet layer over dried blood.
-  const wet = clamp(float(1).sub(decal.y), 0, 1);
-  const layer = float(1).sub(pow(float(1).sub(wet), F.layer));
+  // Freshness (palette.ts `bloodFreshness`): the wet share of the blood here, or the coverage of the
+  // wet blood alone, whichever is larger, so new blood over a dried pool stands out where it lies.
+  const W = log(max(decal.y, 1e-6)).negate();
+  const share = clamp(W.div(max(D, EPS)), 0, 1);
+  const byShare = float(1).sub(pow(float(1).sub(share), F.layer));
+  const byCover = float(1).sub(exp(W.mul(-F.freshCover)));
+  const wet = max(byShare, byCover);
   const th = float(1).sub(exp(D.mul(-F.thick)));
   const t = clamp(th.add(float(F.tone).sub(tone).mul(F.toneShift)), 0, 1);
-  const albedo = mix(ramp3(BLOOD_RAMP.dry, t), ramp3(BLOOD_RAMP.wet, t), layer);
+  const albedo = mix(ramp3(BLOOD_RAMP.dry, t), ramp3(BLOOD_RAMP.wet, t), wet);
   const cover = float(1).sub(exp(D.mul(-F.cover)));
 
   const lit = light.mul(ao);

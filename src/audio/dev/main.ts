@@ -72,7 +72,7 @@ function representativeCues(): Cue[] {
   kill({ flags: ['crushed'], cause: 'sudden_death', killerId: null, weapon: null });
   kill({ final: true });
   ev({ type: 'explosion', tick: 600, pos, radius: 106 });
-  for (const skill of ['WHIRLWIND', 'SHADOWSTEP', 'DASH', 'SHOCKWAVE', 'BLOODRAGE'] as const) ev({ type: 'skill', tick: 600, fighterId: 'f0', skill, pos });
+  for (const skill of ['WHIRLWIND', 'SHADOWSTEP', 'DASH', 'SHOCKWAVE', 'BLOODRAGE', 'HOOK', 'SECOND_WIND'] as const) ev({ type: 'skill', tick: 600, fighterId: 'f0', skill, pos });
   ev({ type: 'footstep', tick: 600, fighterId: 'f0', pos, bloody: false });
   ev({ type: 'footstep', tick: 600, fighterId: 'f0', pos, bloody: true });
   for (const kind of ['haste', 'berserk', 'arrow'] as const) ev({ type: 'pickup', tick: 600, fighterId: 'f0', kind, pos });
@@ -87,6 +87,11 @@ function representativeCues(): Cue[] {
   ev({ type: 'escalation', tick: 600, level: 3, damage: 10, everywhere: false });
   ev({ type: 'judges_decision', tick: 600, survivors: [] });
   ev({ type: 'match_end', tick: 600, placements: [], ending: 'elimination' });
+  const unstick = (reason: 'pickup' | 'drop', kind: 'arrow' | 'axe') =>
+    ev({ type: 'ammo_unstick', tick: 600, stuckId: 's1', kind, pos, reason, fighterId: reason === 'pickup' ? 'f0' : null, floorItemId: reason === 'drop' ? 'i1' : null });
+  unstick('pickup', 'arrow');
+  unstick('drop', 'arrow');
+  unstick('drop', 'axe');
   const sig = (signal: MatchSignal) => cuesForSignal(signal, out);
   sig({ type: 'countdown', value: 3 });
   sig({ type: 'countdown', value: 1 });
@@ -100,7 +105,7 @@ function representativeCues(): Cue[] {
   // One of each sound (the first, which is the plain variant), plus every chant style.
   const seen = new Set<string>();
   return out.filter((c) => {
-    const key = c.sound === 'crowd_chant' ? `${c.sound}${c.variant}` : c.sound === 'countdown' ? `${c.sound}${c.pitch}` : c.sound;
+    const key = c.sound === 'crowd_chant' ? `${c.sound}${c.variant}` : c.sound === 'countdown' ? `${c.sound}${c.pitch}` : c.sound === 'ammo_clatter' ? `${c.sound}${c.intensity}` : c.sound;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -110,6 +115,7 @@ function representativeCues(): Cue[] {
 function cueLabel(c: Cue): string {
   if (c.sound === 'crowd_chant') return `crowd_chant/${['hey', 'clap', 'stomp'][c.variant ?? 0]}`;
   if (c.sound === 'countdown') return `countdown x${c.pitch.toFixed(2)}`;
+  if (c.sound === 'ammo_clatter') return c.intensity > 0.5 ? 'ammo_clatter/axe' : 'ammo_clatter/arrow';
   return c.sound;
 }
 
@@ -180,6 +186,8 @@ type Script = {
   signals: { at: number; signal: MatchSignal }[];
   /** Real second at which the sim starts stepping (FIGHT). */
   fightAt: number;
+  /** Send the winner's moment with the final kill and the end card 3 s later, like the controller. */
+  victory?: boolean;
   step: (tick: number, s: WorldState) => GameEvent[];
 };
 
@@ -195,6 +203,9 @@ type SceneResult = {
   /** Cues the mixer refused (throttled or crowded out), by sound. */
   refused: Record<string, number>;
   buffer: AudioBuffer;
+  /** Real seconds of the final kill and of the end card (-1 when the script has none). */
+  finalAt: number;
+  endCardAt: number;
 };
 
 async function renderScene(script: Script, phases: { name: string; from: number; to: number }[]): Promise<SceneResult> {
@@ -220,6 +231,8 @@ async function renderScene(script: Script, phases: { name: string; from: number;
   const intensity: number[] = [];
   let ticks = 0;
   let signalIdx = 0;
+  let finalAt = -1;
+  let endCardAt = -1;
   const signals = [...script.signals].sort((a, b) => a.at - b.at);
   for (let k = 1; k <= frames; k++) {
     void off.suspend(k * dt).then(() => {
@@ -239,6 +252,14 @@ async function renderScene(script: Script, phases: { name: string; from: number;
       if (events.length > 0) {
         director.onEvents(events);
         driver.onEvents(events, state);
+        if (script.victory && finalAt < 0 && events.some((e) => e.type === 'kill' && e.final)) {
+          finalAt = now;
+          driver.onSignal({ type: 'victory', winnerIds: ['f0'], ending: 'elimination' });
+        }
+      }
+      if (finalAt >= 0 && endCardAt < 0 && now >= finalAt + 3) {
+        endCardAt = now;
+        driver.onSignal({ type: 'end_card', shown: true, winnerIds: ['f0'] });
       }
       driver.frame(dt, slow);
       if (k % 30 === 0) intensity.push(Math.round(driver.crowd.intensity * 100) / 100);
@@ -254,6 +275,9 @@ async function renderScene(script: Script, phases: { name: string; from: number;
   for (let i = 0; i < L.length; i++) if (Math.abs(L[i]!) > 0.89 || Math.abs(R[i]!) > 0.89) overHot++;
   const mono = new Float32Array(L.length);
   for (let i = 0; i < L.length; i++) mono[i] = (L[i]! + R[i]!) / 2;
+  // The victory roar and the hush under the end card, measured where they actually happened.
+  if (finalAt >= 0) phases = [...phases, { name: 'victory roar', from: finalAt, to: finalAt + 2.5 }];
+  if (endCardAt >= 0) phases = [...phases, { name: 'end card', from: endCardAt + 1.5, to: Math.min(script.seconds - 0.1, endCardAt + 4) }];
   const phaseRms = phases.map((p) => {
     const a = Math.floor(p.from * SR);
     const b = Math.floor(p.to * SR);
@@ -272,6 +296,8 @@ async function renderScene(script: Script, phases: { name: string; from: number;
     phases: phaseRms,
     refused,
     buffer: buf,
+    finalAt,
+    endCardAt,
   };
 }
 
@@ -368,7 +394,8 @@ function matchScript(): Script {
   const fightAt = 2.4;
   return {
     name: 'match',
-    seconds: 36,
+    seconds: 42,
+    victory: true,
     fighters: fs,
     fightAt,
     signals: [

@@ -25,6 +25,11 @@
  *
  * Nothing here touches the persistent leaderboard: hundreds of throwaway mutants would bury it.
  * Ratings inside a run come from a run-local book.
+ *
+ * Every generation records the matches it played (`GenerationReport.matches`: seed, map, seat and
+ * lineup by strategy key, plus every strategy that played and is not in the field), so Watch on a
+ * generation, a candidate or an archive entry replays that generation's own match
+ * (`evolutionMatch`) instead of a fresh one.
  */
 
 import { MAX_FIGHTERS, Rng, strategyKey } from '../core';
@@ -34,6 +39,7 @@ import type {
   EvolveGeneration,
   EvolveRequest,
   EvolveResult,
+  MatchConfig,
   MatchReport,
   MoveTerm,
   Strategy,
@@ -82,8 +88,27 @@ export type ArchiveCell = {
   champion: boolean;
 };
 
-/** `EvolveGeneration` plus the archive after the generation and the count of children the validator rejected. */
-export type GenerationReport = EvolveGeneration & { archive: ArchiveCell[]; rejected: number };
+/**
+ * One match a generation played, enough to rebuild its exact config with `gymConfig`: the tested
+ * strategy sits at `seat`, the `opponents` (strategy keys, in seat order) fill the other seats.
+ * `race` marks the fresh seeds of a title race.
+ */
+export type RecordedSlot = { seed: number; mapId: string; seat: number; opponents: string[]; race: boolean };
+
+/** One strategy's turn in the test seat: the recorded slots it played, in order, and where it finished in each. */
+export type RecordedTrial = { key: string; slots: number[]; places: number[] };
+
+/**
+ * The matches of one generation. `strategies` holds every strategy that played in them except the
+ * run's field (the request has those), so a generation can be replayed after its elites left the archive.
+ */
+export type GenerationMatches = { slots: RecordedSlot[]; trials: RecordedTrial[]; strategies: Strategy[] };
+
+/**
+ * `EvolveGeneration` plus the archive after the generation, the count of children the validator
+ * rejected and the matches it played.
+ */
+export type GenerationReport = EvolveGeneration & { archive: ArchiveCell[]; rejected: number; matches: GenerationMatches };
 
 /** Mean score gap (normalized place, 0..1) a challenger needs: 0.05 is about a third of a place in an 8-way FFA. */
 export const MIN_MARGIN = 0.05;
@@ -126,10 +151,11 @@ type Elite = {
   placeSum: number;
 };
 
-type Slot = { seed: number; mapId: string; seat: number; opponents: Strategy[] };
+/** `index` is the slot's place in the generation's recorded slots. */
+type Slot = { index: number; seed: number; mapId: string; seat: number; opponents: Strategy[] };
 
 /** One strategy's results in the test seat of every slot. */
-type Trial = { key: string; reports: MatchReport[]; apps: Appearance[]; scores: number[]; places: number[] };
+type Trial = { strategy: Strategy; key: string; slots: number[]; reports: MatchReport[]; apps: Appearance[]; scores: number[]; places: number[] };
 
 type Child = { strategy: Strategy; key: string; parent: Elite; mutations: string[] };
 
@@ -145,7 +171,7 @@ function checkRequest(req: EvolveRequest): void {
 }
 
 /** Content identity, ignoring name and version: two children with the same moves are the same child. */
-function fingerprint(s: Strategy): string {
+export function fingerprint(s: Strategy): string {
   return JSON.stringify([s.build, s.target, s.behaviours, s.imports ?? [], s.memory ?? {}, s.commit]);
 }
 
@@ -161,7 +187,7 @@ function usageOf(t: Trial): Usage {
 }
 
 function play(s: Strategy, slots: readonly Slot[], runMatch: MatchRunner): Trial {
-  const trial: Trial = { key: strategyKey(s), reports: [], apps: [], scores: [], places: [] };
+  const trial: Trial = { strategy: s, key: strategyKey(s), slots: slots.map((x) => x.index), reports: [], apps: [], scores: [], places: [] };
   for (const slot of slots) {
     const lineup = [...slot.opponents];
     lineup.splice(slot.seat, 0, s);
@@ -247,15 +273,19 @@ export function evolve(
     const pool = [...field, ...elites.map((e) => e.strategy)];
     if (champion && !elites.includes(champion)) pool.push(champion.strategy);
     const bag = new ShuffleBag(pool, grng.fork('lineups'));
+    const recorded: Slot[] = [];
     const makeSlots = (label: string, count: number, mapStart: number): Slot[] =>
       Array.from({ length: count }, (_, m) => {
         const mrng = grng.fork(`${label}:${m}`);
-        return {
+        const slot: Slot = {
+          index: recorded.length,
           seed: mrng.nextU32(),
           mapId: req.mapIds[(mapStart + m) % req.mapIds.length]!,
           seat: mrng.int(0, req.fighters - 1),
           opponents: bag.draw(req.fighters - 1),
         };
+        recorded.push(slot);
+        return slot;
       });
     const slots = makeSlots('match', M, (g - 1) * M);
 
@@ -405,6 +435,7 @@ export function evolve(
     summary += ` Archive: ${archive.size} of ${NICHE_COUNT} niches${newNiches > 0 ? ` (${newNiches} new)` : ''}.`;
     if (rejected > 0) summary += ` ${rejected} ${plural(rejected, 'mutant')} failed validation.`;
 
+    const trials = [champTrial, ...occupantTrial.values(), ...childTrials, ...(race ? [race.mine, race.theirs] : [])];
     const report: GenerationReport = {
       generation: g,
       champion: aggregateOf(champTrial),
@@ -413,6 +444,7 @@ export function evolve(
       summary,
       archive: snapshot(),
       rejected,
+      matches: recordMatches(recorded, trials, field, race !== null ? new Set(race.mine.slots) : new Set()),
     };
     generations.push(report);
     onGeneration?.(report, g, req.generations);
@@ -425,4 +457,91 @@ export function evolve(
     ? `New champion: ${nameOf(champion.strategy)} (from ${nameOf(root)}) after ${req.generations} ${plural(req.generations, 'generation')}, ${promotions} ${plural(promotions, 'promotion')}; ${filled}.`
     : `${nameOf(root)} held on through ${req.generations} ${plural(req.generations, 'generation')}: no mutant beat it by a real margin; ${filled}.`;
   return { champion: structuredClone(champion.strategy), improved, generations, summary };
+}
+
+/** A recorded evolution match rebuilt for the arena: the exact config, and who to follow in it. */
+export type EvolutionMatch = {
+  config: MatchConfig;
+  generation: number;
+  /** Index into that generation's `matches.slots`. */
+  slot: number;
+  entrantId: string;
+  /** The sim names fighters f0, f1, ... in entrant order. */
+  fighterId: string;
+  /** Where the strategy finished in this match (1 = won). */
+  place: number;
+};
+
+/**
+ * The match to Watch for `strategy` from an evolution run: its typical match (the finish nearest its
+ * median place, the earliest on ties) in `generation`. When it did not play there (generation 0 is
+ * the starting strategy, which first plays in generation 1), the nearest later generation it played
+ * in, then the nearest earlier one. Null when no recorded generation has it. `field` is the run's
+ * request field (generations record every other strategy themselves). Takes plain
+ * `EvolveGeneration`s so the UI can pass what the gym sent; ones without recorded matches are skipped.
+ */
+export function evolutionMatch(
+  generations: readonly EvolveGeneration[],
+  field: readonly Strategy[],
+  strategy: Pick<Strategy, 'name' | 'version'>,
+  generation: number,
+): EvolutionMatch | null {
+  const key = strategyKey(strategy);
+  const byDistance = [...generations].sort((a, b) => {
+    const da = a.generation >= generation ? a.generation - generation : 1e6 + generation - a.generation;
+    const db = b.generation >= generation ? b.generation - generation : 1e6 + generation - b.generation;
+    return da - db;
+  });
+  for (const gen of byDistance) {
+    const rec = (gen as Partial<GenerationReport>).matches;
+    if (!rec) continue;
+    const played = rec.trials.filter((t) => t.key === key);
+    const slots = played.flatMap((t) => t.slots);
+    const places = played.flatMap((t) => t.places);
+    if (slots.length === 0) continue;
+    const median = [...places].sort((x, y) => x - y)[Math.floor((places.length - 1) / 2)]!;
+    let pick = 0;
+    for (let i = 1; i < places.length; i++) if (Math.abs(places[i]! - median) < Math.abs(places[pick]! - median)) pick = i;
+    const slot = rec.slots[slots[pick]!];
+    if (!slot) throw new Error(`Evolution: generation ${gen.generation} has no recorded match ${slots[pick]}.`);
+    const known = new Map<string, Strategy>();
+    for (const s of [...field, ...rec.strategies]) known.set(strategyKey(s), s);
+    const resolve = (k: string): Strategy => {
+      const s = known.get(k);
+      if (!s) throw new Error(`Evolution: generation ${gen.generation} played ${k}, which is neither recorded nor in the field.`);
+      return s;
+    };
+    const lineup = slot.opponents.map(resolve);
+    lineup.splice(slot.seat, 0, resolve(key));
+    return {
+      config: gymConfig(slot.seed, slot.mapId, lineup),
+      generation: gen.generation,
+      slot: slots[pick]!,
+      entrantId: `e${slot.seat}`,
+      fighterId: `f${slot.seat}`,
+      place: places[pick]!,
+    };
+  }
+  return null;
+}
+
+/** The generation's slots and trials as plain data; every strategy that played, minus the field, by value. */
+function recordMatches(slots: readonly Slot[], trials: readonly Trial[], field: readonly Strategy[], raceSlots: ReadonlySet<number>): GenerationMatches {
+  const fieldKeys = new Set(field.map(strategyKey));
+  const strategies = new Map<string, Strategy>();
+  const keep = (s: Strategy) => {
+    const k = strategyKey(s);
+    if (!fieldKeys.has(k) && !strategies.has(k)) strategies.set(k, structuredClone(s));
+  };
+  for (const slot of slots) slot.opponents.forEach(keep);
+  const out: RecordedTrial[] = [];
+  for (const t of new Set(trials)) {
+    keep(t.strategy);
+    out.push({ key: t.key, slots: [...t.slots], places: [...t.places] });
+  }
+  return {
+    slots: slots.map((s) => ({ seed: s.seed, mapId: s.mapId, seat: s.seat, opponents: s.opponents.map(strategyKey), race: raceSlots.has(s.index) })),
+    trials: out,
+    strategies: [...strategies.values()],
+  };
 }

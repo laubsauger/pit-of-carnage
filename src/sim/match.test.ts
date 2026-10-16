@@ -34,10 +34,23 @@ describe('determinism', () => {
   afterEach(() => vi.restoreAllMocks());
 
   // Replays, seeking and gym reports all assume a config + seed replays exactly. 16 fighters on
-  // the catacombs (long, dark: hearing estimates, memory, search) with seed 3 runs past 3000 ticks
-  // and into sudden death (the closing wall pushing and crushing), so every system is involved.
+  // the catacombs (long, dark: hearing estimates, memory, search) in a match that runs past 3000
+  // ticks and into sudden death (the closing wall pushing and crushing), so every system is
+  // involved. Which seed runs that long moves with every balance change, so the test takes the
+  // first of a few that does instead of pinning one.
   it('replays the same seed to an identical state, checked every 100 ticks for 3000+ ticks', () => {
-    const config = testConfig({ seed: 3, mapId: 'catacombs', fighters: 16 });
+    const LONG = 3000;
+    let seed = -1;
+    for (const s of [3, 1, 2, 4, 5, 6, 7, 8]) {
+      const probe = createMatch(testConfig({ seed: s, mapId: 'catacombs', fighters: 16 }), seekerBrain);
+      while (!probe.isOver && probe.state.tick < 20000) probe.step();
+      if (probe.state.tick >= LONG && probe.state.suddenDeath.active) {
+        seed = s;
+        break;
+      }
+    }
+    expect(seed, `none of the probe seeds ran past ${LONG} ticks into sudden death on the catacombs`).toBeGreaterThan(0);
+    const config = testConfig({ seed, mapId: 'catacombs', fighters: 16 });
     const a = createMatch(config, seekerBrain);
     const b = createMatch(config, seekerBrain);
     let checked = 0;
@@ -54,7 +67,7 @@ describe('determinism', () => {
     }
     expect(b.isOver).toBe(true);
     expect(stateHash(b.state)).toBe(stateHash(a.state));
-    expect(a.state.tick).toBeGreaterThanOrEqual(3000);
+    expect(a.state.tick).toBeGreaterThanOrEqual(LONG);
     expect(suddenDeath).toBe(true);
     expect(checked).toBeGreaterThanOrEqual(30);
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { THINK_EVERY_TICKS, TICK_HZ } from '../core';
-import { SPEED_PRESETS, WATCH_KEYS, keyToAction } from './keys';
+import { SPEED_PRESETS, WATCH_KEYS, exitsCinematic, keyHelp, keyToAction, modalOpen } from './keys';
 
 const key = (k: string, extra: Partial<Parameters<typeof keyToAction>[0]> = {}) =>
   keyToAction({ key: k, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, editable: false, ...extra });
@@ -65,5 +65,68 @@ describe('keyToAction', () => {
   // The View popover promises these keys; a listed key that does nothing would be a lie on screen.
   it('binds every key the shortcut list shows', () => {
     for (const k of WATCH_KEYS) expect(key(k.sample), k.keys).not.toBeNull();
+  });
+});
+
+describe('the shortcut scheme', () => {
+  // The user asked for letters that match the word; V is the cinematic view, so cones moved off it.
+  it('binds H hearing, B HP bars, O fog, T name tags, A barks, C camera, V cinematic, I overview', () => {
+    expect(key('h')).toEqual({ type: 'view', key: 'hearing' });
+    expect(key('b')).toEqual({ type: 'view', key: 'hpBars' });
+    expect(key('o')).toEqual({ type: 'view', key: 'fog' });
+    expect(key('t')).toEqual({ type: 'view', key: 'nameTags' });
+    expect(key('a')).toEqual({ type: 'view', key: 'barks' });
+    expect(key('v')).toEqual({ type: 'view', key: 'cinematic' });
+    expect(key('c')).toEqual({ type: 'camera' });
+    expect(key('i')).toEqual({ type: 'overview' });
+  });
+
+  it('gives every letter at most one meaning (a View key never shadows follow, camera or overview)', () => {
+    const owners = new Map<string, string>();
+    for (const group of keyHelp()) {
+      for (const row of group.rows) {
+        if (!/^[A-Z]$/.test(row.keys)) continue;
+        expect(owners.get(row.keys), `${row.keys}: ${owners.get(row.keys)} and ${row.label}`).toBeUndefined();
+        owners.set(row.keys, row.label);
+      }
+    }
+    expect(owners.size).toBeGreaterThan(10);
+  });
+
+  // The help card is the list players trust; a key on it that does nothing would be a lie on screen.
+  it('lists only keys that do something on the Watch screen (? is the Codex, handled on every screen)', () => {
+    for (const group of keyHelp()) {
+      for (const row of group.rows) {
+        if (row.keys === '?') continue;
+        const sample = WATCH_KEYS.find((k) => k.keys === row.keys)?.sample ?? row.keys.toLowerCase();
+        expect(key(sample), `${group.title}: ${row.keys}`).not.toBeNull();
+      }
+    }
+  });
+
+  it('never fires a letter while typing, in the editor or anywhere else', () => {
+    for (const k of 'abcdefghijklmnopqrstuvwxyz') expect(key(k, { editable: true })).toBeNull();
+  });
+
+  it('brings the HUD back for keys that need a panel, and leaves it folded for playback keys', () => {
+    expect(exitsCinematic({ type: 'cycle', dir: 1 })).toBe(true);
+    expect(exitsCinematic({ type: 'overview' })).toBe(true);
+    expect(exitsCinematic({ type: 'pause' })).toBe(false);
+    expect(exitsCinematic({ type: 'view', key: 'cinematic' })).toBe(false);
+  });
+});
+
+describe('modalOpen', () => {
+  const el = (hiddenAncestor: boolean) => ({ closest: (sel: string) => (sel === '[hidden]' && hiddenAncestor ? {} : null) });
+  const root = (...els: ReturnType<typeof el>[]) => ({ querySelectorAll: () => els });
+
+  // Reviewer bug: the Gym's import dialog, open on the hidden Gym screen, swallowed every Watch key.
+  it('ignores a dialog inside a hidden screen', () => {
+    expect(modalOpen(root(el(true)))).toBe(false);
+  });
+
+  it('counts a dialog that is showing', () => {
+    expect(modalOpen(root(el(true), el(false)))).toBe(true);
+    expect(modalOpen(root())).toBe(false);
   });
 });

@@ -23,7 +23,7 @@ export type Rect = { x: number; y: number; w: number; h: number };
 
 export type WeaponId = 'GREATSWORD' | 'WARHAMMER' | 'TWIN_DAGGERS' | 'THROWING_AXES' | 'LONGBOW' | 'ARCANE_STAFF';
 export type WeaponFamily = 'melee' | 'ranged';
-export type SkillId = 'WHIRLWIND' | 'SHADOWSTEP' | 'DASH' | 'SHOCKWAVE' | 'BLOODRAGE';
+export type SkillId = 'WHIRLWIND' | 'SHADOWSTEP' | 'DASH' | 'SHOCKWAVE' | 'BLOODRAGE' | 'HOOK' | 'SECOND_WIND';
 
 /** Six build attributes. Each in [ATTRIBUTE_MIN, ATTRIBUTE_MAX]; the sum may not exceed ATTRIBUTE_BUDGET. */
 export type Attributes = {
@@ -309,6 +309,26 @@ export type FighterState = {
   lastHitTick: number | null;
   /** Final placement (1 = winner); null while still in contention. */
   place: number | null;
+  /**
+   * Bleeding, a candidate rule (`BLEED_RULES`, off while `BLEED_RULES.enabled` is false). Absent or
+   * null = not bleeding; the sim never sets it while bleed is disabled, so every reader must treat
+   * a missing value as "not bleeding". Drives the `self.bleeding` sensor, drip trails and the fx.
+   */
+  bleed?: BleedState | null;
+};
+
+/**
+ * An open wound. Every `BLEED_RULES.intervalTicks` the fighter takes `damagePerTick` (a normal
+ * `hit` event, source `bleed`, attacker `sourceId`, so HP, reports and kill credit see it) until
+ * `ticks` runs out. A shrine heal cures it. New wounds refresh `ticks` and keep the larger damage.
+ */
+export type BleedState = {
+  /** Ticks of bleeding left (counts down every tick; 0 = stops this tick). */
+  ticks: number;
+  /** Damage dealt every `BLEED_RULES.intervalTicks` (one bleed tick). Final: worked out when the wound opened, no armor on top. */
+  damagePerTick: number;
+  /** Who opened the wound: gets the kill if the fighter bleeds out. Null for hazards, nobody's keg and the wall. */
+  sourceId: string | null;
 };
 
 /**
@@ -323,6 +343,54 @@ export type FloorItem = { id: string; kind: FloorItemKind; pos: Vec2; ownerId: s
 
 /** Spent ammo a fighter can walk over and take back. */
 export type AmmoKind = Extract<FloorItemKind, 'arrow' | 'axe'>;
+
+/**
+ * What a stuck arrow or axe sits in:
+ * - `wall`: a map wall or pillar (static geometry; pillars count as walls).
+ * - `prop`: a crate, keg or amphora (`PropState.id`). When the prop breaks, the ammo drops to the
+ *   floor (`ammo_unstick`, reason `drop`).
+ * - `fighter`: a body (`FighterState.id`), the comic pincushion. Out of play while that fighter
+ *   lives; when it dies every piece in it drops to the floor around the corpse (`ammo_unstick`,
+ *   reason `drop`). `u`, `v` place the tip in the body frame (px ahead along facing, px toward the
+ *   right hand, at the body's own radius) and `turn` is the shaft's angle relative to facing, so
+ *   the renderer can pin it to the moving body; the sim keeps `StuckAmmo.pos`/`angle` in world
+ *   space in step with it every tick.
+ * - `floor`: point-first in the floor where its flight ran out (sand takes an arrow upright). Picked
+ *   up like any floor ammo. Misses that skid and lie flat stay plain `FloorItem`s.
+ *
+ * The closing sudden-death wall never holds ammo: a shot that hits it drops to the floor.
+ */
+export type StuckIn =
+  | { kind: 'wall' }
+  | { kind: 'prop'; propId: string }
+  | { kind: 'fighter'; fighterId: string; u: number; v: number; turn: number }
+  | { kind: 'floor' };
+
+/**
+ * An arrow or thrown axe stuck in something (see `StuckIn`), in `WorldState.stuck`. Created on the
+ * tick its projectile ends (`projectile_end`, then `ammo_stick` with the same `id`), gone when a
+ * fighter pulls it out or it drops to the floor (`ammo_unstick`). Rules in `STUCK_AMMO`.
+ */
+export type StuckAmmo = {
+  /** Stuck-ammo id, unique per match (not the projectile's id; `ammo_stick` carries both). */
+  id: string;
+  kind: AmmoKind;
+  /** Who shot or threw it (anyone may take it back); null when unknown. */
+  ownerId: string | null;
+  /** World position of the tip (the impact point; inside a body it follows the body). */
+  pos: Vec2;
+  /** World direction the shaft points along, tip first: the flight direction at impact (radians). */
+  angle: number;
+  in: StuckIn;
+  /**
+   * Where a fighter must touch to take it back (within body radius + `STUCK_AMMO.pickupSlack`):
+   * `STUCK_AMMO.pickupOffset` px in front of the surface it hit, so a wall-stuck arrow is reachable
+   * from the open side. Null while it sits in a living body (not retrievable).
+   */
+  pickupPos: Vec2 | null;
+  /** Tick it stuck (the renderer's quiver). */
+  tick: number;
+};
 
 /**
  * A power-up pedestal. `cooldown` counts the ticks until the power-up is (back) on the pedestal:
@@ -411,6 +479,8 @@ export type WorldState = {
   props: PropState[];
   hazards: HazardState[];
   shrines: { id: string; pos: Vec2; cooldown: number }[];
+  /** Arrows and axes stuck in walls, props, bodies or the floor (see StuckAmmo). Empty until the sim sticks ammo. */
+  stuck: StuckAmmo[];
   /** Power-up pedestals (see PickupState for the respawn ring). */
   pickups: PickupState[];
   /** The closing arena. Use `initialSuddenDeathState(map)` to build the pre-start value. */
@@ -428,8 +498,12 @@ export type WorldState = {
 
 export type KillCause = 'weapon' | 'skill' | 'hazard' | 'keg' | 'friendly' | 'sudden_death';
 
-/** What dealt a point of damage. Used for hit events and the reports' damage-by-source tables. */
-export type DamageSource = 'weapon' | 'punch' | 'skill' | 'reflect' | 'hazard' | 'keg' | 'sudden_death';
+/**
+ * What dealt a point of damage. Used for hit events and the reports' damage-by-source tables.
+ * `bleed`: an open wound (`BleedState`; never while `BLEED_RULES.enabled` is false). A bleed-out
+ * kill keeps the cause of the blow that opened the wound and credits `BleedState.sourceId`.
+ */
+export type DamageSource = 'weapon' | 'punch' | 'skill' | 'reflect' | 'hazard' | 'keg' | 'sudden_death' | 'bleed';
 
 /**
  * Facts about a kill the sim knows at the moment it happens. `unseen` = the victim had not seen the
@@ -462,6 +536,20 @@ export type GameEvent = { tick: number } & (
   /** A projectile left its weapon. `pos` is the muzzle point (= `ProjectileState.origin`), `dir` its heading. */
   | { type: 'projectile'; projectileId: string; ownerId: string; weapon: WeaponId; pos: Vec2; dir: number }
   | { type: 'projectile_end'; projectileId: string; pos: Vec2; hitId: string | null }
+  /**
+   * An arrow or axe stuck in something (`WorldState.stuck` gains `stuckId`). Emitted on the same
+   * tick as its `projectile_end`, right after it. `pos` is the tip, `angle` the shaft's direction
+   * (the flight direction), `in` what holds it. Cue for the thunk, the quiver and the dust.
+   */
+  | { type: 'ammo_stick'; stuckId: string; projectileId: string; kind: AmmoKind; ownerId: string | null; pos: Vec2; angle: number; in: StuckIn }
+  /**
+   * A stuck arrow or axe left its spot (`WorldState.stuck` loses `stuckId`):
+   * - `pickup`: `fighterId` pulled it out and has the ammo back; a `pickup` event with the
+   *   `AmmoKind` follows on the same tick, as for floor ammo.
+   * - `drop`: what held it is gone (the body died, the prop broke): it falls to the floor at `pos`
+   *   as the floor item `floorItemId` (`fighterId` null).
+   */
+  | { type: 'ammo_unstick'; stuckId: string; kind: AmmoKind; pos: Vec2; reason: 'pickup' | 'drop'; fighterId: string | null; floorItemId: string | null }
   | {
       type: 'dismember';
       /** Who landed the blow that took the limb; null for hazards, kegs nobody broke and sudden death. */
@@ -564,11 +652,35 @@ export type GameEventType = GameEvent['type'];
  * - `final_kill`: the final-kill moment begins (ultra slow motion, camera easing onto the kill,
  *   WINNER stamp). Sent in the frame the `kill` event with `final` true is delivered; same ids and
  *   spot as that event. Judged, timed and capped endings have no final kill and no such signal.
+ * - `victory`: the match was decided live and this is the winner's moment: the camera eases onto
+ *   `winnerIds[0]`, who strikes a victory pose under a warm spotlight while the arena dims; the
+ *   crowd gives one big roar. Sent once per match, every ending included (elimination: in the same
+ *   frame as `final_kill`, after it; judges, time, capped: in the frame of `match_end`). Not sent
+ *   when a seek or replay jumps onto a decided end (the moment was already admired).
+ * - `end_card`: the end card appeared (`shown` true: phase `ended`) or went away (`shown` false: a
+ *   seek back into the match, a restart, a new match). Unlike the beats above this is a state
+ *   change, sent on every change, seeks included. While it is shown, combat sounds and the crowd
+ *   bed stop (only a soft, low ambience or silence remains) and the winner holds the pose.
  */
 export type MatchSignal =
   | { type: 'countdown'; value: number }
   | { type: 'fight' }
-  | { type: 'final_kill'; killerId: string | null; victimId: string; pos: Vec2 };
+  | { type: 'final_kill'; killerId: string | null; victimId: string; pos: Vec2 }
+  | {
+      type: 'victory';
+      /**
+       * The winning side: the 1st-placed fighter first, then its squadmates still standing (FFA and
+       * duel: one id). Empty when nobody won (everyone died on the same tick).
+       */
+      winnerIds: string[];
+      ending: MatchEnding;
+    }
+  | {
+      type: 'end_card';
+      shown: boolean;
+      /** Same as the `victory` signal's (placements of the match on screen), so a seek onto the end can pose the winner too. */
+      winnerIds: string[];
+    };
 
 // ---------------------------------------------------------------------------------------------
 // Sim -> brain
@@ -627,6 +739,11 @@ export type KnownFighter = {
   ammo: number;
   /** Refinement: kill count (drives `it.kills`). */
   kills: number;
+  /**
+   * Was bleeding at the last sighting (as of `lastSeenTick`; hearing never updates it). Drives
+   * `target.bleeding`. Absent = false (always, while `BLEED_RULES.enabled` is false).
+   */
+  bleeding?: boolean;
   /** Refinement: in the windup phase and seen this tick (drives `target.winding_up` and auto-parry). */
   windingUp: boolean;
 };

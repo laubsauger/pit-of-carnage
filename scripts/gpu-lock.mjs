@@ -9,6 +9,8 @@
  *
  * A holder that has not touched the lock for 15 minutes is considered gone and the lock is taken over.
  * Hold it only while a page that runs the renderer is open; close the tab before releasing.
+ * Always open the app with `?mute` (for example http://localhost:5321/?mute): it never creates an
+ * AudioContext, so automated checks play no sound on the user's machine.
  */
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
@@ -61,6 +63,7 @@ if (cmd === 'acquire') {
     await sleep(POLL_MS);
   }
   console.log(`gpu-lock: acquired by "${who}"`);
+  console.log('gpu-lock: open the app with ?mute (e.g. http://localhost:<port>/?mute) so it plays no sound; close the tab before release.');
 } else if (cmd === 'release') {
   const h = holder();
   if (!h) {

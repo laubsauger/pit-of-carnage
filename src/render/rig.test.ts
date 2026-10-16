@@ -3,7 +3,7 @@ import { WEAPON_IDS } from '../core';
 import type { WeaponId } from '../core';
 import {
   HIT_STOP_MAX, IMPACT_PROGRESS, SQUASH_SECONDS, SWING_KEYS, eyeScale, flashAmount, hitSeverity, hitStopSeconds, newWeaponPose,
-  squashAmount, squashPeak, weaponPose,
+  VICTORY, squashAmount, squashPeak, victoryHop, victoryPose, victoryWeight, weaponPose,
 } from './rig';
 
 const pose = (w: WeaponId, phase: 'idle' | 'windup' | 'strike' | 'recovery', p: number) =>
@@ -116,5 +116,38 @@ describe('local hit weight', () => {
     expect(Math.abs(squashAmount(SQUASH_SECONDS - 1e-3, peak))).toBeLessThan(peak * 0.05);
     expect(squashAmount(SQUASH_SECONDS, peak)).toBe(0);
     expect(squashPeak(1)).toBeGreaterThan(squashPeak(0));
+  });
+});
+
+describe('victory pose', () => {
+  // The winner's moment must read as "weapon raised" for every weapon: the raised (windup) angle,
+  // never the idle carry or a strike, and it must keep moving (a pump), not freeze.
+  it('raises every weapon and pumps it', () => {
+    for (const w of WEAPON_IDS) {
+      const k = SWING_KEYS[w];
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = 0; i < 40; i++) {
+        const p = victoryPose(w, i / 40 / VICTORY.pumpHz, newWeaponPose());
+        const towardRaised = Math.abs(p.swing - k.back) <= Math.abs(k.idle - k.back) * VICTORY.pump + 1e-9;
+        expect(towardRaised, w).toBe(true);
+        expect(p.released, w).toBe(false);
+        expect(p.glow, w).toBeGreaterThan(0);
+        lo = Math.min(lo, p.reach);
+        hi = Math.max(hi, p.reach);
+      }
+      expect(hi - lo, w).toBeGreaterThan(VICTORY.reach * 0.9);
+    }
+  });
+
+  it('hops in time with the pump and eases in instead of snapping', () => {
+    expect(victoryHop(0)).toBeCloseTo(1, 9);
+    expect(victoryHop(0.25 / VICTORY.pumpHz)).toBeCloseTo(1 + VICTORY.hop, 9);
+    for (let t = 0; t < 3; t += 0.01) expect(victoryHop(t)).toBeGreaterThanOrEqual(1);
+    expect(victoryWeight(0)).toBe(0);
+    expect(victoryWeight(VICTORY.easeIn / 4)).toBeGreaterThan(0.2);
+    expect(victoryWeight(VICTORY.easeIn / 4)).toBeLessThan(0.8);
+    expect(victoryWeight(VICTORY.easeIn)).toBe(1);
+    expect(victoryWeight(99)).toBe(1);
   });
 });

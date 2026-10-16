@@ -14,6 +14,7 @@ function fakeEngine() {
     crowd: [] as number[],
     grind: [] as { fighters: number; pan: number }[],
     profiles: [] as CrowdProfile[],
+    hush: [] as boolean[],
   };
   const engine = {
     ctx: { currentTime: 0, sampleRate: 48000 },
@@ -21,6 +22,7 @@ function fakeEngine() {
     setBabble: (b: AudioBuffer) => void calls.babbles.push(b),
     setProfile: (p: CrowdProfile) => void calls.profiles.push(p),
     setWallMoving: () => undefined,
+    setHush: (on: boolean) => void calls.hush.push(on),
     setGrind: (fighters: number, pan: number) => void calls.grind.push({ fighters, pan }),
     setCrowd: (i: number) => void calls.crowd.push(i),
     setRate: () => undefined,
@@ -115,5 +117,36 @@ describe('SoundDriver', () => {
     expect(calls.grind.at(-1)!.pan).toBeLessThan(-0.4);
     d.onEvents([], s);
     expect(calls.grind.at(-1)!.fighters).toBe(0);
+  });
+});
+
+describe('SoundDriver under the end card', () => {
+  // Spec: while the end card is up, combat sounds and the crowd bed stop; only a low ambience (and
+  // announcer beats) remain. A seek back into the match or a new round brings everything back.
+  it('hushes the arena while the end card is up, but still plays announcer beats', () => {
+    const { engine, calls } = fakeEngine();
+    const d = new SoundDriver(engine, 1, slowLoader().load);
+    const s = world([fighter('f0', 400), fighter('f1', 500)], 3000);
+    d.onSignal({ type: 'end_card', shown: true, winnerIds: ['f0'] });
+    expect(calls.hush).toEqual([true]);
+    expect(d.isHushed).toBe(true);
+    calls.played.length = 0;
+    d.onEvents([hitEvent('f0', 'f1', 30, 3000)], s);
+    expect(calls.played).toEqual([]);
+    d.onSignal({ type: 'countdown', value: 3 });
+    expect(calls.played.map((c) => c.sound)).toEqual(['countdown']);
+    d.onSignal({ type: 'end_card', shown: false, winnerIds: [] });
+    d.onEvents([hitEvent('f0', 'f1', 30, 3001)], s);
+    expect(calls.played.map((c) => c.sound)).toContain('hit_blade');
+    expect(calls.hush).toEqual([true, false]);
+  });
+
+  it('lifts the hush when a new round starts', () => {
+    const { engine, calls } = fakeEngine();
+    const d = new SoundDriver(engine, 1, slowLoader().load);
+    d.onSignal({ type: 'end_card', shown: true, winnerIds: [] });
+    d.startRound(2);
+    expect(d.isHushed).toBe(false);
+    expect(calls.hush).toEqual([true, false]);
   });
 });

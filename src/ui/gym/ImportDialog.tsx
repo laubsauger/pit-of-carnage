@@ -3,18 +3,30 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { Strategy } from '../../core';
 import { offsetOf } from '../editor';
 import { SEVERITY_SVG, suggestionLine } from '../editor/issues';
-import { buildLine, strategyLabel } from '../format';
+import { buildLine } from '../format';
 import { CloseIcon, ImportIcon } from '../icons';
-import { checkImport, importVerdict, isJsonFile, issueSpot, rejectedFile } from '../importer';
+import { checkImport, importVerdict, isJsonFile, issueSpot, llmReplyHint, rejectedFile } from '../importer';
 import type { ImportEntry } from '../importer';
+import type { SaveChoice, SavePlan } from '../editor/versions';
+import { copyText } from '../toast';
+
+/**
+ * Pasting an LLM's answer back ("New fighter with an LLM", "Improve this with an LLM"): the prompt
+ * that was copied, whether the clipboard took it, and what the model was asked to improve.
+ */
+export type LlmPaste = { prompt: string; copied: boolean; improving: string | null };
 
 type Props = {
   /** Files dropped on the editor before the dialog opened. */
   initialFiles: File[];
   houseNames: readonly string[];
+  /** Set when the dialog takes an LLM's reply instead of files. */
+  llm?: LlmPaste | null;
+  /** What saving this strategy would do (next version, v1 of a new name, or a name collision). */
+  planFor: (s: Strategy) => SavePlan;
   onOpen: (s: Strategy) => void;
-  /** Saves as the next version; returns the label it was saved under. */
-  onSave: (s: Strategy) => string;
+  /** Saves it as the player chose; returns the label it was saved under. */
+  onSave: (s: Strategy, choice: SaveChoice) => string;
   onClose: () => void;
 };
 
@@ -25,16 +37,19 @@ const SOURCE_LABEL: Record<string, string> = { file: 'File', paste: 'Pasted JSON
  * is checked by the same gate as everything else and its report is shown before anything is saved:
  * errors block, warnings can be accepted.
  */
-export function ImportDialog({ initialFiles, houseNames, onOpen, onSave, onClose }: Props) {
+export function ImportDialog({ initialFiles, houseNames, llm = null, planFor, onOpen, onSave, onClose }: Props) {
   const [files, setFiles] = useState<ImportEntry[]>([]);
   const [paste, setPaste] = useState('');
   const [dragging, setDragging] = useState(false);
   const [saved, setSaved] = useState<Record<number, string>>({});
+  const [copied, setCopied] = useState(llm?.copied ?? false);
   const nextId = useRef(1);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
   const deferred = useDeferredValue(paste);
-  const pasted = useMemo(() => (deferred.trim() ? checkImport('Pasted text', deferred, false, 0) : null), [deferred]);
+  const pasteLabel = llm ? 'LLM reply' : 'Pasted text';
+  const pasted = useMemo(() => (deferred.trim() ? checkImport(pasteLabel, deferred, false, 0) : null), [deferred, pasteLabel]);
+  const hint = llm && pasted && !pasted.report.strategy ? llmReplyHint(deferred) : null;
 
   const addFiles = async (list: readonly File[]) => {
     const entries = await Promise.all(
@@ -86,15 +101,38 @@ export function ImportDialog({ initialFiles, houseNames, onOpen, onSave, onClose
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="dialog import-dialog" role="dialog" aria-modal="true" aria-label="Import strategies">
+      <div className={`dialog import-dialog${llm ? ' llm-dialog' : ''}`} role="dialog" aria-modal="true" aria-label={llm ? 'Paste the LLM reply' : 'Import strategies'}>
         <div className="dialog-head">
-          <h2>Import strategies</h2>
+          <h2>{llm ? (llm.improving ? `Improve ${llm.improving} with an LLM` : 'New fighter with an LLM') : 'Import strategies'}</h2>
           <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={onClose} aria-label="Close">
             <CloseIcon />
           </button>
         </div>
         <div className="dialog-body">
+          {llm ? (
+            <ol className="llm-steps">
+              <li className={copied ? 'done' : 'todo'}>
+                {copied ? 'The prompt is on your clipboard.' : 'The browser blocked the clipboard.'}{' '}
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() =>
+                    void copyText(llm.prompt).then((ok) => {
+                      setCopied(ok);
+                      pasteRef.current?.focus();
+                    })
+                  }
+                >
+                  {copied ? 'Copy again' : 'Copy the prompt'}
+                </button>
+                <span className="faint num"> ({llm.prompt.length.toLocaleString('en-US')} characters)</span>
+              </li>
+              <li>Paste it into any chat model (Claude, ChatGPT, Gemini…) and answer its questions.</li>
+              <li>Paste its whole reply below. The game reads the ```json block and checks it like any import.</li>
+            </ol>
+          ) : null}
           <div
+            hidden={llm !== null}
             className={`dropzone${dragging ? ' over' : ''}`}
             onDragOver={(e) => {
               e.preventDefault();
@@ -130,16 +168,17 @@ export function ImportDialog({ initialFiles, houseNames, onOpen, onSave, onClose
           </div>
 
           <label className="field">
-            <span>Or paste JSON or a strategy code</span>
+            <span>{llm ? 'The model’s reply' : 'Or paste JSON or a strategy code'}</span>
             <textarea
               ref={pasteRef}
               className="input paste-box"
               value={paste}
               spellCheck={false}
-              placeholder={'{ "schema": "pit-strategy/2", ... }   or   PIT2.…'}
+              placeholder={llm ? 'Here is your fighter…\n```json\n{ "schema": "pit-strategy/2", ... }\n```' : '{ "schema": "pit-strategy/2", ... }   or   PIT2.…'}
               onChange={(e) => setPaste(e.target.value)}
             />
           </label>
+          {hint ? <p className="side-note llm-hint">{hint}</p> : null}
 
           {entries.length ? (
             <div className="imp-list">
@@ -149,13 +188,14 @@ export function ImportDialog({ initialFiles, houseNames, onOpen, onSave, onClose
                   entry={e}
                   houseNames={houseNames}
                   savedAs={saved[e.id] ?? null}
+                  planFor={planFor}
                   onOpen={(s) => {
                     onOpen(s);
                     onClose();
                   }}
-                  onSave={(s) => {
+                  onSave={(s, choice) => {
                     // Outside the updater: StrictMode runs updaters twice, which would save twice.
-                    const label = onSave(s);
+                    const label = onSave(s, choice);
                     setSaved((prev) => ({ ...prev, [e.id]: label }));
                   }}
                   onIssue={e.id === 0 ? jumpInPaste : undefined}
@@ -163,7 +203,7 @@ export function ImportDialog({ initialFiles, houseNames, onOpen, onSave, onClose
               ))}
             </div>
           ) : (
-            <p className="faint">Nothing is saved until you choose to. Each strategy is checked first.</p>
+            <p className="faint">{llm ? 'Nothing is saved until you choose to. The reply is checked first.' : 'Nothing is saved until you choose to. Each strategy is checked first.'}</p>
           )}
         </div>
         <div className="dialog-foot">
@@ -182,13 +222,15 @@ function EntryCard(props: {
   entry: ImportEntry;
   houseNames: readonly string[];
   savedAs: string | null;
+  planFor: (s: Strategy) => SavePlan;
   onOpen: (s: Strategy) => void;
-  onSave: (s: Strategy) => void;
+  onSave: (s: Strategy, choice: SaveChoice) => void;
   /** Clicking an issue (pasted text only: jumps to the spot in the paste box). */
   onIssue?: (line?: number, column?: number) => void;
 }) {
-  const { entry, houseNames, savedAs, onOpen, onSave, onIssue } = props;
+  const { entry, houseNames, savedAs, planFor, onOpen, onSave, onIssue } = props;
   const s = entry.report.strategy ?? null;
+  const plan = s ? planFor(s) : null;
   const verdict = importVerdict(entry.report);
   const errors = entry.issues.filter((i) => i.severity === 'error');
   const warnings = entry.issues.filter((i) => i.severity === 'warning');
@@ -197,7 +239,8 @@ function EntryCard(props: {
     <section className={`imp-entry${verdict.ok ? '' : ' blocked'}`} aria-label={entry.label}>
       <div className="imp-head">
         <div className="imp-title">
-          <b>{s ? strategyLabel(s.name, s.version) : entry.label}</b>
+          {/* An imported "version" is never trusted: the library numbers it when it is saved. */}
+          <b>{s ? s.name : entry.label}</b>
           <span className="faint">
             {s ? `${buildLine(s.build.weapon, s.build.skill)} · ${entry.source === 'file' ? entry.label : SOURCE_LABEL[entry.source] ?? entry.source}` : SOURCE_LABEL[entry.source] ?? entry.source}
           </span>
@@ -241,10 +284,28 @@ function EntryCard(props: {
         </ul>
       ) : null}
       {clash ? <p className="side-note">Same name as a house stack. Rename it after opening so reports and ratings can tell yours apart.</p> : null}
+      {plan?.kind === 'collision' && !savedAs ? (
+        <p className="side-note">“{plan.name}” is already in your library. Add this as its next version, or save it as a new strategy.</p>
+      ) : null}
       <div className="imp-actions">
-        <button type="button" className="btn btn-sm" disabled={!verdict.ok || !s || savedAs !== null} onClick={() => s && onSave(s)} title={verdict.ok ? 'Save as the next version in your library' : 'Fix the errors first'}>
-          {savedAs ? `Saved as ${savedAs}` : 'Save to library'}
-        </button>
+        {savedAs ? (
+          <button type="button" className="btn btn-sm" disabled>
+            Saved as {savedAs}
+          </button>
+        ) : plan?.kind === 'collision' && s ? (
+          <>
+            <button type="button" className="btn btn-sm" disabled={!verdict.ok} onClick={() => onSave(s, { kind: 'plan' })} title={`Add to the history of your ${plan.name}`}>
+              Add as v{plan.version} of {plan.name}
+            </button>
+            <button type="button" className="btn btn-sm" disabled={!verdict.ok} onClick={() => onSave(s, { kind: 'rename', name: plan.suggestedName })} title="Keep it apart, with its own history">
+              Save as {plan.suggestedName}
+            </button>
+          </>
+        ) : (
+          <button type="button" className="btn btn-sm" disabled={!verdict.ok || !s} onClick={() => s && onSave(s, { kind: 'plan' })} title={verdict.ok ? 'Save it in your library' : 'Fix the errors first'}>
+            {plan ? (plan.kind === 'version' ? `Save as v${plan.version} (from v${plan.parentVersion})` : `Save as ${plan.name} v${plan.version}`) : 'Save to library'}
+          </button>
+        )}
         <button type="button" className={`btn btn-sm${verdict.ok ? ' btn-primary' : ''}`} disabled={!verdict.ok || !s} onClick={() => s && onOpen(s)} title={verdict.ok ? 'Replace the editor with this strategy' : 'Errors block loading'}>
           {verdict.label}
         </button>

@@ -3,7 +3,7 @@ import { DEFAULT_TIME_LIMIT_TICKS, FIGHTER_COLORS } from '../core';
 import type { GameEvent, MatchConfig, Strategy } from '../core';
 import { stateHash } from '../sim';
 import { HOUSE_STACKS, gatedBrainFactory } from '../strategy';
-import { MatchSession, possessive, validatedConfig } from './session';
+import { MatchSession, fillHoles, possessive, validatedConfig } from './session';
 
 function config(seed: number, mapId = 'pit', n = 8): MatchConfig {
   return validatedConfig({
@@ -167,5 +167,17 @@ describe('validatedConfig', () => {
     const raw = config(1);
     const entrants = raw.entrants.map((e, i) => (i === 0 ? { ...e, name: 'Risky Rita', strategy: risky } : e));
     expect(() => validatedConfig({ ...raw, entrants })).toThrow(/Risky Rita/);
+  });
+});
+
+describe('fillHoles', () => {
+  // Names come from strategies; "$&" in a replacement string would print the hole instead of the name.
+  it('prints names with replacement patterns exactly as written', () => {
+    const line = "{k} took {v's} leg. {v} is hopping now.";
+    expect(fillHoles(line, { '{k}': 'Cash$&Carry', "{v's}": "Dollar$'s", '{v}': 'Dollar$1' })).toBe("Cash$&Carry took Dollar$'s leg. Dollar$1 is hopping now.");
+  });
+
+  it('fills the possessive hole before the plain one it starts with', () => {
+    expect(fillHoles("{v's} arm, {v}", { "{v's}": "Gary's", '{v}': 'Gary' })).toBe("Gary's arm, Gary");
   });
 });

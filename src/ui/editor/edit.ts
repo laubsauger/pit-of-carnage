@@ -103,3 +103,57 @@ export function renameMemory(text: string, from: string, to: string): string {
   for (const e of edits.sort((a, b) => b.at - a.at)) out = out.slice(0, e.at) + e.insert + out.slice(e.end);
   return out;
 }
+
+/**
+ * The text with the member at index `from` of the object or array at `container` moved to index
+ * `to` (behaviours and move terms; order decides who wins a tied score). Each member keeps its own
+ * text and the separators stay where they were, so the player's formatting survives. Unchanged when
+ * an index is out of range or a member cannot be placed in the text.
+ */
+export function moveMember(text: string, container: readonly PathSeg[], from: number, to: number): string {
+  if (from === to) return text;
+  let root: Json;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  const value = getIn(root, container);
+  if (value === null || typeof value !== 'object') return text;
+  const segs: PathSeg[] = Array.isArray(value) ? value.map((_, i) => i) : Object.keys(value);
+  if (from < 0 || to < 0 || from >= segs.length || to >= segs.length) return text;
+  const scan = scanJson(text);
+  const spans = segs.map((seg) => {
+    const sp = scan.values.get(pathKey([...container, seg]));
+    return sp ? { from: sp.keyFrom ?? sp.from, to: sp.to } : null;
+  });
+  // A duplicate key (JSON.parse keeps the last) or a half-scanned member: do not guess.
+  if (spans.some((s) => s === null)) return text;
+  const placed = spans as { from: number; to: number }[];
+  for (let i = 1; i < placed.length; i++) if (placed[i]!.from < placed[i - 1]!.to) return text;
+  const order = segs.map((_, i) => i);
+  const [moved] = order.splice(from, 1);
+  order.splice(to, 0, moved!);
+  let out = text.slice(0, placed[0]!.from);
+  order.forEach((src, slot) => {
+    out += text.slice(placed[src]!.from, placed[src]!.to);
+    if (slot < placed.length - 1) out += text.slice(placed[slot]!.to, placed[slot + 1]!.from);
+  });
+  return out + text.slice(placed[placed.length - 1]!.to);
+}
+
+/**
+ * The text with `"version"` set to the library's number after a save, touching nothing else: an
+ * existing version is replaced in place; a draft without one (a new fighter, an import, an LLM's
+ * answer) gets it on its own line right after the name. Null when the text has no name to anchor to.
+ */
+export function stampVersion(text: string, version: number): string | null {
+  const scan = scanJson(text);
+  if (scan.values.has('version')) return setAt(text, ['version'], version);
+  const name = scan.values.get('name');
+  if (!name || name.keyFrom === undefined) return null;
+  const lineStart = text.lastIndexOf('\n', name.keyFrom - 1) + 1;
+  const indent = /^[ \t]*/.exec(text.slice(lineStart, name.keyFrom))![0];
+  const sameLine = text.slice(lineStart, name.keyFrom).trim() !== '';
+  return `${text.slice(0, name.to)},${sameLine ? ' ' : `\n${indent}`}"version": ${version}${text.slice(name.to)}`;
+}

@@ -1,26 +1,32 @@
 // Owned by: net
 // Inside a room: the code to share, the match being played (radar and line-up), the pool, the room
-// leaderboard, who is here, the host's controls and the last matches.
+// leaderboard, who is here, the host's controls and the last matches with their battle reports
+// (and their strategies, when the host reveals them).
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { MAX_FIGHTERS, MIN_FIGHTERS, displayRating } from '../../core';
+import { MAX_FIGHTERS, MIN_FIGHTERS } from '../../core';
 import type { GameController } from '../../core';
 import { toRating } from '../../gym/ratings';
 import { roomLink } from '../../net/code';
 import type { StreamPlayer } from '../../net/player';
 import { MAX_ENTRIES_PER_MEMBER } from '../../net/protocol';
 import type { RoomState } from '../../net/protocol';
-import type { RoomSession, RoomView } from '../../net/session';
-import { canWatchStreams } from '../../net/watch';
+import type { MatchExtras, RoomSession, RoomView } from '../../net/session';
 import { MAPS } from '../../sim';
 import { buildLine, formatClock, strategyLabel } from '../format';
 import { WeaponIcon } from '../icons';
-import { isProvisional } from '../reports';
 import { copyAndToast } from '../toast';
-import { NumberField } from '../widgets';
+import { NumberField, RatingCell } from '../widgets';
 import { historyLine, latestPerName, matchLength, statusLine } from './model';
 import { Radar } from './Radar';
 
-type Props = { session: RoomSession; controller: GameController; active: boolean; onLeave: () => void };
+type Props = {
+  session: RoomSession;
+  controller: GameController;
+  active: boolean;
+  /** Host of the TURN relay in use, or null for direct connections. */
+  relay: string | null;
+  onLeave: () => void;
+};
 
 /** The room's view, re-read whenever the session says something changed. */
 function useRoomView(session: RoomSession): RoomView {
@@ -30,7 +36,7 @@ function useRoomView(session: RoomSession): RoomView {
   );
 }
 
-export function InRoom({ session, controller, active, onLeave }: Props) {
+export function InRoom({ session, controller, active, relay, onLeave }: Props) {
   const view = useRoomView(session);
   const room = view.room;
   const status = statusLine(view);
@@ -71,8 +77,8 @@ export function InRoom({ session, controller, active, onLeave }: Props) {
         <aside className="rm-side">
           <People room={room} me={view.me} />
           {view.role === 'host' && room ? <HostControls session={session} room={room} waiting={view.waiting} /> : null}
-          <History room={room} />
-          <Activity view={view} player={session.player} />
+          <History room={room} session={session} />
+          <Activity view={view} player={session.player} relay={relay} />
         </aside>
       </div>
     </>
@@ -126,7 +132,7 @@ type NowProps = { session: RoomSession; controller: GameController; active: bool
 
 function NowFighting({ session, controller, active, room, status }: NowProps) {
   const live = useLive(session.player, active);
-  const watchable = canWatchStreams(controller);
+  const extras = live?.finished ? session.extras(live.matchId) : null;
   const standing = live ? live.fighters.filter((f) => f.alive).length : 0;
   const order = live ? [...live.fighters].sort((a, b) => Number(b.alive) - Number(a.alive) || (a.place ?? 99) - (b.place ?? 99) || b.kills - a.kills) : [];
 
@@ -172,13 +178,13 @@ function NowFighting({ session, controller, active, room, status }: NowProps) {
                   : 'Waiting for the host to start a match.'}
         </div>
       )}
+      {extras ? <Leftovers extras={extras} /> : null}
       <div className="rm-watch">
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!watchable || !live}
+          disabled={!live}
           onClick={() => {
-            if (!canWatchStreams(controller)) return;
             controller.watchStream(session.player);
             window.location.hash = 'watch';
           }}
@@ -186,9 +192,8 @@ function NowFighting({ session, controller, active, room, status }: NowProps) {
           Watch in the arena
         </button>
         <span className="rm-note">
-          {watchable
-            ? 'Full arena with blood, sound and the HUD. Everyone sees the same fight, a beat behind the host.'
-            : 'The arena view for rooms is not wired in yet. The radar shows the fight meanwhile.'}
+          Full arena with blood, sound and the HUD; select a fighter to see what it is thinking. Everyone sees the same fight,
+          a beat behind the host.
         </span>
       </div>
     </section>
@@ -233,6 +238,12 @@ function Pool({ session, controller, view, active }: { session: RoomSession; con
           {entries.length} {entries.length === 1 ? 'strategy' : 'strategies'} · yours {mine} of {MAX_ENTRIES_PER_MEMBER}
         </span>
       </div>
+      {room?.settings.revealStrategies ? (
+        <p className="rm-reveal-note">
+          <b>Strategies are revealed here.</b> The host shares every strategy as a code after each match: whatever you add,
+          everyone can copy once it has fought.
+        </p>
+      ) : null}
       {entries.length === 0 ? (
         <p className="rm-sub">Nothing in the pool yet. Until someone brings a strategy, the house stacks warm up.</p>
       ) : (
@@ -342,13 +353,7 @@ function Board({ room, meName }: { room: RoomState | null; meName: string | null
                     <td>{strategyLabel(r.name, r.version)}</td>
                     <td className={r.owner ? '' : 'faint'}>{r.owner ?? 'house'}</td>
                     <td className="num">
-                      {displayRating(rating)}
-                      {isProvisional(rating) ? (
-                        <span className="faint" title="Still settling: the rating will move a lot with more matches.">
-                          {' '}
-                          ?
-                        </span>
-                      ) : null}
+                      <RatingCell rating={rating} matches={r.matches} />
                     </td>
                     <td className="num">{r.matches}</td>
                     <td className="num">{r.wins}</td>
@@ -423,6 +428,15 @@ function HostControls({ session, room, waiting }: { session: RoomSession; room: 
           <input type="checkbox" checked={s.fillWithHouse} onChange={(e) => session.setSettings({ fillWithHouse: e.target.checked })} />
           Fill empty seats with house stacks
         </label>
+        <label className="check">
+          <input type="checkbox" checked={s.revealStrategies} onChange={(e) => session.setSettings({ revealStrategies: e.target.checked })} />
+          Reveal strategies after each match
+        </label>
+        <div className="rm-sub">
+          {s.revealStrategies
+            ? 'Everyone gets the strategies of every finished match as codes to copy, study and steal. The pool says so.'
+            : 'Off: strategies never leave your browser. Others see names, weapons and skills only.'}
+        </div>
         <button type="button" className={`btn ${s.running ? '' : 'btn-primary'}`} onClick={() => session.setSettings({ running: !s.running })}>
           {s.running ? 'Pause after this match' : 'Resume matches'}
         </button>
@@ -433,7 +447,7 @@ function HostControls({ session, room, waiting }: { session: RoomSession; room: 
   );
 }
 
-function History({ room }: { room: RoomState | null }) {
+function History({ room, session }: { room: RoomState | null; session: RoomSession }) {
   const history = room?.history ?? [];
   if (history.length === 0) return null;
   return (
@@ -442,19 +456,60 @@ function History({ room }: { room: RoomState | null }) {
         <h2>Last matches</h2>
       </div>
       <ul className="rm-history">
-        {history.map((h) => (
-          <li key={h.id}>
-            <span className="num faint">#{h.id}</span>
-            <span>{historyLine(h)}</span>
-            <span className="num faint">{matchLength(h.ticks)}</span>
-          </li>
-        ))}
+        {history.map((h) => {
+          const extras = session.extras(h.id);
+          return (
+            <li key={h.id}>
+              <span className="num faint">#{h.id}</span>
+              <span>{historyLine(h)}</span>
+              <span className="num faint">{matchLength(h.ticks)}</span>
+              {extras ? <Leftovers extras={extras} compact /> : null}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
 }
 
-function Activity({ view, player }: { view: RoomView; player: StreamPlayer }) {
+/** What a finished match left: its battle report to copy, and its strategies when the host reveals them. */
+function Leftovers({ extras, compact = false }: { extras: MatchExtras; compact?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const revealed = extras.revealed;
+  if (!extras.report && !revealed) return null;
+  return (
+    <div className={`rm-leftovers${compact ? ' compact' : ''}`}>
+      <div className="rm-leftovers-row">
+        {extras.report ? (
+          <button type="button" className="btn btn-sm" onClick={() => void copyAndToast(extras.report!, 'Battle report')} title="The battle report as text, ready for an LLM">
+            Copy battle report
+          </button>
+        ) : null}
+        {revealed && revealed.length > 0 ? (
+          <button type="button" className="btn btn-sm btn-quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {open ? 'Hide strategies' : `Strategies (${revealed.length})`}
+          </button>
+        ) : null}
+      </div>
+      {open && revealed ? (
+        <ul className="rm-revealed">
+          {revealed.map((r) => (
+            <li key={r.fighterId}>
+              <WeaponIcon weapon={r.weapon} size={13} />
+              <span className="rm-revealed-name">{r.name}</span>
+              <span className="rm-revealed-owner">{r.owner ?? 'house'}</span>
+              <button type="button" className="btn btn-sm btn-quiet" onClick={() => void copyAndToast(r.code, `${r.name}'s strategy code`)} title={buildLine(r.weapon, r.skill)}>
+                Copy code
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function Activity({ view, player, relay }: { view: RoomView; player: StreamPlayer; relay: string | null }) {
   const notices = [...view.notices].reverse();
   return (
     <section className="rm-card rm-activity">
@@ -470,7 +525,8 @@ function Activity({ view, player }: { view: RoomView; player: StreamPlayer }) {
         ))}
       </ul>
       <p className="rm-diag">
-        {view.peers} {view.peers === 1 ? 'connection' : 'connections'} · stream {player.lagMs} ms behind the host
+        {view.peers} {view.peers === 1 ? 'connection' : 'connections'}
+        {relay ? ` (TURN relay ${relay} when needed)` : ''} · stream {player.lagMs} ms behind the host
         {view.rejected + player.dropped > 0 ? ` · ${view.rejected + player.dropped} bad messages dropped` : ''}
       </p>
     </section>

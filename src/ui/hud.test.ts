@@ -18,6 +18,7 @@ import {
   finaleStamp,
   filterMarks,
   hoverCardPosition,
+  hudFolds,
   insetsAround,
   isLive,
   laneMarks,
@@ -435,5 +436,26 @@ describe('finaleStamp (SPEC round end: a WINNER stamp in the broadcast voice ove
 
   it('never stamps a stranger when nobody is left', () => {
     expect(finaleStamp({ phase: 'final', ending: 'elimination', placements: [], fighters, format: 'ffa' })).toEqual({ title: 'NOBODY WINS', name: null, color: null });
+  });
+});
+
+describe('hudFolds', () => {
+  const base = { cinematic: false, narrow: false, scoreboardCollapsed: false, feedCollapsed: false, inspectorCollapsed: false, opened: { scoreboard: false, feed: false } };
+
+  // Cinematic view is for watching the fight: every panel folds and the camera gets the whole canvas.
+  it('folds every panel and reports no insets in cinematic view, whatever the panes say', () => {
+    expect(hudFolds({ ...base, cinematic: true })).toEqual({ scoreboard: true, feed: true, inspector: true, thinTimeline: true, reportInsets: false });
+  });
+
+  it('starts scoreboard and feed folded on a narrow screen, until the viewer opens them', () => {
+    const narrow = hudFolds({ ...base, narrow: true });
+    expect([narrow.scoreboard, narrow.feed, narrow.thinTimeline, narrow.inspector]).toEqual([true, true, true, false]);
+    const opened = hudFolds({ ...base, narrow: true, opened: { scoreboard: true, feed: false } });
+    expect([opened.scoreboard, opened.feed]).toEqual([false, true]);
+  });
+
+  it('leaves each panel to its own switch on a wide screen', () => {
+    expect(hudFolds(base)).toEqual({ scoreboard: false, feed: false, inspector: false, thinTimeline: false, reportInsets: true });
+    expect(hudFolds({ ...base, feedCollapsed: true }).feed).toBe(true);
   });
 });

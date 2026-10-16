@@ -13,7 +13,7 @@
  */
 
 import { ATTRIBUTE_KEYS, ATTRIBUTE_MAX, ATTRIBUTE_MIN, MAX_BEHAVIOURS, SKILL_IDS, WEAPONS, WEAPON_IDS, attributePointsLeft, clamp } from '../core';
-import type { AttributeKey, Behaviour, MoveTerm, Rng, Strategy, WeaponFamily } from '../core';
+import type { AttributeKey, Behaviour, MoveTerm, Rng, Stance, Strategy, WeaponFamily } from '../core';
 
 // ---------------------------------------------------------------------------------------------
 // Move terms
@@ -222,7 +222,27 @@ export function materializeImports(s: Strategy, library: Library): Strategy {
 // ---------------------------------------------------------------------------------------------
 
 export type Bred = { strategy: Strategy; mutations: string[] };
-export type MutateOptions = { termPool?: readonly MoveTerm[] };
+
+/** The variation operators by name (see `OPERATORS`). */
+export type MutationKind = 'weight' | 'threshold' | 'range' | 'attributes' | 'swap_term' | 'build' | 'policy';
+
+export type MutateOptions = {
+  termPool?: readonly MoveTerm[];
+  /**
+   * Operators allowed; default `EVOLVE_MUTATIONS`. `policy` (attack keyword, stance, commit) is
+   * offered only when asked for: evolution's operator mix stays as it was.
+   */
+  operators?: readonly MutationKind[];
+};
+
+/** Evolution's operators: anything goes, a new weapon included (the way into the other family's niches). */
+export const EVOLVE_MUTATIONS: readonly MutationKind[] = ['weight', 'threshold', 'range', 'attributes', 'swap_term', 'build'];
+
+/**
+ * The tuner's operators: numbers and policies only. The build's weapon and skill, the move terms
+ * themselves and the behaviours stay; the strategy keeps its identity and gets sharper.
+ */
+export const TUNE_MUTATIONS: readonly MutationKind[] = ['weight', 'threshold', 'range', 'attributes', 'policy'];
 
 /** Largest move-term weight a mutation produces (the language allows any finite weight; this keeps steering sane). */
 export const MAX_WEIGHT = 3;
@@ -384,24 +404,61 @@ function mutateBuild(s: Strategy, rng: Rng): string | null {
   return `build: skill ${before} -> ${s.build.skill}`;
 }
 
-type Operator = { weight: number; apply: (s: Strategy, rng: Rng, opts: MutateOptions) => string | null };
+const STANCES: readonly Stance[] = ['normal', 'creep', 'guard'];
+/** Attack keywords the policy mutation swaps between ("never" is a deliberate choice and stays). */
+const SWAPPABLE_ATTACKS = ['in_range', 'if_blocked'];
+const COMMIT_MAX = 600;
+
+/** A behaviour's policy: its attack keyword, its stance, or the strategy's commit time. */
+function mutatePolicy(s: Strategy, rng: Rng): string | null {
+  const options: (() => string | null)[] = [];
+  for (const [name, b] of Object.entries(s.behaviours)) {
+    if (SWAPPABLE_ATTACKS.includes(b.attack.trim())) {
+      options.push(() => {
+        const before = b.attack.trim();
+        b.attack = SWAPPABLE_ATTACKS.find((a) => a !== before)!;
+        return `${name}: attack ${before} -> ${b.attack}`;
+      });
+    }
+    options.push(() => {
+      const before = b.stance ?? 'normal';
+      const after = rng.pick(STANCES.filter((x) => x !== before));
+      if (after === 'normal') delete b.stance;
+      else b.stance = after;
+      return `${name}: stance ${before} -> ${after}`;
+    });
+  }
+  options.push(() => {
+    const before = s.commit;
+    const after = clamp(before === 0 ? rng.int(5, 30) : nudgeNumber(before, rng), 0, COMMIT_MAX);
+    if (after === before) return null;
+    s.commit = after;
+    return `commit ${num(before)} -> ${num(after)} ticks`;
+  });
+  return rng.pick(options)();
+}
+
+type Operator = { kind: MutationKind; weight: number; apply: (s: Strategy, rng: Rng, opts: MutateOptions) => string | null };
 const OPERATORS: readonly Operator[] = [
-  { weight: 3, apply: mutateWeight },
-  { weight: 3, apply: mutateThreshold },
-  { weight: 2, apply: mutateRange },
-  { weight: 2, apply: mutateAttributes },
-  { weight: 2, apply: swapTerm },
+  { kind: 'weight', weight: 3, apply: mutateWeight },
+  { kind: 'threshold', weight: 3, apply: mutateThreshold },
+  { kind: 'range', weight: 2, apply: mutateRange },
+  { kind: 'attributes', weight: 2, apply: mutateAttributes },
+  { kind: 'swap_term', weight: 2, apply: swapTerm },
   // A new weapon is a big jump, but it is the only way into the other weapon family's niches.
-  { weight: 1, apply: mutateBuild },
+  { kind: 'build', weight: 1, apply: mutateBuild },
+  { kind: 'policy', weight: 2, apply: mutatePolicy },
 ];
 
 /**
- * One mutation, operator chosen by weight. An operator that cannot apply (no keep_range term, no
- * numbers to nudge) gives way to another. `mutations` is empty only if nothing could change.
+ * One mutation, operator chosen by weight among `opts.operators`. An operator that cannot apply (no
+ * keep_range term, no numbers to nudge) gives way to another. `mutations` is empty only if nothing
+ * could change.
  */
 export function mutate(s: Strategy, rng: Rng, opts: MutateOptions = {}): Bred {
   const child = structuredClone(s);
-  const ops = [...OPERATORS];
+  const allowed = opts.operators ?? EVOLVE_MUTATIONS;
+  const ops = OPERATORS.filter((o) => allowed.includes(o.kind));
   while (ops.length > 0) {
     let r = rng.next() * ops.reduce((t, o) => t + o.weight, 0);
     let i = 0;

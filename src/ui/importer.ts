@@ -63,3 +63,17 @@ export function importVerdict(report: LoadReport): { ok: boolean; label: string 
 export function issueSpot(issue: Pick<ValidationIssue, 'line' | 'column'>): string | null {
   return issue.line !== undefined ? `line ${issue.line}${issue.column !== undefined ? `, column ${issue.column}` : ''}` : null;
 }
+
+/**
+ * Why a pasted LLM reply did not load, when that is not a strategy problem: the model is still
+ * interviewing the player (no JSON yet), or its JSON block was cut off. Null when the reply holds
+ * a whole JSON object, so the gate's own report says the rest.
+ */
+export function llmReplyHint(text: string): string | null {
+  const t = text.trim();
+  if (!t || t.startsWith(CODE_PREFIX)) return null;
+  if (!t.includes('{')) return 'This looks like the model’s questions, not its strategy. Answer them in the chat, then paste the reply that has the ```json block.';
+  const fence = /```json/i.exec(t);
+  if (fence && !t.slice(fence.index + 7).includes('```')) return 'The ```json block is not closed: the reply was probably cut off. Ask the model to “continue”, or to send the JSON again.';
+  return null;
+}

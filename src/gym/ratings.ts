@@ -15,12 +15,11 @@
  */
 
 import { rate } from 'openskill';
+import { makeRating } from '../core';
 import type { LeaderboardEntry, MatchReport, Rating } from '../core';
 
 export const RATING_MU = 25;
 export const RATING_SIGMA = 25 / 3;
-/** ordinal = mu - Z x sigma (core `Rating` contract). */
-const Z = 3;
 const SCHEMA = 'pit-ratings/1';
 
 export type RatingRecord = {
@@ -41,8 +40,9 @@ export type RatingRecord = {
 
 export type RatingBookJson = { schema: typeof SCHEMA; records: RatingRecord[] };
 
+/** A core `Rating` (ordinal and provisional flag included) from openskill's mu and sigma. */
 export function toRating(mu: number, sigma: number): Rating {
-  return { mu, sigma, ordinal: mu - Z * sigma };
+  return makeRating(mu, sigma);
 }
 
 export const DEFAULT_RATING: Rating = toRating(RATING_MU, RATING_SIGMA);

@@ -23,9 +23,11 @@ export type SoundId =
   | 'parry' | 'dismember' | 'death_splat' | 'crush' | 'kill_sting' | 'final_sting' | 'crowd_roar' | 'explosion'
   // Sparse crowd reactions (crowd.ts decides when).
   | 'crowd_gasp' | 'crowd_whistle' | 'crowd_boo' | 'crowd_chant'
-  | 'skill_whirlwind' | 'skill_shadowstep' | 'skill_dash' | 'skill_shockwave' | 'skill_bloodrage'
+  | 'skill_whirlwind' | 'skill_shadowstep' | 'skill_dash' | 'skill_shockwave' | 'skill_bloodrage' | 'skill_hook' | 'skill_second_wind'
   | 'footstep' | 'footstep_wet'
   | 'pickup_haste' | 'pickup_berserk' | 'pickup_ammo' | 'spawn_haste' | 'spawn_berserk' | 'heal'
+  // Stuck arrows and axes: pulled out of a wall or prop, and clattering to the floor when what held them goes.
+  | 'ammo_yank' | 'ammo_clatter'
   | 'hazard_spike' | 'hazard_saw' | 'hazard_acid' | 'hazard_fire'
   | 'break_keg' | 'break_amphora' | 'break_crate'
   | 'wall_grind' | 'zone_burn' | 'horn' | 'escalation' | 'gong' | 'bell'
@@ -93,11 +95,15 @@ export const SOUND_SPECS: Readonly<Record<SoundId, SoundSpec>> = {
   skill_dash: spec('misc', 55, 0.4, 0.05),
   skill_shockwave: spec('misc', 58, 0.9, 0.05),
   skill_bloodrage: spec('misc', 58, 1.1, 0.05),
+  skill_hook: spec('misc', 56, 0.6, 0.05),
+  skill_second_wind: spec('misc', 52, 1.2, 0.05),
   footstep: spec('step', 5, 0.09, 0.07),
   footstep_wet: spec('step', 6, 0.12, 0.07),
   pickup_haste: spec('misc', 65, 0.7),
   pickup_berserk: spec('misc', 65, 0.9),
   pickup_ammo: spec('misc', 25, 0.14, 0.12),
+  ammo_yank: spec('misc', 26, 0.2, 0.1),
+  ammo_clatter: spec('misc', 22, 0.4, 0.07),
   spawn_haste: spec('signal', 70, 1.5, 0.1),
   spawn_berserk: spec('signal', 70, 1.6, 0.1),
   heal: spec('misc', 45, 1.1, 0.1),
@@ -340,6 +346,8 @@ const SKILL: Readonly<Record<SkillId, SoundId>> = {
   DASH: 'skill_dash',
   SHOCKWAVE: 'skill_shockwave',
   BLOODRAGE: 'skill_bloodrage',
+  HOOK: 'skill_hook',
+  SECOND_WIND: 'skill_second_wind',
 };
 
 const HAZARD: Readonly<Record<HazardKind, SoundId>> = {
@@ -532,8 +540,18 @@ export function cuesForEvent(
       push('bell', 0.7, 0, 1, 0.5, 0.35);
       if (ev.ending !== 'elimination') push('crowd_roar', 0.75, 0, 1, 0.6, 0.5);
       break;
+    case 'ammo_unstick': {
+      const pan = panForX(ev.pos.x, state);
+      // A pull out of the wood (the pickup's own chime follows), or the shafts hitting the floor
+      // when the body or prop holding them is gone. Axes sound heavier and lower.
+      if (ev.reason === 'pickup') push('ammo_yank', 0.4, pan, (ev.kind === 'axe' ? 0.8 : 1) * vary(rand, 0.08));
+      else push('ammo_clatter', 0.35, pan, (ev.kind === 'axe' ? 0.75 : 1.1) * vary(rand, 0.1), ev.kind === 'axe' ? 1 : 0);
+      break;
+    }
     case 'bark':
     case 'wall_contact':
+    case 'ammo_stick':
+      // A stick sounds through its projectile_end (the thunk with its quiver) or the hit it made.
       break;
   }
 }
@@ -555,6 +573,14 @@ export function cuesForSignal(signal: MatchSignal, out: Cue[]): void {
       break;
     case 'final_kill':
       out.push({ sound: 'final_sting', gain: 0.9, pan: 0, pitch: 1, intensity: 1, delay: 0 });
+      break;
+    case 'victory':
+      // The winner's moment: one big roar (the kill's own roar in the same frame counts as it: the
+      // mixer drops a second roar that close).
+      out.push({ sound: 'crowd_roar', gain: 1, pan: 0, pitch: 1, intensity: signal.winnerIds.length > 0 ? 1 : 0.6, delay: 0.05 });
+      break;
+    case 'end_card':
+      // Not a sound: the driver hushes the arena while the card is up.
       break;
   }
 }

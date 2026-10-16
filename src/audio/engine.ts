@@ -58,6 +58,16 @@ const GRIND_GAIN = 0.18;
 const GRIND_HOLD = 0.15;
 /** Seconds for one round's babble to crossfade into the next. */
 const BABBLE_FADE = 1.2;
+/** Bus gains: effects, crowd voices, beds (low: about -30 dB at rest, -24 dB with a hot crowd and the wall). */
+const BUS_SFX = 0.9;
+const BUS_CROWD = 0.7;
+const BUS_AMB = 0.18;
+/**
+ * Under the end card (`setHush`): the crowd bus keeps this share (the roar's tail fades into near
+ * silence) and the beds this share (a low murmur of torches, about -18 dB under their rest level).
+ */
+export const HUSH_CROWD = 0.04;
+export const HUSH_AMB = 0.13;
 
 type Loop = { node: AudioBufferSourceNode; speed: number };
 
@@ -110,6 +120,7 @@ export class AudioEngine {
   private appliedGrind = 0;
   private rate = 1;
   private timeScale = 1;
+  private hushOn = false;
 
   constructor(readonly ctx: BaseAudioContext, banks?: Banks) {
     this.banks = banks ?? makeBanks(ctx);
@@ -176,11 +187,10 @@ export class AudioEngine {
       g.connect(dest);
       return g;
     };
-    // Low: the beds sit well under every hit (about -30 dB at rest, -24 dB with a hot crowd and the wall).
-    this.ambBus = bus(0.18, this.ambDuckGain);
+    this.ambBus = bus(BUS_AMB, this.ambDuckGain);
     this.buses = {
-      sfx: bus(0.9, this.sfxDuckGain),
-      crowd: bus(0.7, this.master),
+      sfx: bus(BUS_SFX, this.sfxDuckGain),
+      crowd: bus(BUS_CROWD, this.master),
       signal: bus(0.75, this.master),
     };
     // The crowd fills the space (about -14 dB wet); announcer beats ring off the walls (about -16 dB).
@@ -290,6 +300,19 @@ export class AudioEngine {
     this.grindUntil = now + GRIND_HOLD;
     this.grindLevel = GRIND_GAIN * Math.min(1.6, 1 + 0.3 * (fighters - 1));
     this.grindPan.pan.setTargetAtTime(Math.min(Math.max(pan, -1), 1), now, 0.05);
+  }
+
+  /**
+   * The end card is up (`on`): combat sounds stop, the crowd's last roar fades out and the beds sink
+   * to a low ambience; announcer beats still play. Off brings everything back.
+   */
+  setHush(on: boolean): void {
+    if (on === this.hushOn) return;
+    this.hushOn = on;
+    const now = this.ctx.currentTime;
+    this.buses.sfx.gain.setTargetAtTime(on ? 0 : BUS_SFX, now, on ? 0.25 : 0.05);
+    this.buses.crowd.gain.setTargetAtTime(on ? BUS_CROWD * HUSH_CROWD : BUS_CROWD, now, on ? 0.9 : 0.05);
+    this.ambBus.gain.setTargetAtTime(on ? BUS_AMB * HUSH_AMB : BUS_AMB, now, on ? 1.2 : 0.3);
   }
 
   /** The grinding wall drone runs while the sudden-death wall is moving. */

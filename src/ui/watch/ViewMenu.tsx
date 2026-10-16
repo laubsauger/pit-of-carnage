@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_VIEW_SETTINGS } from '../../core';
 import type { GameController, ViewSettings } from '../../core';
 import { GearIcon } from '../icons';
-import { WATCH_KEYS } from '../keys';
 import { VIEW_GROUPS } from '../view';
 import type { ViewItem } from '../view';
 
@@ -13,7 +12,7 @@ type Set = (patch: Partial<ViewSettings>) => void;
  * The View popover behind a small gear in the top bar, clear of the arena. Every display setting
  * with its shortcut; the controller merges, persists and applies each change.
  */
-export function ViewMenu({ controller, view }: { controller: GameController; view: ViewSettings }) {
+export function ViewMenu({ controller, view, onShowKeys }: { controller: GameController; view: ViewSettings; onShowKeys: () => void }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
@@ -61,21 +60,17 @@ export function ViewMenu({ controller, view }: { controller: GameController; vie
               ))}
             </section>
           ))}
-          <section className="vs-group">
-            <h3>Watching</h3>
-            <dl className="vs-keys">
-              {WATCH_KEYS.map((k) => (
-                <div key={k.keys}>
-                  <dt>
-                    <kbd>{k.keys}</kbd>
-                  </dt>
-                  <dd>{k.label}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
           <div className="vs-foot">
-            <span className="faint">Letters toggle while you watch.</span>
+            <button
+              type="button"
+              className="linkish"
+              onClick={() => {
+                setOpen(false);
+                onShowKeys();
+              }}
+            >
+              All shortcuts
+            </button>
             <button type="button" className="linkish" disabled={isDefault} onClick={() => set({ ...DEFAULT_VIEW_SETTINGS })}>
               Reset to defaults
             </button>

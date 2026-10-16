@@ -10,8 +10,8 @@
 
 import { HAZARD_RULES, PICKUP_RULES, PROP_RULES, SKILLS, WEAPONS } from '../core';
 import type {
-  AmmoKind, AnimPhase, BarkKind, DamageSource, GameEvent, GameEventType, HazardKind, JudgedFighter, KillCause, KillFlag, Limb, MatchEnding,
-  MatchFormat, PickupKind, PropKind, SkillId, Stance, SuddenDeathReason, Vec2, WeaponId,
+  AmmoKind, AnimPhase, BarkKind, DamageSource, GameEvent, GameEventType, GuardTripKind, HazardKind, JudgedFighter, KillCause, KillFlag, Limb, MatchEnding,
+  MatchFormat, PickupKind, PropKind, SkillId, Stance, StuckIn, SuddenDeathReason, Vec2, WeaponId,
 } from '../core';
 
 export const BAD: unique symbol = Symbol('bad');
@@ -131,7 +131,7 @@ export const ANIM_PHASES = keysOf<AnimPhase>({ idle: 1, windup: 1, strike: 1, re
 export const STANCES = keysOf<Stance>({ normal: 1, creep: 1, guard: 1 });
 export const LIMBS = keysOf<Limb>({ armL: 1, armR: 1, legL: 1, legR: 1 });
 export const KILL_CAUSES = keysOf<KillCause>({ weapon: 1, skill: 1, hazard: 1, keg: 1, friendly: 1, sudden_death: 1 });
-export const DAMAGE_SOURCES = keysOf<DamageSource>({ weapon: 1, punch: 1, skill: 1, reflect: 1, hazard: 1, keg: 1, sudden_death: 1 });
+export const DAMAGE_SOURCES = keysOf<DamageSource>({ weapon: 1, punch: 1, skill: 1, reflect: 1, hazard: 1, keg: 1, sudden_death: 1, bleed: 1 });
 export const KILL_FLAGS = keysOf<KillFlag>({
   backstab: 1, crit: 1, unseen: 1, ranged: 1, splash: 1, reflect: 1, multi: 1, revenge: 1, overkill: 1, crushed: 1,
 });
@@ -141,6 +141,7 @@ export const FLOOR_KINDS = keysOf<'arrow' | 'axe' | 'weapon' | 'helmet'>({ arrow
 export const SUDDEN_DEATH_REASONS = keysOf<SuddenDeathReason>({ time: 1, stalemate: 1 });
 export const MATCH_ENDINGS = keysOf<MatchEnding>({ elimination: 1, time: 1, judges: 1, capped: 1 });
 export const MATCH_FORMATS = keysOf<MatchFormat>({ ffa: 1, squads: 1, duel: 1 });
+export const GUARD_TRIP_KINDS = keysOf<GuardTripKind>({ nan: 1, div_zero: 1, clamped: 1, cost: 1 });
 
 // ---------------------------------------------------------------------------------------------
 // Events
@@ -152,6 +153,21 @@ type EventFields<K extends GameEventType> = { [F in Exclude<keyof EventOf<K>, 't
 const weapon = oneOf(WEAPON_IDS);
 const amount = num(0, 1_000_000);
 const behaviour = text(MAX_BEHAVIOUR);
+
+/** What a stuck arrow or axe sits in (`StuckIn`): checked per kind, unknown kinds refused. */
+const stuckIn: Check<StuckIn> = (v, refs) => {
+  if (!isObj(v)) return BAD;
+  if (v.kind === 'wall' || v.kind === 'floor') return { kind: v.kind };
+  if (v.kind === 'prop') {
+    const propId = id(v.propId, refs);
+    return propId === BAD ? BAD : { kind: 'prop', propId };
+  }
+  if (v.kind === 'fighter') {
+    const f = shape<Omit<Extract<StuckIn, { kind: 'fighter' }>, 'kind'>>({ fighterId, u: coord, v: coord, turn: angle })(v, refs);
+    return f === BAD ? BAD : { kind: 'fighter', ...f };
+  }
+  return BAD;
+};
 
 const judged = shape<JudgedFighter>({ id: fighterId, hpFraction: num(0, 1), damageDealt: amount, kills: int(0, 1000) });
 
@@ -165,6 +181,10 @@ const EVENT_FIELDS: { [K in GameEventType]: EventFields<K> } = {
   parry: { fighterId, attackerId: fighterId, pos: vec },
   projectile: { projectileId: id, ownerId: fighterId, weapon, pos: vec, dir: angle },
   projectile_end: { projectileId: id, pos: vec, hitId: nullable(fighterId) },
+  ammo_stick: { stuckId: id, projectileId: id, kind: oneOf(AMMO_KINDS), ownerId: nullable(fighterId), pos: vec, angle, in: stuckIn },
+  ammo_unstick: {
+    stuckId: id, kind: oneOf(AMMO_KINDS), pos: vec, reason: oneOf<'pickup' | 'drop'>(['pickup', 'drop']), fighterId: nullable(fighterId), floorItemId: nullable(id),
+  },
   dismember: { attackerId: nullable(fighterId), victimId: fighterId, limb: oneOf(LIMBS), pos: vec, vel: vec },
   kill: {
     killerId: nullable(fighterId), victimId: fighterId, cause: oneOf(KILL_CAUSES), pos: vec, dir: angle, title: text(MAX_LINE, 1),

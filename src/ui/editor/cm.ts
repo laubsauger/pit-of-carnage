@@ -8,7 +8,7 @@ import { createRoot } from 'react-dom/client';
 import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete';
 import { snippetCompletion } from '@codemirror/autocomplete';
 import type { Diagnostic } from '@codemirror/lint';
-import { RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect, StateField, Transaction } from '@codemirror/state';
 import type { EditorState, Extension } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, hoverTooltip } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
@@ -21,6 +21,7 @@ import { scanJson, slotAt, stringContent, tokenAt } from './jsontext';
 import type { JsonScan, JsonToken, PathSeg } from './jsontext';
 import { ENUM_VALUES, expressionWords, keysFor, lexExpr, memoryNames, slotOf, wordKind } from './language';
 import type { EnumKind, Slot } from './language';
+import { dragSteps, scrubTargetAt, scrubValue } from './scrub';
 import { entryById, entryForWord, fieldEntry } from './lexicon';
 import type { Entry, EntryKind } from './lexicon';
 import { WordCard } from './WordCard';
@@ -505,3 +506,67 @@ export function revealAndFlash(view: EditorView, from: number, to: number): void
     if (view.dom.isConnected) view.dispatch({ effects: flashEffect.of(null) });
   }, 1200);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Scrubbing numbers
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Drag a number sideways to change it, as in the visual builder (Shift: faster, Alt: finer): JSON
+ * numbers with their field's range and step, and numbers inside expressions. A press that does not
+ * move places the caret as usual; a double-click, Shift-click or modifier click is left to the
+ * editor. One drag is one undo step, and every step updates the strategy (and the builder) live.
+ */
+export const numberScrub: Extension = EditorView.domEventHandlers({
+  mousedown(e, view) {
+    if (e.button !== 0 || e.detail > 1 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return false;
+    const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+    if (pos === null) return false;
+    const target = scrubTargetAt(view.state.doc.toString(), view.state.field(scanField).tokens, pos);
+    if (!target) return false;
+    // posAtCoords snaps to the nearest character: only a press on the digits themselves scrubs.
+    const a = view.coordsAtPos(target.from, 1);
+    const b = view.coordsAtPos(target.to, -1);
+    if (!a || !b || e.clientX < a.left - 1 || e.clientX > b.right + 1 || e.clientY < a.top || e.clientY > b.bottom) return false;
+    e.preventDefault();
+
+    const { from } = target;
+    let to = target.to;
+    let moved = false;
+    const startX = e.clientX;
+    const dispatch = (insert: string, history: boolean) => {
+      view.dispatch({ changes: { from, to, insert }, userEvent: 'input.scrub', annotations: history ? [] : [Transaction.addToHistory.of(false)], scrollIntoView: false });
+      to = from + insert.length;
+    };
+    const onMove = (m: MouseEvent) => {
+      if (!moved && Math.abs(m.clientX - startX) < 3) return;
+      if (!moved) {
+        moved = true;
+        view.dom.classList.add('cm-scrubbing');
+      }
+      const next = scrubValue(target, dragSteps(m, startX));
+      if (next !== view.state.sliceDoc(from, to)) dispatch(next, false);
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      view.dom.classList.remove('cm-scrubbing');
+      if (!view.dom.isConnected) return;
+      if (moved) {
+        // The steps stayed out of the undo history; record the whole drag as one change.
+        const final = view.state.sliceDoc(from, to);
+        if (final !== target.text) {
+          dispatch(target.text, false);
+          dispatch(final, true);
+        }
+        view.dispatch({ selection: { anchor: to } });
+      } else {
+        view.dispatch({ selection: { anchor: pos } });
+      }
+      view.focus();
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return true;
+  },
+});

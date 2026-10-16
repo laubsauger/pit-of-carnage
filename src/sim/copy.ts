@@ -219,7 +219,7 @@ export function announcements(events: readonly GameEvent[], state: WorldState): 
         const w = e.survivors[0];
         if (!w) break;
         const name = state.fighters.find((f) => f.id === w.id)?.name ?? w.id;
-        const text = pick(ANNOUNCE.judges, e.tick, 'judges').replace('{w}', name).replace('{hp}', String(Math.round(w.hpFraction * 100)));
+        const text = pick(ANNOUNCE.judges, e.tick, 'judges').replace('{hp}', String(Math.round(w.hpFraction * 100))).replace('{w}', () => name);
         out.push({ tick: e.tick, text, kind: 'sudden_death', ids: e.survivors.map((s) => s.id) });
         break;
       }
@@ -233,7 +233,7 @@ export function announcements(events: readonly GameEvent[], state: WorldState): 
       case 'heal': {
         if (e.shrineId === null) break;
         const name = state.fighters.find((f) => f.id === e.fighterId)?.name ?? e.fighterId;
-        const text = pick(SHRINE_LINES, e.tick, e.fighterId).replace('{n}', name).replace('{a}', String(Math.round(e.amount)));
+        const text = pick(SHRINE_LINES, e.tick, e.fighterId).replace('{a}', String(Math.round(e.amount))).replace('{n}', () => name);
         out.push({ tick: e.tick, text, kind: 'heal', ids: [e.fighterId] });
         break;
       }

@@ -11,7 +11,12 @@ import { STRATEGY_SCHEMA } from '../core';
 import type { Strategy } from '../core';
 import { formatJson, generateRulebook } from './rulebook';
 
-/** `new` designs a fighter from scratch; `improve` works on the given strategy. */
+/**
+ * `new` designs a fighter from scratch ("New fighter with an LLM"): the open strategy and its report
+ * stay out, so the model cannot hand back a lightly edited copy. `improve` works on the given
+ * strategy ("Improve this with an LLM"). Without a mode, a prompt with a strategy first asks the
+ * player which of the two they want.
+ */
 export type PromptMode = 'new' | 'improve';
 
 const INTERVIEW = [
@@ -25,15 +30,23 @@ const INTERVIEW = [
 ].join('\n');
 
 export function buildLlmPrompt(opts: { strategy?: Strategy; reportText?: string; goal?: string; mode?: PromptMode }): string {
-  const { strategy, reportText } = opts;
   const goal = opts.goal?.trim();
-  const mode: PromptMode = opts.mode ?? (strategy ? 'improve' : 'new');
+  const mode: PromptMode = opts.mode ?? (opts.strategy ? 'improve' : 'new');
+  // A new fighter starts from the player's answers, never from whatever happens to be open.
+  const strategy = mode === 'new' && !goal ? undefined : opts.strategy;
+  const reportText = mode === 'new' && !goal ? undefined : opts.reportText;
 
   let task: string;
   if (goal) {
     task = goal;
   } else if (mode === 'new' || !strategy) {
     task = ['Design a brand-new fighter strategy with the player.', INTERVIEW].join('\n\n');
+  } else if (opts.mode === 'improve') {
+    task = [
+      'Improve the strategy below with the player. It is their fighter; they asked for changes, not a new one.',
+      `First ask, in one short message, what they want changed, with two or three concrete suggestions${reportText?.trim() ? ' drawn from the battle report below (what killed it, what it never did, where it wasted time)' : ''}, plus "or describe your own". Wait for the answer before writing JSON.`,
+      'Then keep its name, identity and barks, change as little as needed, and say in one line what you changed and why.',
+    ].join('\n');
   } else {
     task = [
       'The strategy below is the one open in the player\'s editor. It may be their own build, or just a starter sample they have not touched yet.',
@@ -71,6 +84,7 @@ export function buildLlmPrompt(opts: { strategy?: Strategy; reportText?: string;
       '- Use only the sensors, places, zones, move terms and policies listed in the rulebook, and stay within every limit (attribute budget, behaviour and move-term counts).',
       '- The game checks the strategy strictly before it can fight (see "Validation and safety"): never divide by something that can be 0, keep scores within the score limit, and stay under the evaluation budget.',
       '- After the JSON, suggest two things to try in the gym to test whether the plan works.',
+      '- The player pastes your whole reply back into the game as it is; the game reads the ```json block, so keep exactly one.',
     ].join('\n'),
   );
   return parts.join('\n\n') + '\n';

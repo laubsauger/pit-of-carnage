@@ -1,7 +1,7 @@
 // Owned by: ui
 // The Codex's contents: the rulebook the LLM prompt is built from, cut into browsable sections,
 // with the lexicon's cards for every word, build part and rule. Search runs over both.
-import { STRATEGY_SCHEMA } from '../../core';
+import { BLEED_RULES, STRATEGY_SCHEMA } from '../../core';
 import { allEntries, rulebookMarkdown } from '../editor/lexicon';
 import type { Entry, EntryKind } from '../editor/lexicon';
 import { plain } from './markdown';
@@ -14,6 +14,11 @@ export type CodexSection = {
   blurb: string;
   /** Rulebook headings whose text this section shows ("## Places" or "### Steering"), in order. */
   prose: string[];
+  /**
+   * Also every rulebook heading whose title matches, so a section about a newer rule picks up its
+   * rulebook text as soon as the rulebook has it.
+   */
+  proseMatch?: RegExp;
   /** Only the first paragraph of the prose (the cards carry the rest). */
   intro?: boolean;
   /** Each heading's own text only, without its sub-headings. */
@@ -39,6 +44,18 @@ export const CODEX_SECTIONS: readonly CodexSection[] = [
   { id: 'weapons', title: 'Weapons', blurb: 'Six ways to ruin someone’s afternoon.', prose: ['### Weapons'], intro: true, kinds: ['weapon'] },
   { id: 'skills', title: 'Skills and stances', blurb: 'One skill per build; stances per behaviour.', prose: [], kinds: ['skill', 'stance'] },
   { id: 'arena', title: 'Hazards, props and power-ups', blurb: 'Everything in the pit that is not a fighter.', prose: ['## The arena', '### Shrines and power-ups'], shallow: true, kinds: ['hazard', 'prop', 'pickup'] },
+  {
+    id: 'stuck-ammo',
+    title: 'Stuck arrows and axes',
+    blurb: 'What you shoot stays where it lands, until somebody pulls it out.',
+    prose: [],
+    proseMatch: /\bstuck\b|arrows and axes/i,
+    kinds: ['rule'],
+    filter: (e) => e.word.startsWith('stuck_ammo.'),
+  },
+  ...(BLEED_RULES.enabled
+    ? [{ id: 'bleeding', title: 'Bleeding', blurb: 'Open wounds, drip trails and the shrine that stops them.', prose: [], proseMatch: /\bbleed/i, kinds: ['rule'], filter: (e: Entry) => e.word.startsWith('bleed.') } satisfies CodexSection]
+    : []),
   { id: 'maps', title: 'Maps', blurb: 'Four arenas. Sensors and places work on all of them.', prose: [], kinds: ['map'] },
   { id: 'sudden-death', title: 'Sudden death', blurb: 'Hiding never wins: the walls close in.', prose: ['### Sudden death'], kinds: ['rule'], filter: (e) => e.word.startsWith('match.') },
   { id: 'validation', title: 'Validation and limits', blurb: 'One gate for every strategy, checked before the match.', prose: ['## Validation and safety'], kinds: ['limit'] },
@@ -71,8 +88,18 @@ export function proseUnder(heading: string, shallow = false): MdBlock[] {
   return out;
 }
 
+/** The rulebook headings a section shows: its own list, then those `proseMatch` finds. */
+export function proseHeadings(s: CodexSection): string[] {
+  if (!s.proseMatch) return s.prose;
+  const re = s.proseMatch;
+  const found = rulebookMarkdown()
+    .filter((b): b is Extract<MdBlock, { t: 'h' }> => b.t === 'h' && b.level >= 2 && re.test(b.text))
+    .map((b) => `${'#'.repeat(b.level)} ${b.text}`);
+  return [...s.prose, ...found.filter((h) => !s.prose.includes(h))];
+}
+
 export function sectionProse(s: CodexSection): MdBlock[] {
-  const blocks = s.prose.flatMap((h) => proseUnder(h, s.shallow));
+  const blocks = proseHeadings(s).flatMap((h) => proseUnder(h, s.shallow));
   if (!s.intro) return blocks;
   const first = blocks.find((b) => b.t === 'p');
   return first ? [first] : [];
@@ -82,10 +109,16 @@ export function sectionEntries(s: CodexSection): Entry[] {
   return allEntries().filter((e) => s.kinds.includes(e.kind) && (!s.filter || s.filter(e)));
 }
 
-/** The section an entry is shown in. */
+/**
+ * The section an entry is shown in. A rule without a card of its own (combat, perception,
+ * steering) is a row of the rule tables, so it opens there.
+ */
 export function sectionOf(id: string): CodexSection | null {
   const e = allEntries().find((x) => x.id === id);
-  return e ? CODEX_SECTIONS.find((s) => s.kinds.includes(e.kind) && (!s.filter || s.filter(e))) ?? null : null;
+  if (!e) return null;
+  const home = CODEX_SECTIONS.find((s) => s.kinds.includes(e.kind) && (!s.filter || s.filter(e)));
+  if (home) return home;
+  return e.kind === 'rule' ? (CODEX_SECTIONS.find((s) => s.id === 'rules') ?? null) : null;
 }
 
 function blockText(b: MdBlock): string {

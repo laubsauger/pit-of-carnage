@@ -6,7 +6,8 @@
  * R steering ring, X shake (kills/off), click select, L follow selected, Space pause, S slow motion,
  * K kill someone, E explode a keg, D sudden death (Shift+D: start with the wall far in), +/- fighters,
  * I fake inspector panel (view insets), P playback speed 1x/2x/4x, A spill acid, U dunk fighters
- * in the acid, Y shrine heal, T countdown (3, 2, 1, FIGHT), W final kill (everyone but one dies).
+ * in the acid, Y shrine heal, T countdown (3, 2, 1, FIGHT), W final kill (everyone but one dies; then
+ * the winner's moment and, 3 s later, the end card's hush and dimming).
  */
 
 import { DEFAULT_VIEW_SETTINGS, NO_VIEW_INSETS, TICK_DT } from '../../core';
@@ -108,11 +109,33 @@ async function main(): Promise<void> {
       if (e.type === 'hit' && (e.crit || e.amount >= 28)) hitStopLeft = Math.max(hitStopLeft, 0.07);
     }
     renderer.onEvents(events, world.state);
-    // Like the controller: the final kill's signal arrives in the frame its kill event is delivered.
+    // Like the controller: the final kill's signal arrives in the frame its kill event is delivered,
+    // the winner's moment right after it, the end card 3 s later.
     if (final) {
       slowmoLeft = 2.5;
       renderer.onSignal({ type: 'final_kill', killerId: final.killerId, victimId: final.victimId, pos: { ...final.pos } });
+      const winnerIds = world.state.fighters.filter((f) => f.alive).map((f) => f.id);
+      renderer.onSignal({ type: 'victory', winnerIds, ending: 'elimination' });
+      const round = world;
+      setTimeout(() => {
+        if (world !== round || world.state.tick < final.tick) return;
+        endCard = true;
+        renderer.onSignal({ type: 'end_card', shown: true, winnerIds });
+      }, 3000);
     }
+  };
+
+  /** The fake world restarts its round by itself: drop the end card and the old round's gore. */
+  let endCard = false;
+  let lastTick = 0;
+  const roundCheck = () => {
+    const t = world.state.tick;
+    if (t < lastTick) {
+      if (endCard) renderer.onSignal({ type: 'end_card', shown: false, winnerIds: [] });
+      endCard = false;
+      renderer.reset();
+    }
+    lastTick = t;
   };
 
   const setInsets = (next: ViewInsets) => {
@@ -130,6 +153,9 @@ async function main(): Promise<void> {
 
   const reload = () => {
     world = new FakeWorld(MAPS[mapIds[mapIndex]!]!, count);
+    lastTick = 0;
+    if (endCard) renderer.onSignal({ type: 'end_card', shown: false, winnerIds: [] });
+    endCard = false;
     renderer.reset();
     renderer.setMap(world.map);
     selected = null;
@@ -266,6 +292,7 @@ async function main(): Promise<void> {
     while (acc >= TICK_DT) {
       acc -= TICK_DT;
       forward(world.step());
+      roundCheck();
     }
     renderer.render(world.prev, world.state, acc / TICK_DT, dt);
     frames++;

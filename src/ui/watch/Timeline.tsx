@@ -430,7 +430,7 @@ function Doing({ m, byId }: { m: TimelineMark; byId: Map<string, UiFighter> }) {
         return (
           <span key={i}>
             {i > 0 ? ', ' : ''}
-            <b style={{ color: f?.color }}>{f?.name ?? '?'}</b> was in <code>{s.behaviour}</code>
+            <b style={{ color: f?.color }}>{f?.name ?? 'Someone'}</b> was in <code>{s.behaviour}</code>
           </span>
         );
       })}

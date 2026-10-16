@@ -49,7 +49,9 @@ free-for-all brawls. Every match produces a battle report used to improve the ne
 - **Quiet UI:** dark stone neutrals and one blood-red accent. Saturated colour only on fighters.
 - **Glorious effects on a simple world:** light, shadow, blood, impact. Effects never hide who fights
   whom: gore lives on the floor layer, fighters are always on top, with outlines.
-- **Performance:** 60 fps with 16 fighters on a laptop. **(not met yet: never measured.)**
+- **Performance:** 60 fps with 16 fighters on a laptop. **(not met yet: measured only on the
+  render dev page with a fake world on one machine with a discrete GPU, about 0.2-0.9 ms GPU and
+  0.3-1.9 ms CPU per frame; integrated graphics and the real sim with 16 fighters are unmeasured.)**
 - **Determinism:** the same config and seed give the same match in the same browser. Replays, seeks
   and "Watch" from the gym rebuild matches instead of storing them.
 
@@ -218,10 +220,13 @@ helmet off (cosmetic).
 - **Damage:** base x damage multiplier x backstab or crit, reduced by the victim's armor, rounded,
   at least 3.
 - **Backstab:** a hit arriving within 1.05 rad of the victim's back deals x1.45 (twin daggers
-  x2.35). A backstab cannot also crit.
+  x2.2). A backstab cannot also crit.
 - **Crit:** 25% chance on hits of at least 28 damage before armor, x1.35.
-- **Knockback** impulses are scaled by 0.55. Warhammer hits stun for 34 ticks; longbow hits slow the
-  victim to x0.6 speed for 75 ticks.
+- **Knockback** impulses are scaled by 0.55. Warhammer hits stun for 16 ticks; longbow hits slow the
+  victim to x0.6 speed for 105 ticks.
+- **Hand weapons:** throwing axes keep a hatchet back (28 base damage) and the staff whacks with the
+  staff itself (16): used instead of a shot at an enemy within punch reach (34 px) and when out of
+  ammo, on the weapon's own cooldown. Every other weapon without ammo or a weapon arm punches for 6.
 - **Parry is automatic.** When an enemy within reach starts a windup aimed at a fighter that faces it
   (within 0.9 rad), is not stunned and has its parry off cooldown, the sim rolls the parry chance
   once for that windup. A parry lasts 30 ticks, has a 135-tick cooldown, reflects 65% of the blow and
@@ -232,29 +237,30 @@ helmet off (cosmetic).
 
 | Weapon | Family | Range px | Damage | Cooldown | Windup | Move x | Lunge px | Special |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| GREATSWORD | melee | 82 | 30 | 42 | 14 | 1.06 | 30 | 2.35 rad arc, cleaves; shield in guard |
-| WARHAMMER | melee | 70 | 26 | 44 | 15 | 1.02 | 24 | Stun 34, big knockback; shield in guard |
-| TWIN_DAGGERS | melee | 56 | 16 | 18 | 6 | 1.15 | 36 | Backstab x2.35, fastest turn |
-| THROWING_AXES | ranged | 265 | 21 | 26 | 8 | 1.00 | - | Speed 10.6, 4 axes, must pick up |
-| LONGBOW | ranged | 430 | 20 | 33 | 11 | 0.96 | - | Speed 12.2, slow 75, 10 arrows, must pick up |
-| ARCANE_STAFF | ranged | 375 | 25 | 43 | 12 | 0.95 | - | Speed 9.6, splash 60% within 72 px, 4 charges, one recharges every 90 ticks |
+| GREATSWORD | melee | 82 | 35 | 36 | 14 | 1.06 | 30 | 2.35 rad arc, cleaves; shield in guard |
+| WARHAMMER | melee | 76 | 30 | 38 | 15 | 1.00 | 24 | Stun 16, big knockback; shield in guard |
+| TWIN_DAGGERS | melee | 58 | 22 | 27 | 6 | 1.08 | 22 | Backstab x2.2, fastest turn |
+| THROWING_AXES | ranged | 265 | 21 | 42 | 8 | 1.00 | - | Speed 10.6, 5 axes, they stick and must be taken back; hatchet 28 |
+| LONGBOW | ranged | 430 | 20 | 37 | 11 | 0.96 | - | Speed 12.2, slow 105, 12 arrows, they stick and must be taken back; one more every 240 ticks |
+| ARCANE_STAFF | ranged | 375 | 26 | 38 | 12 | 0.95 | - | Speed 9.6, knockback 4, splash 60% within 72 px, 4 charges, one recharges every 65 ticks; staff whack 16 |
 
 Cooldown and windup are in ticks; projectile speeds are before the 0.65 speed scale.
 
 ### Projectiles
 
-**Stuck arrows and axes (not built yet).** Projectiles that hit a wall, pillar or prop stick into it
-at the impact point and angle (a thunk, a little quiver, dust), instead of bouncing and dropping.
-They stay retrievable: a fighter recovers one by walking up to that spot (the pickup point sits just
-in front of the surface). Arrows and axes that hit a fighter stick in the body (comic pincushion,
-capped number shown) and drop to the floor as pickups when that fighter dies; until then that ammo is
-out of play. Misses that reach open floor skid and lie there as today. The balance pass checks the
-bow's ammo economy with this rule (more arrows or a slow quiver refill if needed).
+**Stuck arrows and axes** (`STUCK_AMMO`). Projectiles that hit a wall, pillar or prop stick into it
+at the impact point and angle (a thunk, a little quiver), instead of bouncing and dropping. They
+stay retrievable: a fighter recovers one by walking up to that spot (the pickup point sits 14 px in
+front of the surface). Arrows and axes that hit a fighter stick in the body (comic pincushion, at
+most 8 per body) and drop to the floor around the corpse when that fighter dies; until then that
+ammo is out of play. A broken prop and the closing wall drop what they hold. Misses that reach open
+floor skid and lie there. At most 96 stuck pieces in the arena (the oldest drops). The bow's ammo
+economy was rebalanced for this rule (12 arrows, one more every 240 ticks).
 
 - A projectile stops at the first wall, pillar, prop, closing wall or fighter in its path. Any
   fighter: crowds take stray shots. It flies up to range x1.15, then drops.
-- Spent arrows and axes land on the floor and must be walked over to take back. The staff
-  recharges instead.
+- Spent arrows and axes stick or land on the floor and must be walked over to take back. The staff
+  recharges instead; the bow's quiver refills slowly.
 - A staff orb bursts on impact: 60% damage to others within 72 px.
 - Shields: a greatsword or warhammer user in `guard` stance (with its left arm, not stunned) blocks
   projectiles arriving within a 1.6 rad arc of facing. A blocked orb still bursts on the shield; its
@@ -269,10 +275,12 @@ bow's ammo economy with this rule (more arrows or a slow quiver refill if needed
 | Skill | Effect |
 | --- | --- |
 | WHIRLWIND | 25 + power x 0.55 damage to everyone within 92 px, with knockback. |
-| SHADOWSTEP | Teleport 36 px behind the target (within 320 px), facing its back. Cannot land outside the sudden-death wall. |
+| SHADOWSTEP | Teleport 36 px behind the target (within 320 px), facing its back; no attack for 30 ticks after. Cannot land outside the sudden-death wall. |
 | DASH | Impulse 14 along the steering heading plus haste for 65 ticks. |
-| SHOCKWAVE | Parry window of 48 ticks, plus 19 damage and a 36-tick stun to everyone in a 96 px cone ahead. |
+| SHOCKWAVE | Parry window of 36 ticks, plus 19 damage and a 24-tick stun to everyone in a 96 px cone ahead. |
 | BLOODRAGE | Berserk (+35% damage) and haste (x1.45 speed) for 145 ticks. |
+| HOOK | Chain hook at a target in sight with a clear line, within 260 px: 8 damage, yanked to 20 px in front of the user and stunned 24 ticks. |
+| SECOND_WIND | Heal 24% of max HP over 180 ticks, a gulp every 30 ticks; any damage taken ends it. Does not fire at full health (the cooldown is kept). |
 
 Skill damage = base + power x scale, then armor (no other multipliers).
 
@@ -289,7 +297,7 @@ Kiting is easy and closing in is hard, so the numbers must make melee worth it.
   the target's seen velocity. Point-blank hits (under 80 px at release) deal half damage. Spent ammo
   must be picked up again.
 - **Melee hits harder up close.** Melee damage per second is about 1.5-1.8x ranged (a guideline,
-  **not met yet**: 1.07x). A melee hit on a ranged attacker in windup cancels the shot (no ammo
+  **not met yet**: 1.41x). A melee hit on a ranged attacker in windup cancels the shot (no ammo
   spent) and staggers it for 18 ticks. Every melee strike lunges 20-40 px. Melee weapons move about
   10% faster than ranged ones, and no ranged weapon outruns a melee one. Shields in guard stance
   block projectiles from the front.
@@ -298,10 +306,15 @@ Kiting is easy and closing in is hard, so the numbers must make melee worth it.
   over 100 seeds per pairing, each seed played twice with seats swapped, and (b) 8-fighter FFAs with
   the house stacks on all four maps. Targets: every duel pairing wins between 35% and 65%; each
   weapon family wins between 0.67x and 1.5x its fair share of FFAs on the pit. Results and the
-  current numbers go to `docs/BALANCE.md`; re-run after any rules change. **(not met yet: 1 of 3
-  targets hold.)**
+  current numbers go to `docs/BALANCE.md`; re-run after any rules change. **(not met yet: 2 of 3
+  targets hold; see `docs/TUNING.md`.)**
 
-### Core balance and expressiveness pass (not built yet)
+### Core balance and expressiveness pass
+
+The first round ran in pass 3 (stuck ammo, hand weapons, HOOK and SECOND_WIND, retuned weapons and
+shrine, bleed built but off); where it stands and how to resume is in `docs/TUNING.md`. Still open:
+per-strategy tuning of the house stacks, the shipped roster, the bleed decision, the across-maps
+spread.
 
 User observations to start from (watching live matches after pass 1):
 
@@ -312,13 +325,13 @@ User observations to start from (watching live matches after pass 1):
 - **Staff too safe.** Slow its orbs so they can be dodged and body-blocked, cap mana so regeneration
   is a real pause, and make it plant to cast like the bow.
 - **Twin daggers / Brenda From Accounts overpowered.** The user sees her attack so fast that
-  opponents have no chance. Numbers today: 16 damage every 18 ticks before haste (about 3-4 swings a
+  opponents have no chance. Numbers then: 16 damage every 18 ticks before haste (about 3-4 swings a
   second), +43% from her 18 power, backstab x2.35, SHADOWSTEP to get behind, a 36 px lunge, move x1.15
   and turn x1.38. Check how haste shortens the cooldown, whether backstab and lunge stack with
   shadowstep too well, and give daggers a real weakness (low reach, no block, fragile).
 - **The Unpaid Intern camps.** It survives by hiding and rarely matters. Treat it as the first
   candidate for automated per-strategy tuning (below).
-- **Automated per-strategy tuning.** A gym tool (`npm run tune <strategy>`) that improves one
+- **Automated per-strategy tuning** (built: `npm run tune`). A gym tool (`npm run tune <strategy>`) that improves one
   strategy only through its JSON (weights, thresholds, ranges, attributes, behaviour choices from the
   library), never by changing the engine: local search over many seeded FFAs against the current
   field, keeping the strategy's identity and niche, reporting before/after placement and win share.
@@ -396,7 +409,7 @@ onto the live fighter. Head and torso follow the record.
 
 | Item | Effect | Timing |
 | --- | --- | --- |
-| Shrine | Heals 42% of max HP on touch | Recharges 320 ticks after use |
+| Shrine | Heals 42% of max HP on touch | Recharges 900 ticks after use |
 | Haste charm | Move speed x1.45 for 200 ticks | First appears after 480 ticks; respawns 600 ticks after it is taken |
 | Berserk draught | +35% weapon damage for 200 ticks | First appears after 480 ticks; respawns 600 ticks after it is taken |
 
@@ -422,7 +435,7 @@ Power-ups must matter: strong, short, visible, and worth a detour.
 ### Shrine readability
 
 The shrine is not a capture point: a wounded fighter touching it (34 px) heals 42% of max HP at once,
-then it recharges for 320 ticks. Players must be able to see that: a ready shrine pulses and glows, a
+then it recharges for 900 ticks. Players must be able to see that: a ready shrine pulses and glows, a
 ring fills while it recharges, a use shows a green heal burst, a "+N" heal number and a feed line
 ("Gary patched up at the shrine, 86 health back."). Built as: a heartbeat throb with a heal cross and
 green floor light when ready, a drain burst on use, a dark refilling basin with runes lighting up one
@@ -441,7 +454,8 @@ zone is an optional idea for the balance pass, not a default.
 | Fire pit | 9 damage every 20 ticks while you stand in it. Also a light source. |
 
 - **Acid reads as acid and hurts.** **(not met yet: the look and the slow are built; the damage is
-  still 11 every 24 ticks, to be raised in the balance pass.)**
+  still 11 every 24 ticks. The harness shows acid is not a balance factor in house FFAs, so raising
+  it is a look-and-feel call; see `docs/TUNING.md`.)**
   - Look: an opaque, sunken liquid, darker toward the centre, a slowly churning surface, bubbles
     that rise and pop, a few bright glints, thin toxic fumes, a corroded scorched rim, only a faint
     glow. Blood and floor never show through.
@@ -573,8 +587,8 @@ them):
 | Doug's Corner | WARHAMMER | SHOCKWAVE |
 | Shrine Hog Hortense | WARHAMMER | WHIRLWIND |
 | Brenda From Accounts | TWIN_DAGGERS | SHADOWSTEP |
-| Kevin, Professional Bait | TWIN_DAGGERS | DASH |
-| Uncle Hatchet | THROWING_AXES | DASH |
+| Kevin, Professional Bait | TWIN_DAGGERS | SECOND_WIND |
+| Uncle Hatchet | THROWING_AXES | HOOK |
 | Two-For-One Tina | THROWING_AXES | DASH |
 | Distant Cousin Pam | LONGBOW | DASH |
 | Aunt Carol Finishes Things | LONGBOW | BLOODRAGE |
@@ -674,9 +688,9 @@ them can be rebuilt exactly.
   arena), and expands to per-fighter numbers with Watch at any kill or death. One-click "Watch worst
   loss", "Watch best win" and "Watch a typical match" for the selected strategy (the gym's
   `pickMatches`) open just before the moment, with the candidate selected and the timeline
-  pre-filtered to it. Evolution generations and archive entries have Watch too. **(not met yet: an
-  archive entry plays a fresh deterministic match against the run's field, not the generation's own
-  match, because generation reports do not record their matches.)**
+  pre-filtered to it. Evolution generations and archive entries have Watch too: generations record
+  their matches, so Watch rebuilds the match the entry really played (its typical one); a run
+  without recorded matches falls back to a fresh deterministic match against the run's field.
 - **Back to the gym.** The watch view shows which report it came from ("Test report, match 7 of 20")
   and returns to the same row, flashing it.
 - **More numbers per fighter, for humans and LLMs** (beyond the report fields above): distance
@@ -692,9 +706,7 @@ them can be rebuilt exactly.
 
 ### Ratings
 
-**Showing a rating (not met yet).** The gym report appends a faint "?" after some ratings: it means
-"provisional, few rated matches", but nothing explains it (the native title tooltip is easy to miss)
-and it shifts the digits. Rule: ratings sit in a right-aligned column with tabular figures so digits
+**Showing a rating.** Ratings sit in a right-aligned column with tabular figures so digits
 line up; uncertainty is shown, not hinted: "1240 ±85" with the ± part muted; a provisional rating gets
 a small leading "new" marker in its own fixed-width slot before the number, with a proper hover card
 ("Provisional: rated from 3 matches. Settles after about 10."). Every symbol in the UI has a hover
@@ -702,7 +714,7 @@ explanation; no bare glyphs.
 
 - openskill (Plackett-Luce over FFA placements; one team per squad). New strategies start at mu 25,
   sigma 25/3. Ordinal = mu - 3 x sigma, used for sorting. Shown as `round(1000 + ordinal x 40)`, so a
-  new strategy shows 1000; the UI marks a rating as provisional ("?") while uncertain.
+  new strategy shows 1000; a rating is provisional (the "new" marker) while its sigma is above 5.
 - Updated from every rated batch match and persisted between sessions. Never assigned by hand.
 - The Room shows the leaderboard: rating, matches, wins, win rate, average place, last played.
 
@@ -981,12 +993,12 @@ chip shows only its count there ("37/100", the full line in its tooltip).
 Dead fighters get no hover card and cannot be picked in the arena; hovering a corpse shows nothing.
 They stay inspectable from the scoreboard, the kill feed and the end card.
 
-### Cinematic view (not built yet)
+### Cinematic view
 
 The scoreboard (top left) and the kill feed (top right) each collapse to a small tab at their edge
 and reopen from it; the state persists. A cinematic toggle (key `V`, and a button) hides all HUD
-chrome at once except the match clock, leaving the arena full screen; any HUD key or the toggle brings
-it back. On narrow screens (phones, below about 760 px wide) scoreboard and feed start collapsed and
+chrome at once except the match clock, folding the panels to thin edges and the timeline to a thin
+bar, so the camera frames the whole canvas; any HUD key, an edge or the toggle brings it back. On narrow screens (phones, below about 760 px wide) scoreboard and feed start collapsed and
 the timeline shrinks to a thin bar.
 
 ### Keyboard (Watch)
@@ -1004,10 +1016,13 @@ the timeline shrinks to a thin bar.
 | I | Open the full-screen fighter overview |
 | ? | Open the Codex (every screen) |
 | T, B, N, A, K | Name tags, HP bars, damage numbers, barks (off / key / all), kill stamps |
-| V, R, O, H | Vision cones (off / selected / all), steering ring and target line, fog of war, hearing ripples |
+| E, R, O, H | Vision cones (off / selected / all), steering ring and target line, fog of war, hearing ripples |
+| V | Cinematic view on / off |
 | S, M | Screen shake, mute |
 
-Shortcuts match the word the user expects (H hearing, B bars, O fog, T tags). Blood has no key.
+Shortcuts match the word the user expects (H hearing, B bars, O fog, T tags, V view); every letter
+has one meaning, and a keyboard card ("Keys" in the top bar or the View menu) lists them all. Blood
+has no key.
 Keys are ignored in text fields and with Ctrl, Cmd or Alt. Every view toggle shows a short toast
 ("Hearing ripples: on").
 
@@ -1087,24 +1102,24 @@ the match it shows totals.
 
 ### End card
 
-**"Next match" keeps the lineup (not met yet).** Today "Next match" restarts from the saved match
-setup with a new seed, so a fighter the player just brought in (from the editor, gym or import) drops
-out. Rule: the current lineup is whatever the last match used, from any source; "Next match" repeats
+**"Next match" keeps the lineup.** The current lineup is whatever the last match used, from any source; "Next match" repeats
 it with a new seed (and the next map if a map rotation is on). Every way of bringing a fighter into
 the pit updates the match setup, so the setup panel always shows the lineup that will play next.
 Fighters the player added are marked as theirs and stay pinned until removed; "Shuffle field" refills
-only the unpinned slots from the house stacks.
+only the unpinned slots from the house stacks. A room's match offers neither (it would leave the
+room's stream).
 
-**Victory moment (not built yet:** the WINNER stamp and the camera easing onto the final kill are
-built (section 2); the pose, spotlight, dimming and the quiet end card are not). After the final
+**Victory moment.** The app sends a `victory` signal once per match decided live and an `end_card`
+signal whenever the card comes or goes (a seek onto the end poses the winner at once). After the final
 kill's slow motion, the camera eases in on the winner, who strikes a victory pose (weapon raised, a little hop or flex per weapon class, a taunt
 bark) under a warm spotlight while the rest of the arena dims; confetti-of-gore optional. The crowd
 gives one big roar and then quiets down; when the end card is up, combat sounds and the crowd bed
 stop (only a soft, low ambience or silence remains). Nothing keeps rumbling after a match is over.
 
 - Shows the winner ("Gary takes the Pit."), build or squad, kills, damage, HP left, match time, up to
-  three findings, every placing with how they went out, and Next match, Watch again, Copy report for
-  LLM.
+  three findings, every placing with how they went out, what the next match plays ("Change it" opens
+  Quick matchup), and Next match, Shuffle field, Watch again, Copy report for LLM (for a room's
+  match, the host's report).
 - Timing and motion: section 2, "Round end".
 - **Inspect anyone.** On the end card (and the scoreboard after a match), click any
   fighter, the winner first in line, to open its full strategy sheet: the full-screen overview from
@@ -1121,14 +1136,16 @@ personality, plan, weapon and skill or "pick for me", whom to beat and how much 
 and glyph, each with suggestions) and wait for the answers; examples in the rulebook are syntax only
 and must never be copied. With a strategy open and no goal, the model first asks whether to design a
 brand-new fighter or improve this one. The prompt never sets `version`. Built in `src/strategy/prompt.ts`
-(`mode: 'new' | 'improve'`); the editor should offer two buttons, "New fighter with an LLM" and
-"Improve this with an LLM" (not built yet).
+(`mode: 'new' | 'improve'`); the editor offers two buttons, "New fighter with an LLM" and
+"Improve this with an LLM": each copies the prompt and opens a paste box, and the reply goes through
+the import gate and saves with origin `llm-paste` (an improved reply with the same name becomes the
+next version).
 
 - JSON editing with live validation, a problem list ("Checks") with line, column and path that jumps
   to the spot, a status bar with the issue under the caret, a point-budget meter, "What the build
-  gives you" (derived stats), version list (load, delete), Save version (Cmd/Ctrl+S), Format, Copy
-  LLM prompt (rulebook + strategy + latest report, or a fix-these-errors goal when the draft is
-  broken), Copy code, Import, Test in gym, Watch it fight.
+  gives you" (derived stats), History panel, Save version (Cmd/Ctrl+S), Format, the two LLM buttons
+  (rulebook + strategy + latest report, or a fix-these-errors goal when the draft is broken), Copy
+  code, Import, Test in gym, Watch it fight.
 - **Diagnostics in place.** Errors and warnings differ in colour and icon (an error is a red circle
   with a wavy underline, a warning an amber triangle with a dotted underline). Hovering a gutter marker or the
   underline shows that issue's message and suggested fix in a tooltip at the spot; several issues on
@@ -1143,9 +1160,9 @@ brand-new fighter or improve this one. The prompt never sets `version`. Built in
 ### Strategy builder: visual and code, both ways
 
 The strategy text stays the single source of truth: the visual builder writes minimal edits to it,
-so the player's formatting and undo survive. Views: Visual, Split, Code (persisted). **(not met yet:
-numbers can be scrubbed in the visual builder only, not in the code view; behaviours and move terms
-cannot be reordered.)**
+so the player's formatting and undo survive. Views: Visual, Split, Code (persisted). Numbers can be
+dragged sideways in the code view too (one drag is one undo step), and behaviours and move terms
+reorder by a grip or the arrow keys (order matters: the earlier behaviour wins a tied score).
 
 - **Two-way editing.** A visual editor and the code editor edit the same strategy; a change in either
   updates the other immediately. Visual parts: attribute sliders with the budget meter and colour
@@ -1163,14 +1180,12 @@ cannot be reordered.)**
   thinks, every sensor, place, zone, term, policy, attribute, weapon, skill, map, limit and formula,
   searchable, with the starter library as worked examples. Learning the game should be fun.
 
-### Versions and the library (not built yet)
+### Versions and the library
 
-Saves already record their origin (`editor`, `import`, `evolution` with generation); nothing else
-below is built. Today the store silently renumbers: saving a strategy whose JSON says `version: 140` stores it as
-"latest saved version of that name + 1", and the editor then shows "v2", so it is unclear what was
-saved and from where. One clear model:
+One clear model (built; `StrategyStore`, `src/ui/editor/versions.ts`):
 
-- **Version numbers belong to the library**, are per name, monotonic and assigned on save. The JSON
+- **Version numbers belong to the library**, are per name, monotonic (never reused, not even after a
+  delete) and assigned on save. The JSON
   `version` field is overwritten on save and never trusted on import; the editor always shows the
   library number.
 - **Origin is separate from version.** Each saved version records its parent (the version it was
@@ -1182,7 +1197,8 @@ saved and from where. One clear model:
 - **Name collisions ask.** Importing or saving under a name that exists from a different lineage
   offers "Add as new version of Slurpy Hawk" or "Save as new strategy" (with a suggested new name).
 - **History panel.** Every version with time, source, parent and a short diff of what changed
-  (attributes, behaviours, weights); "Load this version" and "Compare with current".
+  (attributes, behaviours, weights); open or delete any version, and compare any two (or one with the
+  unsaved draft) on the same seeds.
 
 ### Codex everywhere
 
@@ -1191,10 +1207,11 @@ deep links. Every hover card (editor words, attributes, sensors, map objects, we
 inspector rows) has a "Open in Codex" link that opens the Codex at that entry. Entries have stable
 URL anchors (`#codex/sensor/target.visible`), so a link can be shared and opens the right page; Esc
 returns to where the player was. Built: the top-bar entry, `?`, the anchors (opening over whatever
-screen is showing) and Esc; the editor's hover cards link in. **(not met yet: map-object cards,
-inspector rows and attribute charts have no "Open in Codex" link.)**
+screen is showing) and Esc; the editor's hover cards, inspector rows, attribute bars, weapon and
+skill names, derived stats, the strategy sheet and the end card link in. Map-object hover cards
+follow the pointer, so they say "Click it for the Codex entry" and clicking the object opens it.
 
-### Quick matchup (not built yet)
+### Quick matchup
 
 Setting up a fight from files on disk must be low friction:
 - "Add fighter" opens a slot where the player drops a `.json` file, pastes JSON or a strategy code,
@@ -1202,7 +1219,9 @@ Setting up a fight from files on disk must be low friction:
   repeats. Dropping several JSON files onto the arena or the setup panel adds them all at once.
 - Rules sit next to the lineup: map, format (free-for-all, squads with size, duel), fighter count
   (house stacks fill the rest unless turned off), time limit and sudden death, seed.
-- "Fight" starts it. The lineup stays for "Next match" (see End card).
+- "Fight" starts it. The lineup stays for "Next match" (see End card). It opens from "Quick
+  matchup" in the top bar, the end card's "Change it", and by dropping `.json` files on the arena;
+  the picks are kept between visits (gated again when read back).
 
 ### Import
 
@@ -1218,7 +1237,7 @@ min and max widths so nothing wraps badly; double-click a handle to reset (arrow
 widths persist per pane in localStorage (`poc.pane.<id>`). Panels can collapse to a thin rail. On the
 Watch screen the panels float over a full-bleed canvas that never resizes (so there is never a frame
 of stretched content) and report what they cover, so the camera frames the action in the part that
-shows (see DECISIONS). **(not met yet: the editor's side panel has no handle yet.)**
+shows (see DECISIONS).
 
 ### Attribute display
 
@@ -1249,10 +1268,14 @@ streams state; peers watch.
 - Every message is checked (types, ranges, lengths, ids; unknown fields dropped), peers are
   rate-limited and anyone pretending to be the host is ignored.
 - A per-room leaderboard (openskill, kept by the host).
-- Small and honest about its limits, and the room screen says so: no session browser, strict
-  networks need a TURN relay this prototype lacks, the host's tab runs everything.
-  **(not met yet: the inspector shows no decisions or knowledge for a streamed match; a guest who
-  joins mid-match sees no gore from before it joined; only tested with two tabs on one machine.)**
+- The host streams the selected fighter's decisions and knowledge to whoever selected it (the
+  arena's inspector shows them), sends a late joiner the gore so far, and sends each match's battle
+  report as text (the end card's "Copy report for LLM"). A host may reveal rivals' strategy codes
+  after a match (`RoomSettings.revealStrategies`, off by default). A TURN relay can be configured
+  for strict networks.
+- Small and honest about its limits, and the room screen says so: no session browser, the host's
+  tab runs everything. **(not met yet: never tested across two machines or against a live TURN
+  relay; the pass 3 room changes are tested in node only.)**
 
 ## 16. Copy and voice
 

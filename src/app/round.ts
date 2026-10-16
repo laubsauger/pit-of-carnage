@@ -11,6 +11,8 @@
 
 import type { MatchPhase, MatchSignal } from '../core';
 
+type VictorySignal = Extract<MatchSignal, { type: 'victory' }>;
+
 /** One countdown beat (3, 2, 1): the countdown lasts COUNTDOWN_BEATS x this, about 2.5 s. */
 export const COUNTDOWN_BEAT_SECONDS = 0.8;
 export const COUNTDOWN_BEATS = 3;
@@ -99,12 +101,14 @@ export class RoundFlow {
 
   /**
    * The match was decided live (stepped or played to its end): the final moment starts, once per
-   * match. A match replayed to its end again goes straight to the end card.
+   * match, and `victory` (the winner's pose, spotlight and roar) goes out with it. A match replayed
+   * to its end again goes straight to the end card, without a second victory.
    */
-  decided(): void {
+  decided(victory: VictorySignal | null = null): void {
     if (this.admired) return;
     this.admired = true;
     this.finalLeft = FINAL_SECONDS;
+    if (victory) this.queue.push(victory);
   }
 
   /**

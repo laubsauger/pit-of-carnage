@@ -32,7 +32,12 @@ export function CompareView({ outcome, onWatch }: { outcome: CompareOutcome; onW
     }
     const seat = report.roster.find((r) => r.strategyKey === strategyKey(side));
     const label = side === request.a ? nameA : nameB;
-    onWatch({ config, focusId: seat?.fighterId ?? null, origin: { label: `Compare, seed ${i + 1} of ${result.matches.length} (${label})`, tab: 'test', matchIndex: null } });
+    onWatch({
+      config,
+      focusId: seat?.fighterId ?? null,
+      origin: { label: `Compare, seed ${i + 1} of ${result.matches.length} (${label})`, tab: 'test', matchIndex: null },
+      pin: { keys: [strategyKey(side)], source: 'gym' },
+    });
   };
 
   return (

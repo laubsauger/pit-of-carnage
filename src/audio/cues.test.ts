@@ -39,7 +39,7 @@ function world(fighters: FighterState[], tick = 600): WorldState {
   return {
     tick, mapId: 'pit', fighters, projectiles: [], floor: [], props: [],
     hazards: [{ id: 'saw1', kind: 'saw', pos: { x: 300, y: 300 }, radius: 20, phase: 0, active: true, ttl: null }],
-    shrines: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: W, height: H }),
+    shrines: [], stuck: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: W, height: H }),
     finished: false, ending: null, placements: [],
   };
 }
@@ -339,5 +339,49 @@ describe('wall contact and heals', () => {
     const other = cues({ type: 'heal', tick: 600, fighterId: 'f0', amount: 40, pos: { x: 680, y: 430 }, shrineId: null })[0]!;
     expect(shrine.sound).toBe('heal');
     expect(shrine.intensity).toBeGreaterThan(other.intensity);
+  });
+});
+
+describe('victory and stuck ammo', () => {
+  // The winner's moment is one big roar; the end card itself makes no sound (the driver hushes).
+  it('roars once for the victory and stays quiet for the end card', () => {
+    const v: Cue[] = [];
+    cuesForSignal({ type: 'victory', winnerIds: ['f0'], ending: 'elimination' }, v);
+    expect(v.map((c) => c.sound)).toEqual(['crowd_roar']);
+    expect(v[0]!.intensity).toBe(1);
+    // The roar sits on the crowd bus with a minimum gap, so the final kill's own roar in the same
+    // frame and this one come out as one roar, not two stacked.
+    expect(SOUND_SPECS.crowd_roar.minGap).toBeGreaterThanOrEqual(0.2);
+    const card: Cue[] = [];
+    cuesForSignal({ type: 'end_card', shown: true, winnerIds: ['f0'] }, card);
+    expect(card).toEqual([]);
+  });
+
+  const unstick = (reason: 'pickup' | 'drop', kind: 'arrow' | 'axe' = 'arrow'): GameEvent => ({
+    type: 'ammo_unstick', tick: 600, stuckId: 's1', kind, pos: { x: 680, y: 430 }, reason, fighterId: reason === 'pickup' ? 'f0' : null, floorItemId: reason === 'drop' ? 'i1' : null,
+  });
+
+  it('yanks ammo out of a wall and clatters it to the floor when its holder is gone', () => {
+    expect(sounds(unstick('pickup'))).toEqual(['ammo_yank']);
+    expect(sounds(unstick('drop'))).toEqual(['ammo_clatter']);
+    // Axes are heavier: lower, with the metal clank.
+    const axe = cues(unstick('drop', 'axe'))[0]!;
+    const arrow = cues(unstick('drop'))[0]!;
+    expect(axe.pitch).toBeLessThan(arrow.pitch);
+    expect(axe.intensity).toBeGreaterThan(arrow.intensity);
+  });
+
+  // A stick already sounds through its projectile_end (the thunk with its quiver) or its hit: a
+  // second sound for the same impact would double it.
+  it('adds no sound of its own for a stick', () => {
+    const stick: GameEvent = { type: 'ammo_stick', tick: 600, stuckId: 's1', projectileId: 'p1', kind: 'arrow', ownerId: 'f0', pos: { x: 680, y: 430 }, angle: 0, in: { kind: 'wall' } };
+    expect(sounds(stick)).toEqual([]);
+  });
+
+  // When a pincushion dies all its arrows drop on one tick: the clatter must not machine-gun.
+  it('throttles a burst of clatters and keeps them quiet', () => {
+    expect(SOUND_SPECS.ammo_clatter.minGap).toBeGreaterThan(0.04);
+    expect(SOUND_SPECS.ammo_clatter.priority).toBeLessThan(SOUND_SPECS.hit_arrow.priority);
+    expect(cues(unstick('drop'))[0]!.gain).toBeLessThan(cues(hit('LONGBOW'))[0]!.gain);
   });
 });

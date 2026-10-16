@@ -5,16 +5,16 @@ re-run after any change to `src/core/rules.ts`. Targets come from `docs/SPEC.md`
 
 Run: seed 1. 100 seeds per duel pairing, each played twice with the seats swapped (3000 duels on pit); 100 8-fighter FFAs per map on pit, pillar_forest, catacombs, meat_grinder (400 FFAs, lineups drawn evenly from the 13 house stacks).
 
-**1 of 3 targets hold.**
+**2 of 3 targets hold.**
 
 ## Targets
 
 | Target | Measured | Result |
 | --- | --- | --- |
-| Every duel pairing wins between 35% and 65% on pit | 5 of 15 inside; outside: TWIN_DAGGERS 98% vs THROWING_AXES, TWIN_DAGGERS 95% vs ARCANE_STAFF, WARHAMMER 90% vs THROWING_AXES, GREATSWORD 89% vs THROWING_AXES, GREATSWORD 84% vs ARCANE_STAFF, LONGBOW 79% vs THROWING_AXES, TWIN_DAGGERS 76% vs LONGBOW, ARCANE_STAFF 75% vs LONGBOW, LONGBOW 73% vs WARHAMMER, ARCANE_STAFF 69% vs THROWING_AXES | FAIL |
-| Melee family wins 0.67-1.5x its fair share of FFAs on pit | 1.44x (77 wins, fair share 53.38 of 100) | PASS |
-| Ranged family wins 0.67-1.5x its fair share of FFAs on pit | 0.49x (23 wins, fair share 46.63 of 100) | FAIL |
-| Guideline: melee nominal DPS 1.5-1.8x ranged | 1.07x (melee 56.4, ranged 52.8 per second) | outside |
+| Every duel pairing wins between 35% and 65% on pit | 13 of 15 inside; outside: GREATSWORD 67% vs THROWING_AXES, TWIN_DAGGERS 67% vs LONGBOW | FAIL |
+| Melee family wins 0.67-1.5x its fair share of FFAs on pit | 1.07x (57 wins, fair share 53.38 of 100) | PASS |
+| Ranged family wins 0.67-1.5x its fair share of FFAs on pit | 0.92x (43 wins, fair share 46.63 of 100) | PASS |
+| Guideline: melee nominal DPS 1.5-1.8x ranged | 1.41x (melee 66.7, ranged 47.2 per second) | outside |
 
 ## Duels on pit
 
@@ -24,34 +24,44 @@ Win rate of the row weapon against the column weapon. **Bold**: outside 35%-65%.
 
 |  | GS | WH | TD | TA | LB | AS | Average |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| GREATSWORD | - | 35% | 49% | **89%** | 51% | **84%** | 61% |
-| WARHAMMER | 65% | - | 65% | **90%** | **28%** | 61% | 62% |
-| TWIN_DAGGERS | 52% | 36% | - | **98%** | **76%** | **95%** | 71% |
-| THROWING_AXES | **11%** | **10%** | **2%** | - | **22%** | **32%** | 15% |
-| LONGBOW | 50% | **73%** | **24%** | **79%** | - | **26%** | 50% |
-| ARCANE_STAFF | **17%** | 40% | **5%** | **69%** | **75%** | - | 41% |
+| GREATSWORD | - | 48% | 51% | **67%** | 48% | 60% | 55% |
+| WARHAMMER | 52% | - | 64% | 59% | 42% | 49% | 53% |
+| TWIN_DAGGERS | 49% | 37% | - | 63% | **67%** | 60% | 55% |
+| THROWING_AXES | **33%** | 41% | 37% | - | 41% | 60% | 42% |
+| LONGBOW | 52% | 59% | **33%** | 59% | - | 39% | 48% |
+| ARCANE_STAFF | 41% | 52% | 41% | 41% | 62% | - | 47% |
 
 ### Pairings
 
 | Pairing | Duels | First wins | Average length | Sudden death | Judges | Target |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| GREATSWORD vs WARHAMMER | 200 | 35% | 0:22 | 36% | 0 | ok |
-| GREATSWORD vs TWIN_DAGGERS | 200 | 49% | 0:23 | 38% | 0 | ok |
-| GREATSWORD vs THROWING_AXES | 200 | 89% | 0:24 | 25% | 0 | outside |
-| GREATSWORD vs LONGBOW | 200 | 51% | 0:21 | 2% | 0 | ok |
-| GREATSWORD vs ARCANE_STAFF | 200 | 84% | 0:24 | 11% | 0 | outside |
-| WARHAMMER vs TWIN_DAGGERS | 200 | 65% | 0:29 | 11% | 0 | ok |
-| WARHAMMER vs THROWING_AXES | 200 | 90% | 0:24 | 8% | 0 | outside |
-| WARHAMMER vs LONGBOW | 200 | 28% | 0:23 | 1% | 0 | outside |
-| WARHAMMER vs ARCANE_STAFF | 200 | 61% | 0:26 | 7% | 0 | ok |
-| TWIN_DAGGERS vs THROWING_AXES | 200 | 98% | 0:22 | 11% | 0 | outside |
-| TWIN_DAGGERS vs LONGBOW | 200 | 76% | 0:19 | 0% | 0 | outside |
-| TWIN_DAGGERS vs ARCANE_STAFF | 200 | 95% | 0:23 | 22% | 0 | outside |
-| THROWING_AXES vs LONGBOW | 200 | 22% | 0:24 | 4% | 0 | outside |
-| THROWING_AXES vs ARCANE_STAFF | 200 | 32% | 0:29 | 19% | 0 | outside |
-| LONGBOW vs ARCANE_STAFF | 200 | 26% | 0:21 | 1% | 0 | outside |
+| GREATSWORD vs WARHAMMER | 200 | 48% | 0:19 | 11% | 0 | ok |
+| GREATSWORD vs TWIN_DAGGERS | 200 | 51% | 0:20 | 19% | 0 | ok |
+| GREATSWORD vs THROWING_AXES | 200 | 67% | 0:23 | 25% | 0 | outside |
+| GREATSWORD vs LONGBOW | 200 | 48% | 0:23 | 2% | 0 | ok |
+| GREATSWORD vs ARCANE_STAFF | 200 | 60% | 0:19 | 12% | 0 | ok |
+| WARHAMMER vs TWIN_DAGGERS | 200 | 64% | 0:26 | 46% | 0 | ok |
+| WARHAMMER vs THROWING_AXES | 200 | 59% | 0:31 | 52% | 0 | ok |
+| WARHAMMER vs LONGBOW | 200 | 42% | 0:25 | 5% | 0 | ok |
+| WARHAMMER vs ARCANE_STAFF | 200 | 49% | 0:21 | 14% | 0 | ok |
+| TWIN_DAGGERS vs THROWING_AXES | 200 | 63% | 0:31 | 41% | 0 | ok |
+| TWIN_DAGGERS vs LONGBOW | 200 | 67% | 0:20 | 0% | 0 | outside |
+| TWIN_DAGGERS vs ARCANE_STAFF | 200 | 60% | 0:21 | 17% | 0 | ok |
+| THROWING_AXES vs LONGBOW | 200 | 41% | 0:24 | 3% | 0 | ok |
+| THROWING_AXES vs ARCANE_STAFF | 200 | 60% | 0:22 | 18% | 0 | ok |
+| LONGBOW vs ARCANE_STAFF | 200 | 39% | 0:19 | 2% | 0 | ok |
 
-All duels: average 0:24; elimination 100%; sudden death 13% (time 6, stalemate 380).
+All duels: average 0:23; elimination 100%; sudden death 18% (time 0, stalemate 527).
+
+### Ammo economy in the duels
+
+Arrows and axes stick where they hit (walls, props, bodies) and are taken back by hand; ammo in a living body is out of play until it dies. Per ranged fighter: share of its time alive with nothing to shoot, deaths with an empty quiver or out of charges, deaths while out fetching ammo (`restock`), and shots, pickups and shots left stuck in the opponent per duel.
+
+| Weapon | Duels | Dry | Deaths | Died dry | Died restocking | Shots | Pickups | Stuck in bodies |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| THROWING_AXES | 1000 | 20% | 577 | 355 (62%) | 53 (9%) | 5.4 | 1.1 | 4.2 |
+| LONGBOW | 1000 | 11% | 518 | 75 (14%) | 77 (15%) | 18.5 | 4.1 | 7.8 |
+| ARCANE_STAFF | 1000 | 7% | 532 | 83 (16%) | 0 (0%) | 11 | 0 | 0 |
 
 ## Free-for-alls
 
@@ -59,52 +69,52 @@ Fair share = the share of seats a family held in each match, summed over the mat
 
 | Map | FFAs | Melee wins / fair | Melee ratio | Ranged wins / fair | Ranged ratio | Average length | Sudden death | Endings |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| pit | 100 | 77 / 53.38 | 1.44x | 23 / 46.63 | 0.49x | 1:00 | 58% (time 5, stalemate 53) | elimination 100% |
-| pillar_forest | 100 | 61 / 53.63 | 1.14x | 39 / 46.38 | 0.84x | 1:11 | 70% (time 14, stalemate 56) | elimination 100% |
-| catacombs | 100 | 64 / 52.63 | 1.22x | 36 / 47.38 | 0.76x | 1:18 | 90% (time 5, stalemate 85) | elimination 100% |
-| meat_grinder | 100 | 44 / 55.75 | 0.79x | 56 / 44.25 | 1.27x | 0:59 | 51% (time 8, stalemate 43) | elimination 100% |
+| pit | 100 | 57 / 53.38 | 1.07x | 43 / 46.63 | 0.92x | 0:53 | 53% (time 0, stalemate 53) | elimination 100% |
+| pillar_forest | 100 | 46 / 53.63 | 0.86x | 54 / 46.38 | 1.16x | 0:59 | 60% (time 2, stalemate 58) | elimination 100% |
+| catacombs | 100 | 52 / 52.63 | 0.99x | 48 / 47.38 | 1.01x | 1:16 | 91% (time 7, stalemate 84) | elimination 100% |
+| meat_grinder | 100 | 31 / 55.75 | 0.56x | 69 / 44.25 | 1.56x | 0:48 | 34% (time 1, stalemate 33) | elimination 100% |
 
 ### Weapons, all maps
 
 | Weapon | Family | Seats | Wins | Fair share | Ratio |
 | --- | --- | ---: | ---: | ---: | ---: |
-| GREATSWORD | melee | 739 | 54 | 92.38 | 0.58x |
-| WARHAMMER | melee | 492 | 157 | 61.5 | 2.55x |
-| TWIN_DAGGERS | melee | 492 | 35 | 61.5 | 0.57x |
-| THROWING_AXES | ranged | 493 | 10 | 61.63 | 0.16x |
-| LONGBOW | ranged | 492 | 36 | 61.5 | 0.59x |
-| ARCANE_STAFF | ranged | 492 | 108 | 61.5 | 1.76x |
+| GREATSWORD | melee | 739 | 64 | 92.38 | 0.69x |
+| WARHAMMER | melee | 492 | 104 | 61.5 | 1.69x |
+| TWIN_DAGGERS | melee | 492 | 18 | 61.5 | 0.29x |
+| THROWING_AXES | ranged | 493 | 7 | 61.63 | 0.11x |
+| LONGBOW | ranged | 492 | 71 | 61.5 | 1.15x |
+| ARCANE_STAFF | ranged | 492 | 136 | 61.5 | 2.21x |
 
 ### House stacks, all maps
 
 | Strategy | Weapon | FFAs | Wins | Win rate | Average place |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Doug's Corner | WARHAMMER | 246 | 80 | 33% | 3.11 |
-| The Unpaid Intern | ARCANE_STAFF | 246 | 49 | 20% | 3.48 |
-| Shrine Hog Hortense | WARHAMMER | 246 | 77 | 31% | 3.58 |
-| Mortar Mildred | ARCANE_STAFF | 246 | 59 | 24% | 3.87 |
-| Aunt Carol Finishes Things | LONGBOW | 246 | 23 | 9% | 4.07 |
-| Sir Clanksworth | GREATSWORD | 246 | 45 | 18% | 4.24 |
-| Big Lad Steve | GREATSWORD | 246 | 5 | 2% | 4.59 |
-| Distant Cousin Pam | LONGBOW | 246 | 13 | 5% | 4.82 |
-| Brenda From Accounts | TWIN_DAGGERS | 246 | 27 | 11% | 4.92 |
-| Apologetic Gary | GREATSWORD | 247 | 4 | 2% | 4.93 |
-| Kevin, Professional Bait | TWIN_DAGGERS | 246 | 8 | 3% | 5.62 |
-| Uncle Hatchet | THROWING_AXES | 246 | 6 | 2% | 5.62 |
-| Two-For-One Tina | THROWING_AXES | 247 | 4 | 2% | 5.66 |
+| Doug's Corner | WARHAMMER | 246 | 68 | 28% | 2.96 |
+| The Unpaid Intern | ARCANE_STAFF | 246 | 67 | 27% | 3.38 |
+| Aunt Carol Finishes Things | LONGBOW | 246 | 50 | 20% | 3.65 |
+| Mortar Mildred | ARCANE_STAFF | 246 | 69 | 28% | 3.75 |
+| Shrine Hog Hortense | WARHAMMER | 246 | 36 | 15% | 4.08 |
+| Sir Clanksworth | GREATSWORD | 246 | 42 | 17% | 4.32 |
+| Big Lad Steve | GREATSWORD | 246 | 14 | 6% | 4.48 |
+| Distant Cousin Pam | LONGBOW | 246 | 21 | 9% | 4.48 |
+| Apologetic Gary | GREATSWORD | 247 | 8 | 3% | 5.1 |
+| Brenda From Accounts | TWIN_DAGGERS | 246 | 15 | 6% | 5.2 |
+| Uncle Hatchet | THROWING_AXES | 246 | 4 | 2% | 5.66 |
+| Two-For-One Tina | THROWING_AXES | 247 | 3 | 1% | 5.71 |
+| Kevin, Professional Bait | TWIN_DAGGERS | 246 | 3 | 1% | 5.73 |
 
 ## Current numbers (src/core/rules.ts)
 
-Nominal DPS: base damage x power (18) over the full attack cycle with haste 16; one target, no crits, backstabs, splash, point-blank penalty or armor. Ranged ammo limits are not included.
+Nominal DPS: base damage x power (18) over the full attack cycle with haste 16; one target, no crits, backstabs, splash, point-blank penalty or armor. Ranged ammo limits are not included. Ammo: count, and one back every N ticks where it refills. Hand: damage of the hand weapon a ranged fighter hits with up close and when out of ammo (fists otherwise).
 
-| Weapon | Family | Range | Damage | Windup | Cycle (ticks) | Nominal DPS | Move x | Lunge | Ammo |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| GREATSWORD | melee | 82 | 30 | 14 | 47 | 54.8 | 1.06 | 30 | - |
-| WARHAMMER | melee | 70 | 26 | 15 | 49 | 45.6 | 1.02 | 24 | - |
-| TWIN_DAGGERS | melee | 56 | 16 | 6 | 20 | 68.7 | 1.15 | 36 | - |
-| THROWING_AXES | ranged | 265 | 21 | 8 | 28 | 64.4 | 1 | 0 | 4 |
-| LONGBOW | ranged | 430 | 20 | 11 | 37 | 46.4 | 0.96 | 0 | 10 |
-| ARCANE_STAFF | ranged | 375 | 25 | 12 | 45 | 47.7 | 0.95 | 0 | 4 |
+| Weapon | Family | Range | Damage | Windup | Cycle (ticks) | Nominal DPS | Move x | Lunge | Ammo | Hand |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GREATSWORD | melee | 82 | 35 | 14 | 42 | 71.6 | 1.06 | 30 | - | - |
+| WARHAMMER | melee | 76 | 30 | 15 | 44 | 58.6 | 1 | 24 | - | - |
+| TWIN_DAGGERS | melee | 58 | 22 | 6 | 27 | 70 | 1.08 | 22 | - | - |
+| THROWING_AXES | ranged | 265 | 21 | 8 | 41 | 44 | 1 | 0 | 5 | 28 |
+| LONGBOW | ranged | 430 | 20 | 11 | 40 | 43 | 0.96 | 0 | 12 (+1 / 240) | - |
+| ARCANE_STAFF | ranged | 375 | 26 | 12 | 41 | 54.5 | 0.95 | 0 | 4 (+1 / 65) | 16 |
 
 | Combat rule | Value | What it does |
 | --- | ---: | --- |

@@ -2,19 +2,20 @@
 //
 // Room: host or join a peer-to-peer room by code, bring strategies, watch the host's matches and
 // the room's leaderboard. Below it, this browser's own gym leaderboard. The WebRTC code loads only
-// when a room opens.
+// when a room opens. Network settings take an optional TURN relay for strict networks, kept only in
+// this browser.
 import { useCallback, useEffect, useState } from 'react';
-import { displayRating } from '../../core';
 import type { GameController, LeaderboardEntry } from '../../core';
 import { codeFromSearch, newClientId, newRoomCode, parseRoomCode } from '../../net/code';
 import { cleanName } from '../../net/protocol';
 import { hostStorageKey, hostedRooms } from '../../net/saved';
 import type { HostedRoom } from '../../net/saved';
 import type { RoomSession } from '../../net/session';
-import { canWatchStreams } from '../../net/watch';
+import { checkTurnConfig, readTurn, turnHost, turnUrlProblem, writeTurn } from '../../net/turn';
+import type { TurnConfig } from '../../net/turn';
 import { formatAgo, formatPercent, strategyLabel } from '../format';
 import { readStored, useStoredState, writeStored } from '../hooks';
-import { isProvisional } from '../reports';
+import { RatingCell } from '../widgets';
 import { InRoom } from './InRoom';
 import { defaultName } from './model';
 import './room.css';
@@ -70,6 +71,12 @@ export function RoomScreen({ controller, active }: { controller: GameController;
   const [last, setLast] = useState<LastRoom>(() => readStored(LAST_KEY, null, sanitizeLast));
   const [invite] = useState<string | null>(() => (typeof window === 'undefined' ? null : codeFromSearch(window.location.search)));
   const [hosted, setHosted] = useState<HostedRoom[]>(readHosted);
+  const [turn, setTurn] = useState<TurnConfig | null>(() => readTurn(localStore()));
+  const saveTurn = useCallback((next: TurnConfig | null) => {
+    const ok = writeTurn(localStore(), next);
+    setTurn(next);
+    return ok;
+  }, []);
   // Back in the lobby (or back on the screen): the hosted list may have changed.
   useEffect(() => {
     if (!session && active) setHosted(readHosted());
@@ -94,7 +101,7 @@ export function RoomScreen({ controller, active }: { controller: GameController;
       setOpening(role === 'host' ? `Opening room ${code}…` : `Joining room ${code}…`);
       try {
         const { openRoom } = await import('../../net/room');
-        const s = await openRoom({ role, code, name: clean, clientId: tabClientId(), storage: localStore() });
+        const s = await openRoom({ role, code, name: clean, clientId: tabClientId(), storage: localStore(), turn });
         setSession(s);
         const next = { code, role };
         setLast(next);
@@ -106,12 +113,12 @@ export function RoomScreen({ controller, active }: { controller: GameController;
         setOpening(null);
       }
     },
-    [name],
+    [name, turn],
   );
 
   const leave = useCallback(() => {
     if (!session) return;
-    if (canWatchStreams(controller)) controller.watchStream(null);
+    controller.watchStream(null);
     session.leave();
     setSession(null);
   }, [session, controller]);
@@ -127,9 +134,12 @@ export function RoomScreen({ controller, active }: { controller: GameController;
   return (
     <div className="room rm">
       {session ? (
-        <InRoom session={session} controller={controller} active={active} onLeave={leave} />
+        <InRoom session={session} controller={controller} active={active} relay={turn ? turnHost(turn) : null} onLeave={leave} />
       ) : (
-        <Lobby name={name} setName={setName} opening={opening} problem={problem} invite={invite} last={last} hosted={hosted} onOpen={open} onForget={forget} />
+        <Lobby
+          name={name} setName={setName} opening={opening} problem={problem} invite={invite} last={last} hosted={hosted} onOpen={open} onForget={forget}
+          turn={turn} onTurn={saveTurn}
+        />
       )}
       <LocalBoard controller={controller} active={active} />
     </div>
@@ -150,9 +160,12 @@ type LobbyProps = {
   hosted: HostedRoom[];
   onOpen: (role: 'host' | 'peer', code: string) => void;
   onForget: (code: string) => void;
+  turn: TurnConfig | null;
+  /** Keep (or forget, null) the relay; false when this browser's storage refused it. */
+  onTurn: (turn: TurnConfig | null) => boolean;
 };
 
-function Lobby({ name, setName, opening, problem, invite, last, hosted, onOpen, onForget }: LobbyProps) {
+function Lobby({ name, setName, opening, problem, invite, last, hosted, onOpen, onForget, turn, onTurn }: LobbyProps) {
   const [code, setCode] = useState(invite ?? '');
   const [codeProblem, setCodeProblem] = useState<string | null>(null);
   const busy = opening !== null;
@@ -262,6 +275,8 @@ function Lobby({ name, setName, opening, problem, invite, last, hosted, onOpen, 
       {opening ? <div className="rm-opening">{opening}</div> : null}
       {problem ? <div className="rm-problem">{problem}</div> : null}
 
+      <NetworkSettings turn={turn} onTurn={onTurn} />
+
       <section className="rm-limits">
         <h2>How rooms work, honestly</h2>
         <ul>
@@ -270,21 +285,104 @@ function Lobby({ name, setName, opening, problem, invite, last, hosted, onOpen, 
             There is no session browser and no account: the code is the only way in.
           </li>
           <li>
-            <b>Some networks will not connect.</b> Strict office, school and mobile networks block direct connections. Those
-            need a TURN relay, which this prototype does not have.
+            <b>Some networks will not connect directly.</b> Strict office, school and mobile networks block direct
+            connections. Players behind one need a TURN relay: enter one under Network settings. The game does not provide
+            one.
           </li>
           <li>
             <b>The host runs everything.</b> Matches are simulated only in the host's browser and streamed to the rest. If
             the host leaves, the room pauses until they reopen it with the same code.
           </li>
           <li>
-            <b>Strategies stay private.</b> Every strategy passes the same gate on the host as anywhere else. Other players see
-            its name, weapon and skill, never the strategy itself.
+            <b>Strategies stay private unless the host says otherwise.</b> Every strategy passes the same gate on the host as
+            anywhere else. Other players see its name, weapon and skill, never the strategy itself. A host can turn on
+            "Reveal strategies after each match"; then everyone gets the codes of every finished match, and the room shows
+            that it is on before you add anything.
           </li>
           <li>Up to 8 people, 3 strategies each. Empty seats go to the house stacks.</li>
         </ul>
       </section>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Network settings: the optional TURN relay
+// ---------------------------------------------------------------------------------------------
+
+function NetworkSettings({ turn, onTurn }: { turn: TurnConfig | null; onTurn: (turn: TurnConfig | null) => boolean }) {
+  const [url, setUrl] = useState(turn?.url ?? '');
+  const [username, setUsername] = useState(turn?.username ?? '');
+  const [credential, setCredential] = useState(turn?.credential ?? '');
+  const [answer, setAnswer] = useState<{ ok: boolean; line: string } | null>(null);
+
+  const save = () => {
+    const why = turnUrlProblem(url);
+    const next = why ? null : checkTurnConfig({ url, username, credential });
+    if (!next) {
+      setAnswer({ ok: false, line: why ?? 'The user name or password has characters a relay cannot take.' });
+      return;
+    }
+    const kept = onTurn(next);
+    setAnswer({
+      ok: true,
+      line: kept
+        ? `Rooms you open or join from now on relay through ${turnHost(next)} when a direct connection fails.`
+        : `Using ${turnHost(next)} until you close this tab (this browser would not store it).`,
+    });
+  };
+  const remove = () => {
+    onTurn(null);
+    setUrl('');
+    setUsername('');
+    setCredential('');
+    setAnswer({ ok: true, line: 'Relay removed. Rooms connect directly again.' });
+  };
+
+  return (
+    <details className="rm-net" open={turn !== null}>
+      <summary>
+        Network settings
+        {turn ? <span className="chip">TURN relay: {turnHost(turn)}</span> : null}
+      </summary>
+      <p className="rm-sub">
+        Strict networks (offices, schools, many mobile carriers) block the direct connections rooms use, and the room
+        never finds its host. A TURN relay gets through by passing the traffic through a server. Enter one you can use (your
+        own coturn, or a hosted TURN service). Only players behind a strict network need it. It is stored in this browser
+        only and never sent to the room.
+      </p>
+      <form
+        className="rm-turn"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <label className="field rm-turn-url">
+          <span>TURN address</span>
+          <input className="input" value={url} spellCheck={false} placeholder="turn:relay.example.com:3478" onChange={(e) => setUrl(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>User name</span>
+          <input className="input" value={username} spellCheck={false} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Password</span>
+          <input className="input" type="password" value={credential} autoComplete="new-password" onChange={(e) => setCredential(e.target.value)} />
+        </label>
+        <div className="rm-turn-actions">
+          <button type="submit" className="btn">
+            Use this relay
+          </button>
+          {turn ? (
+            <button type="button" className="btn btn-quiet" onClick={remove}>
+              Remove relay
+            </button>
+          ) : null}
+        </div>
+      </form>
+      {answer ? <div className={`rm-answer ${answer.ok ? 'good' : 'bad'}`}>{answer.line}</div> : null}
+    </details>
   );
 }
 
@@ -336,13 +434,7 @@ function LocalBoard({ controller, active }: { controller: GameController; active
                 <td className="rank">{i + 1}</td>
                 <td>{strategyLabel(e.name, e.version)}</td>
                 <td className="num">
-                  {displayRating(e.rating)}
-                  {isProvisional(e.rating) ? (
-                    <span className="faint" title="Still settling: the rating will move a lot with more matches.">
-                      {' '}
-                      ?
-                    </span>
-                  ) : null}
+                  <RatingCell rating={e.rating} matches={e.matches} />
                 </td>
                 <td className="num">{e.matches}</td>
                 <td className="num">{e.wins}</td>
@@ -355,8 +447,8 @@ function LocalBoard({ controller, active }: { controller: GameController; active
         </table>
       )}
       <p className="footnote">
-        Ratings use openskill over finishing order, so beating seven fighters counts for more than beating one. A "?" marks a
-        rating that is still settling. The number climbs as it settles, even at average play.
+        Ratings use openskill over finishing order, so beating seven fighters counts for more than beating one. A "new" mark
+        flags a rating that is still settling; the ± part is how far it may still move. The number climbs as it settles, even at average play.
       </p>
     </section>
   );

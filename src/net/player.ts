@@ -8,48 +8,28 @@
  *
  * Feed lines and timeline marks are built from the events with the sim's own copy (`killLine`,
  * `announcements`), so a streamed match reads like a local one.
+ *
+ * Beyond the frames: the selected fighter's thinking (`select`, `decision`, `knowledge`, fed by
+ * the host's `mind` messages), the gore of a match joined late (`history`), and after the end the
+ * battle report as text and, when the host reveals them, the strategies as codes.
+ *
+ * Whatever the host sends, everything kept here is bounded (frames, events waiting for the arena,
+ * the catch-up log, feed lines, timeline marks, minds), so a hostile or broken host cannot grow a
+ * guest's memory without limit.
  */
 
-import { LIVE_EVENT_TICKS, PICKUP_RULES } from '../core';
-import type { FeedItem, GameEvent, Limb, MapDef, MatchSignal, TimelineMark, UiFighter, WorldState } from '../core';
+import { LIVE_EVENT_TICKS, PICKUP_RULES, matchWinners } from '../core';
+import type {
+  Decision, FeedItem, GameEvent, KnownFighter, Limb, MapDef, MatchSignal, MatchStream, StreamOutput, StreamView, TimelineMark, WorldState,
+} from '../core';
+import { FINAL_SECONDS } from '../app/round';
 import { announcements, killLine } from '../sim';
+import type { DecodedMind } from './mind';
+import type { RevealedStrategy } from './protocol';
 import type { DecodedFrame, StreamMatchInfo } from './snapshot';
 
-/** What the arena draws this animation frame. */
-export type StreamOutput = {
-  prev: WorldState;
-  curr: WorldState;
-  /** 0..1 from `prev` to `curr`. */
-  alpha: number;
-  /** Events that became due, in order, with `curr` as their state. After a reset: the match so far first (catch-up). */
-  events: GameEvent[];
-  /** Match-flow beats that happened since the last call (real time; never for catch-up). */
-  signals: MatchSignal[];
-  /** The host's game-time factor (its slow motion; 0 in hit-stop). */
-  timeScale: number;
-  /** A new match, or the arena was (re)attached: call `setMap(map)` and `reset()` before the events. */
-  reset: boolean;
-};
-
-/** The streamed match as the HUD needs it (same fields as `UiSnapshot` where they overlap). */
-export type StreamView = {
-  matchId: number;
-  mapId: string;
-  seed: number;
-  format: StreamMatchInfo['format'];
-  timeLimitTicks: number;
-  tick: number;
-  suddenDeath: boolean;
-  fighters: UiFighter[];
-  feed: FeedItem[];
-  marks: TimelineMark[];
-  finished: boolean;
-  placements: string[];
-  /** 3, 2, 1 before the fight, 0 for FIGHT! (about 0.6 s), else null. */
-  countdown: number | null;
-  /** Room member who brought each fighter's strategy (fighter id -> name; null = house stack). */
-  owners: Readonly<Record<string, string | null>>;
-};
+// What the arena draws and the HUD view of a streamed match are part of the controller contract.
+export type { StreamOutput, StreamView } from '../core';
 
 export const PLAYER_TIMING = {
   /** How far behind the newest frame playback runs, to ride out network jitter. */
@@ -62,9 +42,18 @@ export const PLAYER_TIMING = {
   maxFrames: 120,
   /** FIGHT! shows this long after the countdown. */
   fightFlashMs: 600,
-  /** Events kept for a catch-up repaint when the arena attaches mid-match. */
+  /** Events kept for a catch-up repaint when the arena attaches mid-match (and waiting for an arena). */
   maxLog: 8000,
+  /** Feed lines and timeline marks kept per match (oldest go first). */
+  maxFeed: 400,
+  maxMarks: 600,
+  /** Minds of the selected fighter kept (about 2 s at the host's 10 a second). */
+  maxMinds: 24,
+  /** After a match decided live, the end card shows this long after the final moment began (as in local matches). */
+  finalMs: FINAL_SECONDS * 1000,
 } as const;
+
+const NO_KNOWLEDGE: readonly KnownFighter[] = Object.freeze([]);
 
 /** A hit at least this big gets a timeline mark (same threshold as the local match session). */
 const BIG_HIT_DAMAGE = 45;
@@ -73,7 +62,7 @@ const LIMB_WORD: Readonly<Record<Limb, string>> = { armR: 'weapon arm', armL: 'l
 
 type Slot = DecodedFrame & { seq: number };
 
-export class StreamPlayer {
+export class StreamPlayer implements MatchStream {
   private _info: StreamMatchInfo | null = null;
   private _map: MapDef | null = null;
   private frames: Slot[] = [];
@@ -91,6 +80,20 @@ export class StreamPlayer {
   private shown: WorldState | null = null;
   private lastCursor = 0;
   private owners: Record<string, string | null> = {};
+  /** Frames pushed for the current match (a gore history is only taken before the first). */
+  private framesThisMatch = 0;
+  /** A late joiner's gore history, waiting for the first frame to name its fighters in the feed. */
+  private historyToChronicle: GameEvent[] | null = null;
+  private victorySent = false;
+  /** Local ms when the finished state was first shown, or null. */
+  private finishedAt: number | null = null;
+  private endShown = false;
+  /** Signals owed to the arena from outside `advance` (the end card going away for a new match). */
+  private owed: MatchSignal[] = [];
+  private selectedId: string | null = null;
+  private minds: DecodedMind[] = [];
+  private report_: string | null = null;
+  private revealed_: RevealedStrategy[] | null = null;
   readonly feed: FeedItem[] = [];
   readonly marks: TimelineMark[] = [];
   private listeners = new Set<() => void>();
@@ -138,11 +141,27 @@ export class StreamPlayer {
     this.fought = false;
     this.shown = null;
     this.owners = Object.fromEntries(info.fighters.map((f) => [f.id, f.owner]));
+    this.resetMatchExtras();
     this.feed.length = 0;
     this.marks.length = 0;
     this.feed.push({ tick: 0, text: openingLine(info, map), kind: 'info', ids: [] });
     this.view_ = null;
     this.emit();
+  }
+
+  /** Everything tied to one match beyond its frames: selection, minds, history, the end, report. */
+  private resetMatchExtras(): void {
+    this.framesThisMatch = 0;
+    this.historyToChronicle = null;
+    if (this.endShown) this.owed.push({ type: 'end_card', shown: false, winnerIds: [] });
+    this.endShown = false;
+    this.victorySent = false;
+    this.finishedAt = null;
+    // Fighter ids repeat from match to match: an old selection would pick a stranger.
+    this.selectedId = null;
+    this.minds = [];
+    this.report_ = null;
+    this.revealed_ = null;
   }
 
   /** No match any more (the host left): previews and the arena get nothing until the next `begin`. */
@@ -154,6 +173,7 @@ export class StreamPlayer {
     this.log = [];
     this.shown = null;
     this.view_ = null;
+    this.resetMatchExtras();
     this.feed.length = 0;
     this.marks.length = 0;
     this.emit();
@@ -184,7 +204,12 @@ export class StreamPlayer {
       else if (-late > PLAYER_TIMING.delayMs) this.extraDelay = Math.max(0, this.extraDelay - PLAYER_TIMING.catchUpMsPerFrame);
     }
     this.frames.push(slot);
-    this.chronicle(slot);
+    this.framesThisMatch++;
+    if (this.historyToChronicle) {
+      this.chronicle(this.historyToChronicle, slot.state);
+      this.historyToChronicle = null;
+    }
+    this.chronicle(slot.events, slot.state);
     while (this.frames.length > PLAYER_TIMING.maxFrames) {
       const old = this.frames.shift()!;
       if (old.seq > this.deliveredSeq) {
@@ -192,6 +217,8 @@ export class StreamPlayer {
         this.deliveredSeq = old.seq;
       }
     }
+    // Nobody is drawing (no arena, or a hidden tab): what waits for it is capped like the log.
+    trimFront(this.missed, PLAYER_TIMING.maxLog);
     const finished = frame.state.finished && !last?.state.finished;
     if (finished) this.emit();
   }
@@ -245,9 +272,11 @@ export class StreamPlayer {
     this.needsReset = false;
     const events = reset ? [...this.log, ...fresh] : fresh;
     for (const e of fresh) this.log.push(e);
-    if (this.log.length > PLAYER_TIMING.maxLog) this.log.splice(0, this.log.length - PLAYER_TIMING.maxLog);
+    trimFront(this.log, PLAYER_TIMING.maxLog);
 
-    const signals = this.beats(h, fresh, target.state);
+    const signals = this.owed;
+    this.owed = [];
+    for (const s of this.beats(h, nowMs, fresh, target.state, reset)) signals.push(s);
     const alpha = b ? clamp01((h - a.ms) / (b.ms - a.ms)) : 1;
     const timeScale = b ? a.scale + (b.scale - a.scale) * alpha : a.scale;
     const ticked = !this.shown || this.shown.tick !== target.state.tick;
@@ -257,8 +286,11 @@ export class StreamPlayer {
     return { prev: a.state, curr: target.state, alpha, events, signals, timeScale, reset };
   }
 
-  /** Countdown, FIGHT and the final kill, each once, when they happen in real time. */
-  private beats(h: number, fresh: readonly GameEvent[], state: WorldState): MatchSignal[] {
+  /**
+   * Countdown, FIGHT, the final kill and the victory, each once, when they happen in real time;
+   * and the end card whenever it comes or goes (again after a reset, which wipes the arena).
+   */
+  private beats(h: number, nowMs: number, fresh: readonly GameEvent[], state: WorldState, reset: boolean): MatchSignal[] {
     const info = this._info!;
     const out: MatchSignal[] = [];
     const remaining = info.fightAt - h;
@@ -275,8 +307,107 @@ export class StreamPlayer {
       if (e.type === 'kill' && e.final && e.tick >= state.tick - LIVE_EVENT_TICKS) {
         out.push({ type: 'final_kill', killerId: e.killerId, victimId: e.victimId, pos: { ...e.pos } });
       }
+      if (e.type === 'match_end' && !this.victorySent && e.tick >= state.tick - LIVE_EVENT_TICKS) {
+        this.victorySent = true;
+        out.push({ type: 'victory', winnerIds: matchWinners(state), ending: e.ending });
+      }
+    }
+    if (state.finished && this.finishedAt === null) this.finishedAt = nowMs;
+    // Decided live: the final moment first. Joined on a decided match: the end card at once.
+    const shown = this.finishedAt !== null && (!this.victorySent || nowMs - this.finishedAt >= PLAYER_TIMING.finalMs);
+    if (shown !== this.endShown || (reset && shown)) {
+      this.endShown = shown;
+      out.push({ type: 'end_card', shown, winnerIds: shown ? matchWinners(state) : [] });
     }
     return out;
+  }
+
+  /** The end card is up for the match on screen (see the `end_card` signal). */
+  get endCardShown(): boolean {
+    return this.endShown;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The selected fighter's thinking (opt-in: the host sends minds only for a selected fighter)
+  // -------------------------------------------------------------------------------------------
+
+  /** The inspector shows `id` (null: nobody). Unknown ids select nobody. */
+  select(id: string | null): void {
+    const next = id !== null && this._info?.fighters.some((f) => f.id === id) ? id : null;
+    if (next === this.selectedId) return;
+    this.selectedId = next;
+    this.minds = [];
+  }
+
+  /** The fighter whose thinking this viewer asks the host for, or null. */
+  get selected(): string | null {
+    return this.selectedId;
+  }
+
+  /** A checked mind from the host; kept only when it is about the selected fighter of this match. */
+  pushMind(m: DecodedMind): void {
+    if (!this._info || m.matchId !== this._info.id || m.fighterId !== this.selectedId) return;
+    const last = this.minds.at(-1);
+    if (last && m.ms <= last.ms) return;
+    this.minds.push(m);
+    trimFront(this.minds, PLAYER_TIMING.maxMinds);
+  }
+
+  /** The newest mind at or before what is on screen (minds run on the frames' clock). */
+  private mindShown(id: string): DecodedMind | null {
+    if (id !== this.selectedId) return null;
+    for (let i = this.minds.length - 1; i >= 0; i--) if (this.minds[i]!.ms <= this.lastCursor) return this.minds[i]!;
+    return null;
+  }
+
+  /** The selected fighter's latest decision as shown, or null (other fighters: always null). */
+  decision(id: string): Decision | null {
+    return this.mindShown(id)?.decision ?? null;
+  }
+
+  /** What the selected fighter knows about the others as shown (other fighters: nothing). */
+  knowledge(id: string): readonly KnownFighter[] {
+    return this.mindShown(id)?.knowledge ?? NO_KNOWLEDGE;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // A late joiner's gore, and what comes after the end
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * The gore of the current match before this viewer joined (checked `gore` events, in order).
+   * Taken only before the first frame, so nothing is painted twice; returns whether it was taken.
+   */
+  history(matchId: number, events: readonly GameEvent[]): boolean {
+    if (!this._info || matchId !== this._info.id || this.framesThisMatch > 0 || this.historyToChronicle || events.length === 0) return false;
+    const kept = events.slice(-PLAYER_TIMING.maxLog);
+    this.log = [...kept, ...this.log];
+    trimFront(this.log, PLAYER_TIMING.maxLog);
+    this.historyToChronicle = kept;
+    this.needsReset = true;
+    return true;
+  }
+
+  /** The battle report of the current match as text (from the host, after the end). */
+  setReport(matchId: number, text: string): void {
+    if (this._info && matchId === this._info.id) this.report_ = text;
+  }
+
+  /** "Copy report" for the match on screen: its battle report as text, or null until the host sends it. */
+  reportText(): string | null {
+    return this.report_;
+  }
+
+  /** The strategies of the current match as codes, when the host reveals them. */
+  setRevealed(matchId: number, list: readonly RevealedStrategy[]): void {
+    if (!this._info || matchId !== this._info.id) return;
+    const ids = new Set(this._info.fighters.map((f) => f.id));
+    this.revealed_ = list.filter((r) => ids.has(r.fighterId));
+  }
+
+  /** Revealed strategies of the match on screen (fighter id and code), or null when the host keeps them. */
+  revealed(): readonly RevealedStrategy[] | null {
+    return this.revealed_;
   }
 
   /** 3, 2, 1 before the fight, 0 for FIGHT!, else null (at the last `advance`). */
@@ -329,13 +460,12 @@ export class StreamPlayer {
   }
 
   /** Feed lines and timeline marks for one frame's events (the UI shows those up to the shown tick). */
-  private chronicle(f: DecodedFrame): void {
-    const state = f.state;
+  private chronicle(events: readonly GameEvent[], state: WorldState): void {
     const name = (fid: string | null) => state.fighters.find((x) => x.id === fid)?.name ?? '';
     const behaviour = (fid: string | null) => state.fighters.find((x) => x.id === fid)?.behaviour || null;
-    const said = announcements(f.events, state);
+    const said = announcements(events, state);
     for (const line of said) this.feed.push(line);
-    for (const e of f.events) {
+    for (const e of events) {
       switch (e.type) {
         case 'kill': {
           const text = killLine(e, state);
@@ -381,7 +511,14 @@ export class StreamPlayer {
           break;
       }
     }
+    trimFront(this.feed, PLAYER_TIMING.maxFeed);
+    trimFront(this.marks, PLAYER_TIMING.maxMarks);
   }
+}
+
+/** Drop the oldest entries beyond `max`. */
+function trimFront<T>(list: T[], max: number): void {
+  if (list.length > max) list.splice(0, list.length - max);
 }
 
 /** Countdown beat for `remaining` ms until the fight: 3, 2, 1, then 0 while FIGHT! shows, then null. */

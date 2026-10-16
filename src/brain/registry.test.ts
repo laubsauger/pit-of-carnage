@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MATCH_RULES, Rng, TICK_HZ, angleDiff, angleTo } from '../core';
+import { MATCH_RULES, Rng, TICK_HZ, WEAPONS, angleDiff, angleTo } from '../core';
 import type { KnownFighter, PerceptionView, Strategy, Vec2 } from '../core';
 import { requireValidStrategy } from '../strategy';
 import { createBrain } from './brain';
@@ -226,12 +226,12 @@ describe('sensor ranges', () => {
     const range = (name: string, b: typeof melee | typeof bow) => sensorRange(SENSOR_INDEX.get(name)!, b);
     expect(range('self.ranged', melee)).toEqual({ lo: 0, hi: 0 });
     expect(range('self.ranged', bow)).toEqual({ lo: 1, hi: 1 });
-    expect(range('self.ammo', bow)).toEqual({ lo: 0, hi: 10 });
+    expect(range('self.ammo', bow)).toEqual({ lo: 0, hi: WEAPONS.LONGBOW.ammo });
     expect(range('self.ammo', melee)).toEqual({ lo: 99, hi: 99 });
     // A view that breaks the build (more arrows than a quiver holds) still reads inside the range.
     const d = createBrain(requireValidStrategy(strat({ score: '1', move: [], attack: 'never' }, 'LONGBOW')))
       .think(view(fighter({ weapon: 'LONGBOW', ammo: 40 }), [], fakeWorld()), new Rng(1));
-    expect(d.sensors['self.ammo']).toBe(10);
+    expect(d.sensors['self.ammo']).toBe(WEAPONS.LONGBOW.ammo);
   });
 
 });

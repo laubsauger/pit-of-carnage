@@ -401,3 +401,33 @@ export function finaleStamp(snap: Pick<UiSnapshot, 'phase' | 'ending' | 'placeme
   if (snap.format === 'squads') return { title: judged ? "JUDGES' DECISION" : 'WINNERS', name: `Squad ${String.fromCharCode(65 + winner.squad)}`, color: winner.color };
   return { title: judged ? "JUDGES' DECISION" : 'WINNER', name: winner.name, color: winner.color };
 }
+
+/** Below this window width (phones, small tablets) scoreboard and feed start folded and the timeline is a thin bar. */
+export const NARROW_PX = 760;
+
+/** What folds on the Watch screen: each side panel to its thin edge, the timeline to a bar. */
+export type HudFolds = { scoreboard: boolean; feed: boolean; inspector: boolean; thinTimeline: boolean; reportInsets: boolean };
+
+/**
+ * Cinematic view (V) folds scoreboard, feed and inspector to their edges and the timeline to a thin
+ * bar, and reports no insets so the camera frames the whole canvas. Narrow screens fold the
+ * scoreboard and the feed until the viewer opens them (`opened`), and keep the timeline thin.
+ * Otherwise each panel follows its own collapse switch.
+ */
+export function hudFolds(o: {
+  cinematic: boolean;
+  narrow: boolean;
+  scoreboardCollapsed: boolean;
+  feedCollapsed: boolean;
+  inspectorCollapsed: boolean;
+  opened: { scoreboard: boolean; feed: boolean };
+}): HudFolds {
+  if (o.cinematic) return { scoreboard: true, feed: true, inspector: true, thinTimeline: true, reportInsets: false };
+  return {
+    scoreboard: o.scoreboardCollapsed || (o.narrow && !o.opened.scoreboard),
+    feed: o.feedCollapsed || (o.narrow && !o.opened.feed),
+    inspector: o.inspectorCollapsed,
+    thinTimeline: o.narrow,
+    reportInsets: true,
+  };
+}

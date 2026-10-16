@@ -12,50 +12,15 @@
  */
 
 import { TICK_HZ, strategyKey } from '../core';
-import type { BatchRequest, MatchReport, Strategy, StrategyAggregate } from '../core';
+import type { BatchRequest, CompareMatch, CompareRequest, CompareResult, CompareRow, MatchReport, Strategy, StrategyAggregate } from '../core';
 import { aggregateReports } from './aggregate';
 import { buildBatch, type MatchRunner } from './batch';
 import type { FindingContext } from './findings';
 import { clock, plural, round, versionedName } from './format';
 import { RatingBook } from './ratings';
 
-export type CompareRequest = {
-  a: Strategy;
-  b: Strategy;
-  /** Opponents for both (any entry with A's or B's key is left out, so the two never meet). */
-  field: Strategy[];
-  mapIds: string[];
-  matches: number;
-  fighters: number;
-  seed: number;
-};
-
-/** One shared seed: both finishes (1 = won). */
-export type CompareMatch = { seed: number; mapId: string; fighters: number; placeA: number; placeB: number };
-
-/**
- * One line of the side-by-side table. `a` and `b` are in `unit` (a share is 0..1, `seconds` are
- * seconds); null when there is no value (never engaged). `better` names the side that did better
- * when "better" has a direction (more wins, less damage taken), null when level or a matter of
- * style (idle time, distance, time near walls).
- */
-export type CompareRow = { label: string; unit: 'share' | 'number' | 'seconds' | 'px' | 'place'; a: number | null; b: number | null; better: 'a' | 'b' | null };
-
-export type CompareResult = {
-  /** A's matches; `reportsB[i]` is the same seed, map and lineup with B in A's seat. */
-  reportsA: MatchReport[];
-  reportsB: MatchReport[];
-  a: StrategyAggregate;
-  b: StrategyAggregate;
-  matches: CompareMatch[];
-  /** Shared seeds where A finished ahead of B, behind it, or level. */
-  aAhead: number;
-  bAhead: number;
-  level: number;
-  rows: CompareRow[];
-  /** Plain sentences from the numbers, e.g. "Lurking Daggers v3 finished ahead of v2 on 7 of 10 shared seeds (2 behind, 1 level)." */
-  findings: string[];
-};
+// The request and result shapes are part of the gym contract (`GymApi.compare`) and live in src/core.
+export type { CompareMatch, CompareRequest, CompareResult, CompareRow } from '../core';
 
 export type CompareOptions = {
   mapName?: FindingContext['mapName'];

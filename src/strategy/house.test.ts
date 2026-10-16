@@ -42,7 +42,7 @@ describe('house stacks', () => {
     for (const s of HOUSE_STACKS) expect(validateStrategy(s).issues, s.name).toEqual([]);
   });
 
-  it('cover all six weapons and all five skills with at least ten distinct fighters', () => {
+  it('cover every weapon and every skill with at least ten distinct fighters', () => {
     expect(HOUSE_STACKS.length).toBeGreaterThanOrEqual(10);
     expect(new Set(HOUSE_STACKS.map((s) => s.build.weapon))).toEqual(new Set(WEAPON_IDS));
     expect(new Set(HOUSE_STACKS.map((s) => s.build.skill))).toEqual(new Set(SKILL_IDS));

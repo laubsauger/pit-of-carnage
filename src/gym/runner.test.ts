@@ -27,7 +27,7 @@ function fakeMatch(endTick: number | null, ending: MatchEnding = 'judges') {
   return (c: MatchConfig): Match => {
     const state: WorldState = {
       tick: 0, mapId: c.mapId, fighters: [fighter(0, 100), fighter(1, 250)], projectiles: [], floor: [], props: [], hazards: [],
-      shrines: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: 1360, height: 860 }), finished: false, ending: null, placements: [],
+      shrines: [], stuck: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: 1360, height: 860 }), finished: false, ending: null, placements: [],
     };
     const over = () => endTick !== null && state.tick >= endTick;
     return {

@@ -4,7 +4,7 @@ import type { MatchSummary } from '../../net';
 import { defaultName, historyLine, latestPerName, statusLine } from './model';
 
 const saved = (name: string, version: number): SavedStrategy =>
-  ({ id: `${name}-${version}`, name, version, savedAt: 0, strategy: {} as SavedStrategy['strategy'], code: '', parentId: null, origin: null });
+  ({ id: `${name}-${version}`, name, version, savedAt: 0, strategy: {} as SavedStrategy['strategy'], code: '', parentId: null, parentVersion: null, origin: null });
 
 describe('room screen model', () => {
   it('offers only the newest version of each strategy for the pool', () => {

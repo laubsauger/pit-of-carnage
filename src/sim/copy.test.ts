@@ -178,4 +178,14 @@ describe('announcer', () => {
     expect(line!.text).toMatch(/\.$/);
     expect(announcements([{ type: 'heal', tick: 700, fighterId: 'f0', amount: 20, pos: { x: 0, y: 0 }, shrineId: null }], state)).toEqual([]);
   });
+
+  // Strategy names come from strangers: a name is printed as written, never read as a pattern.
+  it('prints names with $ patterns or holes literally in the shrine and judges lines', () => {
+    const odd = { ...state, fighters: state.fighters.map((f, i) => (i === 0 ? { ...f, name: 'Cash$&Carry {a}' } : f)) };
+    const [heal] = announcements([{ type: 'heal', tick: 700, fighterId: 'f0', amount: 86, pos: { x: 680, y: 430 }, shrineId: 'shrine' }], odd);
+    expect(heal!.text).toContain('Cash$&Carry {a}');
+    const [judged] = announcements([{ type: 'judges_decision', tick: 9000, survivors: [{ id: 'f0', hpFraction: 0.43, damageDealt: 212, kills: 2 }] }], odd);
+    expect(judged!.text).toContain('Cash$&Carry {a}');
+  });
 });
+

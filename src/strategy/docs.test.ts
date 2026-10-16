@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SKILL_IDS, WEAPON_IDS } from '../core';
+import { SKILL_IDS, WEAPONS, WEAPON_IDS } from '../core';
 import { ATTACK_POLICIES, FIGHTER_REFS, GUARDS, MOVE_TERMS, PLACES, SENSORS, STEERING, ZONES } from '../brain';
 import { HOUSE_STACKS } from './house';
 import { STARTER_LIBRARY } from './library';
@@ -139,7 +139,8 @@ describe('rulebook', () => {
   });
 
   it('prints the real numbers from the rule tables', () => {
-    expect(book).toContain('| GREATSWORD | melee | 82 | 30 | 42 | 14/11/12 |');
+    const gs = WEAPONS.GREATSWORD;
+    expect(book).toContain(`| GREATSWORD | melee | ${gs.range} | ${gs.damage} | ${gs.cooldown} | ${gs.windup}/${gs.strike}/${gs.recovery} |`);
     expect(book).toContain('+0.25');
     expect(book).toContain(`throttle(x) = clamp((x - ${STEERING.throttleDead})`);
   });
@@ -191,9 +192,34 @@ describe('buildLlmPrompt', () => {
     expect(p).toContain(`keep "name": ${JSON.stringify(s.name)}`);
   });
 
+  // "New fighter with an LLM": the open strategy and its report stay out, or the model hands
+  // back a lightly edited copy of whatever happened to be in the editor.
   it('designs from scratch in new mode even with a strategy open', () => {
-    const p = buildLlmPrompt({ strategy: HOUSE_STACKS[2]!, mode: 'new' });
+    const s = HOUSE_STACKS[2]!;
+    const p = buildLlmPrompt({ strategy: s, reportText: 'Doug placed 7th.', mode: 'new' });
     expect(p).toMatch(/Design a brand-new fighter/);
     expect(p).not.toMatch(/starter sample/);
+    expect(p).not.toContain('## Strategy open in the editor');
+    expect(p).not.toContain(formatJson(s));
+    expect(p).not.toContain('Doug placed 7th.');
+  });
+
+  // "Improve this with an LLM": the player already chose, so the model asks what to change (using
+  // the report) instead of asking whether to start over, and keeps the fighter's name.
+  it('improves the open strategy with its report when asked to improve', () => {
+    const s = HOUSE_STACKS[2]!;
+    const p = buildLlmPrompt({ strategy: s, reportText: 'Doug placed 7th. Killed most by Distant Cousin Pam.', mode: 'improve' });
+    expect(p).toMatch(/Improve the strategy below/);
+    expect(p).toMatch(/drawn from the battle report/);
+    expect(p).not.toMatch(/a brand-new fighter \(then run the interview/);
+    expect(p).toContain(formatJson(s));
+    expect(p).toContain('Killed most by Distant Cousin Pam');
+    expect(p).toContain(`keep "name": ${JSON.stringify(s.name)}`);
+    expect(p).toContain('Leave out "version"');
+  });
+
+  // The reply comes back through Import, which reads one ```json block in place.
+  it('tells the model its whole reply is pasted back', () => {
+    expect(buildLlmPrompt({ mode: 'new' })).toMatch(/pastes your whole reply back/);
   });
 });

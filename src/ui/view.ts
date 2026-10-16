@@ -20,8 +20,9 @@ export type ViewGroup = { title: string; items: readonly ViewItem[] };
 
 /**
  * Shortcuts match the word the user expects (spec): H hearing ripples, B HP bars, O fog, T name
- * tags. The rest use the first free letter of the label: F is follow and C is kept for the camera,
- * so barks are A. Blood has no key: it is set once, not flipped mid-match.
+ * tags, V cinematic view. The rest use the first free letter of the label: F is follow, C the camera
+ * and I the overview, so barks are A and vision cones E (eyes). Blood has no key: it is set once,
+ * not flipped mid-match.
  */
 export const VIEW_GROUPS: readonly ViewGroup[] = [
   {
@@ -41,7 +42,7 @@ export const VIEW_GROUPS: readonly ViewGroup[] = [
     title: 'What they know',
     items: [
       {
-        kind: 'choice', key: 'cones', label: 'Vision cones', shortcut: 'V',
+        kind: 'choice', key: 'cones', label: 'Vision cones', shortcut: 'E',
         options: [{ value: 'off', label: 'Off' }, { value: 'selected', label: 'Selected' }, { value: 'all', label: 'All' }],
       },
       { kind: 'toggle', key: 'rings', label: 'Steering ring and target line', shortcut: 'R' },
@@ -59,6 +60,10 @@ export const VIEW_GROUPS: readonly ViewGroup[] = [
       },
       { kind: 'volume', key: 'volume', label: 'Volume', shortcut: 'M' },
     ],
+  },
+  {
+    title: 'Screen',
+    items: [{ kind: 'toggle', key: 'cinematic', label: 'Cinematic view', hint: 'Panels fold to the edges, the clock stays', shortcut: 'V' }],
   },
 ];
 

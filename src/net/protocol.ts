@@ -5,18 +5,24 @@
  * `parseHostMessage`); anything malformed is dropped and counted, never half-used.
  *
  * Strategies travel only from a peer to the host, as a strategy code, and are gated there with
- * source `network`. Other peers see a strategy's name, version, weapon and skill, never its text.
+ * source `network`. Other peers see a strategy's name, version, weapon and skill, never its text,
+ * unless the host turns on `RoomSettings.revealStrategies`: then the strategies of each finished
+ * match go to everyone as codes (`reveal`).
  */
 
-import { MAX_FIGHTERS, MIN_FIGHTERS } from '../core';
+import { DEFAULT_FIGHTERS, MAX_FIGHTERS, MIN_FIGHTERS } from '../core';
 import type { SkillId, WeaponId } from '../core';
 import { MAX_STRATEGY_TEXT } from '../strategy';
 import { BAD, CONTROL, MATCH_ENDINGS, NO_REFS, SKILL_IDS, WEAPON_IDS, bool, id, int, isObj, listOf, nullable, num, oneOf, shape, text } from './check';
 import type { Bad, Check } from './check';
 import { MAX_NAME } from './snapshot';
 
-/** Bumped whenever a message or frame layout changes; a mismatched peer is refused with a reason. */
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bumped whenever a message or frame layout changes; a mismatched peer is refused with a reason.
+ * 2: stuck ammo in frames, the reveal setting, `watch` / `mind` (the selected fighter's thinking),
+ * `gore` (blood so far for late joiners), `report` and `reveal` after a match.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /** Room size: the host plus seven. The host uploads every frame to every peer. */
 export const MAX_MEMBERS = 8;
@@ -28,6 +34,8 @@ export const MAX_BOARD = 96;
 export const MAX_HISTORY = 12;
 /** Longest display name a member may pick. */
 export const MAX_MEMBER_NAME = 24;
+/** Longest battle report text (a 16-fighter report runs to about 40 000 characters). */
+export const MAX_REPORT_TEXT = 200_000;
 
 export type RoomMember = {
   /** Host-assigned and stable across a member's leave and rejoin (`m0` is the host). */
@@ -75,7 +83,18 @@ export type RoomSettings = {
   fillWithHouse: boolean;
   /** Matches keep coming. Off: the current match finishes, then the room waits. */
   running: boolean;
+  /**
+   * After each match, everyone gets the strategies that fought in it as codes. Off by default:
+   * strategy theft is a real concern, and only the host decides. The one flag behind the reveal.
+   */
+  revealStrategies: boolean;
 };
+
+/** Settings of a new room (and of a reopened room for any field it did not store). */
+export const DEFAULT_ROOM_SETTINGS: Readonly<RoomSettings> = { fighters: DEFAULT_FIGHTERS, mapId: 'rotate', fillWithHouse: true, running: true, revealStrategies: false };
+
+/** One strategy of a finished match, revealed (`RoomSettings.revealStrategies`). */
+export type RevealedStrategy = { fighterId: string; code: string };
 
 export type MatchSummary = {
   id: number;
@@ -105,7 +124,12 @@ export type PeerMessage =
   | { t: 'hello'; v: number; name: string; client: string }
   /** A strategy code (`PIT2.…`) or JSON text; the host gates it with source `network`. */
   | { t: 'add'; strategy: string }
-  | { t: 'remove'; entry: string };
+  | { t: 'remove'; entry: string }
+  /**
+   * The fighter this peer's inspector shows in match `match` (null: none). The host answers with
+   * that fighter's decisions and knowledge (`mind` messages) until the selection changes.
+   */
+  | { t: 'watch'; match: number; fighter: string | null };
 
 /** Host to peer (frames are checked separately against their match, see `decodeFrame`). */
 export type HostMessage =
@@ -115,12 +139,27 @@ export type HostMessage =
   /** Reply to `add`: one plain line, ok or the reason it was refused. */
   | { t: 'added'; ok: boolean; line: string }
   | { t: 'refused'; reason: string }
-  | { t: 'bye'; reason: string };
+  | { t: 'bye'; reason: string }
+  /** The battle report of finished match `match` as text (`reportToText`), for "Copy report". */
+  | { t: 'report'; match: number; text: string }
+  /** The strategies of finished match `match`, as codes (only with `revealStrategies` on). */
+  | { t: 'reveal'; match: number; list: RevealedStrategy[] };
+
+// Frames (`t: 'frame'`), minds (`t: 'mind'`) and gore (`t: 'gore'`) name fighters of a match and are
+// checked against it (see `decodeFrame`, `decodeMind`, `decodeGore`).
 
 const ownerName = text(MAX_NAME, 1);
 /** Client ids are random secrets made by `newClientId`. */
 const clientId: Check<string> = (v) => (typeof v === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : BAD);
 const line = text(400);
+const matchNo = int(0, 1e9);
+
+/** Report text: lines and tabs allowed, every other control character refused. */
+const REPORT_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+const reportText: Check<string> = (v) => (typeof v === 'string' && v.length > 0 && v.length <= MAX_REPORT_TEXT && !REPORT_CONTROL.test(v) ? v : BAD);
+
+/** A strategy code as `encodeStrategyCode` makes them; whoever uses it gates it again. */
+const strategyCode: Check<string> = (v) => (typeof v === 'string' && v.length <= MAX_STRATEGY_TEXT && /^PIT2\.[A-Za-z0-9_-]+$/.test(v) ? v : BAD);
 
 /** A display name as typed, trimmed and squeezed; null when nothing usable is left. */
 export function cleanName(raw: string): string | null {
@@ -144,6 +183,11 @@ export function parsePeerMessage(v: unknown): PeerMessage | null {
       const entry = id(v.entry, r);
       return entry === BAD ? null : { t: 'remove', entry };
     }
+    case 'watch': {
+      const match = matchNo(v.match, r);
+      const fighter = nullable(id)(v.fighter, r);
+      return match === BAD || fighter === BAD ? null : { t: 'watch', match, fighter };
+    }
     default:
       return null;
   }
@@ -158,7 +202,8 @@ const boardRow = shape<BoardRow>({
   key: text(200, 1), name: ownerName, version: int(1, 1e9), owner: nullable(ownerName), mu: num(-1e4, 1e4), sigma: num(0, 1e4),
   matches: int(0, 1e9), wins: int(0, 1e9), avgPlace: num(0, 64), kills: int(0, 1e9),
 });
-const settings = shape<RoomSettings>({ fighters: int(MIN_FIGHTERS, MAX_FIGHTERS), mapId: id, fillWithHouse: bool, running: bool });
+const settings = shape<RoomSettings>({ fighters: int(MIN_FIGHTERS, MAX_FIGHTERS), mapId: id, fillWithHouse: bool, running: bool, revealStrategies: bool });
+const revealed = shape<RevealedStrategy>({ fighterId: id, code: strategyCode });
 const summary = shape<MatchSummary>({
   id: int(0, 1e9), mapId: id, ending: oneOf(MATCH_ENDINGS), ticks: int(0, 1e9), fighters: int(0, 64), winner: nullable(ownerName),
   winnerOwner: nullable(ownerName), winnerKills: int(0, 1000),
@@ -207,6 +252,17 @@ export function parseHostMessage(v: unknown): HostMessage | null {
     case 'bye': {
       const reason = line(v.reason, r);
       return ok(reason) ? { t: v.t, reason } : null;
+    }
+    case 'report': {
+      const match = matchNo(v.match, r);
+      const t = reportText(v.text, r);
+      return ok(match) && ok(t) ? { t: 'report', match, text: t } : null;
+    }
+    case 'reveal': {
+      const match = matchNo(v.match, r);
+      const list = listOf(revealed, MAX_FIGHTERS)(v.list, r);
+      if (!ok(match) || !ok(list) || new Set(list.map((x) => x.fighterId)).size !== list.length) return null;
+      return { t: 'reveal', match, list };
     }
     default:
       return null;

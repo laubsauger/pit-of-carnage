@@ -9,6 +9,7 @@ import type { ValidationIssue } from '../../core';
 import { ENEMIES_WORD, FIGHTER_REFS, PICKUP_ARG_WORDS, PLACES, ZONES } from '../../brain';
 import { SEVERITY_SVG, suggestionLine } from './issues';
 import { argsOf, defaultCall, parseCall, printCall, replaceToken, scrubbed } from './exprtext';
+import { dragSteps } from './scrub';
 import type { Call, CallArg } from './exprtext';
 import { lexExpr, wordKind } from './language';
 import type { Slot } from './language';
@@ -146,15 +147,6 @@ export function IssueLine({ issues }: { issues: readonly ValidationIssue[] }) {
 // ---------------------------------------------------------------------------------------------
 // Numbers
 // ---------------------------------------------------------------------------------------------
-
-/** Pixels of drag per step; Shift moves ten steps at a time, Alt a tenth. */
-const PX_PER_STEP = 4;
-
-function dragSteps(e: { clientX: number; shiftKey: boolean; altKey: boolean }, startX: number): number {
-  const raw = (e.clientX - startX) / PX_PER_STEP;
-  const mul = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
-  return Math.round(raw * mul);
-}
 
 /**
  * A number you drag sideways to change, or click to type. `step` is the unit one drag step moves;

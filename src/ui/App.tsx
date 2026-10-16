@@ -3,7 +3,8 @@
 // screens, and those stay mounted while hidden, so a running batch or a half-written strategy
 // survives switching tabs.
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import type { BackgroundJob, GameController, MatchConfig, Strategy } from '../core';
+import { rulesFromConfig } from '../core';
+import type { BackgroundJob, GameController, Lineup, LineupSource, MatchConfig, MatchRules, QuickMatchup, Strategy } from '../core';
 import { HOUSE_STACKS } from '../strategy';
 import { ErrorBoundary } from './ErrorBoundary';
 import { GymScreen } from './gym/GymScreen';
@@ -14,7 +15,8 @@ import { RoomScreen } from './room/RoomScreen';
 import { BRAND_URL } from './brand';
 import { codexIdFromHash } from './codexLink';
 import { isEditableTarget } from './keys';
-import { buildPool, defaultSetup, randomSeed, sanitizeSetup } from './setup';
+import { MATCHUP_STORAGE_KEY, defaultMatchup, lineupForWatch, sanitizeMatchup, storeMatchup } from './lineup';
+import type { StoredMatchup } from './lineup';
 import { SplashScreen } from './SplashScreen';
 import { Toaster, toast } from './toast';
 import { WatchScreen } from './watch/WatchScreen';
@@ -42,10 +44,34 @@ export type WatchOrigin = {
  * Open a match in the arena. `tick`: start there instead of at the countdown (a kill or a death
  * with its lead-in). `focusId`: select that fighter, which narrows the timeline to their moments.
  */
-export type WatchRequest = { config: MatchConfig; tick?: number; focusId?: string | null; origin?: WatchOrigin | null };
+export type WatchRequest = {
+  config: MatchConfig;
+  tick?: number;
+  focusId?: string | null;
+  origin?: WatchOrigin | null;
+  /**
+   * The strategies the player brought in (`strategyKey`s: the ones under test, the editor's draft):
+   * pinned in the lineup with `source`, so "Next match" keeps them. Without it every entrant is kept.
+   */
+  pin?: { keys: readonly string[]; source: LineupSource };
+};
 
-/** The match the UI last put in the arena, with where it came from. */
-export type CurrentMatch = { config: MatchConfig; origin: WatchOrigin | null };
+/**
+ * The match the UI last put in the arena: each fighter's strategy in entrant order (fighter i is
+ * entrant i), the seed it was started with (a match started elsewhere has another), and the gym
+ * report it came from.
+ */
+export type CurrentMatch = { strategies: readonly Strategy[]; seed: number; origin: WatchOrigin | null };
+
+/** How the Watch screen starts matches; each throws when the gate refuses a strategy. */
+export type MatchStarter = {
+  /** Quick matchup's Fight, and the first match from the stored matchup. */
+  matchup: (m: QuickMatchup) => void;
+  /** Same lineup, new seed (the next map with rotation on). */
+  next: () => void;
+  /** Redraw the unpinned field, then play. */
+  shuffle: () => void;
+};
 
 const asGymTab = (v: unknown, fallback: GymTab): GymTab => (v === 'editor' || v === 'test' || v === 'evolve' ? v : fallback);
 
@@ -59,10 +85,12 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
   const [screen, go] = useHashScreen();
   const gpu = useWebGpu();
   const [saved, refreshSaved] = useSavedStrategies(controller);
-  const pool = useMemo(() => buildPool(houseStacks, saved), [houseStacks, saved]);
-  const [setup, setSetup] = useStoredState('poc.setup.v1', () => defaultSetup(randomSeed()), sanitizeSetup);
+  // The lineup and rules kept between visits: the player's picks stay pinned across reloads.
+  const [matchup, setMatchup] = useStoredState<StoredMatchup>(MATCHUP_STORAGE_KEY, defaultMatchup, sanitizeMatchup);
   const [gymTab, setGymTab] = useStoredState<GymTab>('poc.gym.tab', () => 'editor', asGymTab);
   const [current, setCurrent] = useState<CurrentMatch | null>(null);
+  // "Quick matchup" in the top bar: numbered so the same request twice still opens it.
+  const [matchupRequest, setMatchupRequest] = useState(0);
   // Requests into the Gym, numbered so the same request twice still lands.
   const [reportFocus, setReportFocus] = useState<{ matchIndex: number | null; n: number } | null>(null);
   const [openRequest, setOpenRequest] = useState<{ strategy: Strategy; n: number } | null>(null);
@@ -91,13 +119,45 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
     if (codexIdFromHash(window.location.hash) !== null) window.history.replaceState(null, '', `#${screen}`);
   }, [screen]);
 
-  /** Every match the UI starts goes through here, so the Watch screen knows its strategies. Throws when the gate refuses it. */
-  const play = useCallback(
-    (config: MatchConfig, origin: WatchOrigin | null = null) => {
-      controller.startMatch(config);
-      setCurrent({ config, origin });
+  /**
+   * After every start: what is playing (the controller's lineup is the filled one, in entrant order)
+   * and the matchup to keep (the lineup is whatever the last match used, from any source).
+   */
+  const remember = useCallback(
+    (origin: WatchOrigin | null, rules: MatchRules) => {
+      const lineup: Lineup = controller.getLineup();
+      setCurrent({ strategies: lineup.fighters.map((f) => f.strategy), seed: controller.getSnapshot().seed, origin });
+      setMatchup(storeMatchup(lineup, rules));
     },
-    [controller],
+    [controller, setMatchup],
+  );
+
+  /** A match from a config (gym, editor): it brings its lineup with it. Throws when the gate refuses it. */
+  const play = useCallback(
+    (config: MatchConfig, origin: WatchOrigin | null = null, lineup?: Lineup) => {
+      controller.startMatch(config, lineup);
+      remember(origin, { ...rulesFromConfig(config), rotateMaps: matchup.rules.rotateMaps });
+    },
+    [controller, remember, matchup.rules.rotateMaps],
+  );
+
+  const starter = useMemo<MatchStarter>(
+    () => ({
+      matchup: (m) => {
+        controller.startMatchup(m);
+        remember(null, m.rules);
+      },
+      next: () => {
+        controller.nextMatch();
+        remember(null, { ...matchup.rules, mapId: controller.getSnapshot().mapId });
+      },
+      shuffle: () => {
+        controller.shuffleField();
+        controller.nextMatch();
+        remember(null, { ...matchup.rules, mapId: controller.getSnapshot().mapId });
+      },
+    }),
+    [controller, remember, matchup.rules],
   );
 
   // Watch a match from the Gym. A config the controller refuses (a strategy that fails the gate)
@@ -105,7 +165,8 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
   const watch = useCallback(
     (req: WatchRequest) => {
       try {
-        play(req.config, req.origin ?? null);
+        const lineup = req.pin ? lineupForWatch(req.config, new Set(req.pin.keys), req.pin.source, houseStacks) : undefined;
+        play(req.config, req.origin ?? null, lineup);
       } catch (err) {
         toast(err instanceof Error ? err.message : 'Could not start the match.');
         return;
@@ -119,7 +180,7 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
       if (req.focusId) controller.select(req.focusId);
       go('watch');
     },
-    [controller, go, play],
+    [controller, go, play, houseStacks],
   );
 
   const backToGym = useCallback(
@@ -161,6 +222,17 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
               {t.label}
             </a>
           ))}
+          <button
+            type="button"
+            className="tab-matchup"
+            onClick={() => {
+              go('watch');
+              setMatchupRequest((n) => n + 1);
+            }}
+            title="Set up a fight: your fighters (saved, files, pasted codes), map, format, rules and seed"
+          >
+            <span className="long">Quick </span>matchup
+          </button>
           <a href="#codex" className="tab-codex" title="The Codex: every rule, sensor, place and word, with examples (?)">
             Codex
           </a>
@@ -174,11 +246,12 @@ export function App({ controller, houseStacks = HOUSE_STACKS }: Props) {
             controller={controller}
             active={screen === 'watch'}
             gpu={gpu}
-            setup={setup}
-            setSetup={setSetup}
-            pool={pool}
+            matchup={matchup}
+            houseStacks={houseStacks}
+            saved={saved}
             current={current}
-            play={play}
+            starter={starter}
+            matchupRequest={matchupRequest}
             onBackToGym={backToGym}
             onOpenInGym={openInGym}
           />

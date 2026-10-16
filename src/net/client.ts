@@ -5,24 +5,38 @@
  * decoded against the announced match and fed to the stream player.
  *
  * Trust: the room trusts its host for which match it shows (the host simulates; that is the point
- * of host-authoritative), never for the shape of what it sends.
+ * of host-authoritative), never for the shape of what it sends, nor for how much or how often:
+ * every browser's messages are rate-limited here too, and everything kept is bounded (see
+ * `StreamPlayer`), so a hostile host can neither freeze a guest nor grow its memory without limit.
  */
 
-import type { StrategySource } from '../core';
+import { matchHardCapTicks } from '../core';
+import type { MapDef, StrategySource } from '../core';
 import { encodeStrategyCode, loadStrategy } from '../strategy';
 import { isObj } from './check';
+import { decodeGore } from './gore';
+import { decodeMind } from './mind';
 import { StreamPlayer } from './player';
 import { PROTOCOL_VERSION, parseHostMessage, parsePeerMessage } from './protocol';
-import type { RoomSettings, RoomState } from './protocol';
-import { ViewState } from './session';
-import type { RoomSession, RoomStatus, RoomView } from './session';
+import type { HostMessage, RoomSettings, RoomState } from './protocol';
+import { ViewState, keepExtras } from './session';
+import type { MatchExtras, RoomSession, RoomStatus, RoomView } from './session';
 import { decodeFrame, parseMatchInfo } from './snapshot';
 import type { StreamMatchInfo } from './snapshot';
 import type { Transport } from './transport';
-import type { MapDef } from '../core';
 
 /** After this long without a host, the room says what might be wrong. */
 export const HOST_SEARCH_MS = 12_000;
+
+/**
+ * Messages one browser may send us in a burst, and refilled per second. A host sends about 20
+ * frames, 10 minds and 4 room states a second; anything far beyond that is dropped unread.
+ */
+export const INBOUND_BURST = 240;
+export const INBOUND_PER_SECOND = 120;
+
+/** Shortest gap between two `watch` messages (the inspector's selection; the latest one wins). */
+const WATCH_MS = 250;
 
 export type ClientOptions = {
   code: string;
@@ -47,6 +61,11 @@ export class RoomClient implements RoomSession {
   private searchingSince: number;
   private warned = false;
   private readonly view: ViewState;
+  private readonly buckets = new Map<string, { tokens: number; at: number }>();
+  /** The selection last told to the host (match id -1: not yet told this host anything). */
+  private sentWatch: { match: number; fighter: string | null } = { match: -1, fighter: null };
+  private lastWatchAt = -Infinity;
+  private extrasList: MatchExtras[] = [];
 
   constructor(opts: ClientOptions) {
     this.code = opts.code;
@@ -95,16 +114,45 @@ export class RoomClient implements RoomSession {
   }
 
   pump(): void {
+    this.syncWatch();
+    this.searchTimeout();
+    this.view.flush();
+  }
+
+  extras(matchId: number): MatchExtras | null {
+    return this.extrasList.find((x) => x.matchId === matchId) ?? null;
+  }
+
+  private searchTimeout(): void {
     if (this.status !== 'looking' || this.warned) return;
     if (this.now() - this.searchingSince < HOST_SEARCH_MS) return;
     this.warned = true;
     const peers = this.t.peers().length;
     this.view.say(
       peers === 0
-        ? `Nobody is in room ${this.code} yet. Check the code with the host. If it is right, one of your networks may block direct connections (this prototype has no TURN relay).`
+        ? `Nobody is in room ${this.code} yet. Check the code with the host. If it is right, one of your networks may block direct connections: a TURN relay (Network settings in the lobby) gets through.`
         : `Connected to ${peers} ${peers === 1 ? 'player' : 'players'}, but no host answered. The host may have closed the room.`,
       'bad',
     );
+  }
+
+  /** Tell the host which fighter the inspector shows, when that changed (at most every `WATCH_MS`). */
+  private syncWatch(): void {
+    const match = this.player.info?.id;
+    if (!this.host || match === undefined) return;
+    const fighter = this.player.selected;
+    const sent = this.sentWatch;
+    if (sent.match === match && sent.fighter === fighter) return;
+    // A new match starts with nobody selected on both sides: nothing to say.
+    if (sent.match !== match && fighter === null) {
+      this.sentWatch = { match, fighter };
+      return;
+    }
+    const now = this.now();
+    if (now - this.lastWatchAt < WATCH_MS) return;
+    this.lastWatchAt = now;
+    this.sentWatch = { match, fighter };
+    this.t.send({ t: 'watch', match, fighter }, this.host);
   }
 
   leave(): void {
@@ -113,15 +161,27 @@ export class RoomClient implements RoomSession {
     this.host = null;
     this.t.leave();
     this.view.changed();
+    this.view.flush(); // the pump stops with the room
+  }
+
+  /** Token bucket per sender: a flood is dropped (and counted) before anything parses it. */
+  private allow(from: string): boolean {
+    const now = this.now();
+    const b = this.buckets.get(from) ?? { tokens: INBOUND_BURST, at: now };
+    b.tokens = Math.min(INBOUND_BURST, b.tokens + ((now - b.at) / 1000) * INBOUND_PER_SECOND);
+    b.at = now;
+    this.buckets.set(from, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
   }
 
   private receive(raw: unknown, from: string): void {
     if (this.status === 'closed') return;
-    if (isObj(raw) && raw.t === 'frame') {
+    if (!this.allow(from)) return this.view.reject();
+    if (isObj(raw) && (raw.t === 'frame' || raw.t === 'mind' || raw.t === 'gore')) {
       if (from !== this.host || !this.match) return this.view.reject();
-      const frame = decodeFrame(raw, this.match.info, this.match.map);
-      if (!frame) return this.view.reject();
-      this.player.push(frame, this.now());
+      if (!this.matchData(raw)) this.view.reject();
       return;
     }
     const msg = parseHostMessage(raw);
@@ -141,6 +201,7 @@ export class RoomClient implements RoomSession {
       this.host = from;
       this.me = msg.member;
       this.status = 'connected';
+      this.sentWatch = { match: -1, fighter: null }; // a host (maybe reopened) that knows nothing of us yet
       this.view.say(back ? 'The host is back.' : `Connected to room ${this.code}.`, 'good');
       return;
     }
@@ -181,12 +242,58 @@ export class RoomClient implements RoomSession {
       case 'bye':
         this.lostHost(msg.reason);
         break;
+      case 'report':
+      case 'reveal':
+        this.afterMatch(msg);
+        break;
       default:
         break;
     }
   }
 
+  /** A frame, a mind or a gore summary of the current match, checked against it. False when refused. */
+  private matchData(raw: Record<string, unknown>): boolean {
+    const { info, map } = this.match!;
+    const cap = matchHardCapTicks(info.timeLimitTicks) + 600;
+    if (raw.t === 'frame') {
+      const frame = decodeFrame(raw, info, map);
+      if (frame) this.player.push(frame, this.now());
+      return frame !== null;
+    }
+    if (raw.t === 'mind') {
+      const mind = decodeMind(raw, info, cap);
+      if (mind) this.player.pushMind(mind);
+      return mind !== null;
+    }
+    const gore = decodeGore(raw, info, cap);
+    if (gore) this.player.history(gore.matchId, gore.events);
+    return gore !== null;
+  }
+
+  /** The report or the revealed strategies of the match that just ended (each kept once per match). */
+  private afterMatch(msg: Extract<HostMessage, { t: 'report' | 'reveal' }>): void {
+    const info = this.match?.info;
+    if (!info || msg.match !== info.id) return this.view.reject();
+    const had = this.extras(info.id) ?? { matchId: info.id, report: null, revealed: null };
+    if (msg.t === 'report') {
+      if (had.report !== null) return;
+      this.player.setReport(info.id, msg.text);
+      this.extrasList = keepExtras(this.extrasList, { ...had, report: msg.text });
+    } else {
+      if (had.revealed !== null) return;
+      this.player.setRevealed(info.id, msg.list);
+      // Names and builds from the match announcement; the codes are gated by whoever uses them.
+      const revealed = msg.list.flatMap((r) => {
+        const f = info.fighters.find((x) => x.id === r.fighterId);
+        return f ? [{ ...r, name: f.name, owner: f.owner, weapon: f.weapon, skill: f.skill }] : [];
+      });
+      this.extrasList = keepExtras(this.extrasList, { ...had, revealed });
+    }
+    this.view.changed();
+  }
+
   private peerLeft(peer: string): void {
+    this.buckets.delete(peer);
     if (peer === this.host) this.lostHost('The host left. The room waits in case they come back.');
     else this.view.changed();
   }

@@ -137,6 +137,8 @@ function writeSeen(ctx: SimCtx, rec: KnownFighter, t: FighterRt): void {
   rec.ammo = f.ammo;
   rec.kills = f.kills;
   rec.windingUp = f.anim.phase === 'windup';
+  if (f.bleed) rec.bleeding = true;
+  else if (rec.bleeding) rec.bleeding = false;
   rec.lastSeenTick = ctx.state.tick;
   rec.lastSeenPos.x = f.pos.x;
   rec.lastSeenPos.y = f.pos.y;

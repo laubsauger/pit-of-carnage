@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { WEAPONS, WEAPON_IDS, attackCooldown } from '../core';
-import type { MatchReport, Strategy, WeaponId } from '../core';
+import type { GameEvent, MatchReport, Strategy, WeaponId, WorldState } from '../core';
 import { requireValidStrategy } from '../strategy';
-import { BALANCE_TARGETS, STACK_ATTRIBUTES, analyseBalance, balanceMarkdown, balancePlan, balanceStack, familyShares, nominalDps, type BalanceOptions } from './balance';
+import { BALANCE_TARGETS, STACK_ATTRIBUTES, ammoEconomy, ammoMeter, analyseBalance, balanceMarkdown, balancePlan, balanceStack, familyShares, nominalDps, type BalanceOptions } from './balance';
 import { fakeRunner, makeStrategy, placedReport } from './testkit';
 
 const field = [
@@ -179,5 +179,34 @@ describe('balanceMarkdown', () => {
     // The targets' source is the living spec; the retired build spec must not be cited.
     expect(md).toContain('Targets come from `docs/SPEC.md`, section 6, "Balance: ranged vs melee".');
     expect(md).not.toMatch(/build spec/);
+  });
+});
+
+describe('ammo economy', () => {
+  // Stuck arrows made the quiver a real resource; the harness has to say how often a bow runs dry
+  // and whether fetching ammo is what gets archers killed, or nobody can tune it.
+  it('measures dry time, deaths with an empty quiver and deaths while restocking', () => {
+    const archer = { id: 'f0', weapon: 'LONGBOW', alive: true, ammo: 1, maxAmmo: 12 };
+    const brute = { id: 'f1', weapon: 'GREATSWORD', alive: true, ammo: 0, maxAmmo: 0 };
+    const state = { fighters: [archer, brute], placements: [] as string[] } as unknown as WorldState;
+    const meter = ammoMeter(state);
+    const t = (events: GameEvent[]) => meter.step(events);
+    t([{ type: 'projectile', tick: 1, projectileId: 'p1', ownerId: 'f0', weapon: 'LONGBOW', pos: { x: 0, y: 0 }, dir: 0 }]);
+    archer.ammo = 0;
+    t([{ type: 'ammo_stick', tick: 2, stuckId: 's1', projectileId: 'p1', kind: 'arrow', ownerId: 'f0', pos: { x: 0, y: 0 }, angle: 0, in: { kind: 'fighter', fighterId: 'f1', u: 0, v: 0, turn: 0 } }]);
+    t([]);
+    archer.alive = false;
+    t([{ type: 'kill', tick: 4, killerId: 'f1', victimId: 'f0', cause: 'weapon', pos: { x: 0, y: 0 }, dir: 0, title: 'x', killerBehaviour: 'brawl', victimBehaviour: 'restock', weapon: 'GREATSWORD', flags: [], hazard: null, final: true }]);
+    (state as { placements: string[] }).placements = ['f1', 'f0'];
+    const uses = meter.uses();
+    // Only ranged fighters are measured.
+    expect(uses).toHaveLength(1);
+    expect(uses[0]).toMatchObject({ weapon: 'LONGBOW', ticksAlive: 3, ticksDry: 2, died: true, diedDry: true, diedRestocking: true, won: false, shots: 1, stuckInBodies: 1 });
+    const [bow] = ammoEconomy(uses);
+    expect(bow).toMatchObject({ weapon: 'LONGBOW', fighters: 1, dryShare: 0.667, deaths: 1, diedDry: 1, diedRestocking: 1, shotsPer: 1, stuckPer: 1 });
+    // And it reaches docs/BALANCE.md.
+    const md = balanceMarkdown(analyseBalance(options({ mapIds: ['pit'] }), [], [], uses));
+    expect(md).toContain('### Ammo economy in the duels');
+    expect(md).toContain('| LONGBOW | 1 | 67% | 1 | 1 (100%) | 1 (100%) | 1 | 0 | 1 |');
   });
 });

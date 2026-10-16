@@ -13,8 +13,10 @@
  *  8. projectiles (swept, first hit), splash, shields
  *  9. skills
  * 10. kegs and amphoras broken this tick go off (chains included)
- * 11. hazards, then the closing wall (contact push, spikes, crushing) and sudden-death damage
- * 12. shrines, pickups, spent ammo
+ * 11. hazards, open wounds bleed (BLEED_RULES), then the closing wall (contact push, spikes,
+ *     crushing) and sudden-death damage
+ * 12. shrines, pickups, spent ammo on the floor, then stuck ammo (follows its body; drops from
+ *     corpses, broken props and behind the closing wall; taken back by whoever touches it)
  * 13. placements for this tick's deaths, then the end check (`match_end`): one squad left
  *     (elimination), the bell at the time limit (sudden death off), or the hard cap (sudden death
  *     on: the judges place whoever is still standing, `judges_decision` then `match_end`)
@@ -65,12 +67,13 @@ import type {
 import { updateAttacks, updateProjectiles, updateSkills } from './combat';
 import type { FighterRt, SimCtx } from './context';
 import { barkLines } from './copy';
-import { GORE_SPOTS, bark, say } from './damage';
+import { GORE_SPOTS, bark, say, updateBleeding } from './damage';
 import { geoFor } from './geometry';
 import { MAPS } from './maps';
 import { moveFighters, steer } from './movement';
 import { buildView, perceive, updateLight } from './perception';
 import { createQuery } from './query';
+import { updateStuckAmmo } from './stuck';
 import { makeHazardRt, resolveBreaks, suddenDeathDamage, updateHazards, updatePickups, updateSuddenDeathWall } from './world';
 
 /** Spawn barks are spread over the first second or so, one fighter after another. */
@@ -182,6 +185,7 @@ export function createMatch(config: MatchConfig, brainFactory: BrainFactory): Ma
     props: map.props.map((p) => ({ ...p, pos: { ...p.pos }, alive: true, hp: PROP_RULES[p.kind].hp })),
     hazards: map.hazards.map((h) => ({ ...h, pos: { ...h.pos }, phase: 0, active: false, ttl: null })),
     shrines: map.shrines.map((s) => ({ id: s.id, pos: { ...s.pos }, cooldown: 0 })),
+    stuck: [],
     pickups: map.pickups.map((p) => ({ id: p.id, kind: p.kind, pos: { ...p.pos }, cooldown: PICKUP_RULES[p.kind].firstSpawnTicks })),
     suddenDeath: initialSuddenDeathState(map),
     finished: false,
@@ -200,6 +204,7 @@ export function createMatch(config: MatchConfig, brainFactory: BrainFactory): Ma
     combatRng: root.fork('combat'),
     barkRng: root.fork('barks'),
     copyRng: root.fork('copy'),
+    stuckRng: root.fork('stuck'),
     hazardRts: state.hazards.map((h, k) => makeHazardRt(h, k, n)),
     nextId: 0,
     gore: new Float32Array(GORE_SPOTS * 2),
@@ -283,6 +288,13 @@ function makeRuntime(e: Entrant, i: number, f: FighterState, brainFactory: Brain
     bloodySteps: 0,
     stepCount: 0,
     ammoRegen: 0,
+    bleedFrom: 0,
+    bleedNext: 0,
+    bleedCause: 'weapon',
+    bleedWeapon: null,
+    windTicks: 0,
+    windGulp: 0,
+    windStart: 0,
   };
 }
 
@@ -308,8 +320,10 @@ function step(ctx: SimCtx): GameEvent[] {
   updateSkills(ctx);
   resolveBreaks(ctx);
   updateHazards(ctx);
+  updateBleeding(ctx);
   suddenDeathDamage(ctx);
   updatePickups(ctx);
+  updateStuckAmmo(ctx);
   place(ctx);
   return ctx.events;
 }

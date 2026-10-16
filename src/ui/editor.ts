@@ -10,16 +10,16 @@ export const NEW_STRATEGY_NAME = 'My Gladiator';
  * Text for "New strategy": the first house stack under a fresh name (house stacks are known to
  * validate, so a new player starts from something that fights), or a bare brawler when there are
  * none. Never a house stack's own name: reports and ratings key on `name@vN`, and a copy saved
- * under the original name would pour its results into the house stack's row.
+ * under the original name would pour its results into the house stack's row. No version either:
+ * the library numbers a strategy when it is saved, and a "v1" here would pose as a saved one.
  */
 export function newStrategyText(house: readonly Strategy[]): string {
   const base = house[0];
   const s: Strategy = base
-    ? { ...base, name: NEW_STRATEGY_NAME, author: undefined, version: 1 }
+    ? { ...base, name: NEW_STRATEGY_NAME, author: undefined, version: undefined }
     : {
         schema: STRATEGY_SCHEMA,
         name: NEW_STRATEGY_NAME,
-        version: 1,
         build: { weapon: 'GREATSWORD', skill: 'DASH', attributes: { vitality: 18, power: 18, agility: 18, perception: 16, armor: 16, haste: 14 } },
         target: '0 - it.distance',
         behaviours: { brawl: { score: '1', move: [{ seek: 'target', weight: 1 }], attack: 'in_range' } },

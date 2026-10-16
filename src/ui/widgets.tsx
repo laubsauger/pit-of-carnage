@@ -3,13 +3,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ATTRIBUTE_DOCS, ATTRIBUTE_KEYS, ATTRIBUTE_MAX } from '../core';
-import type { AttributeKey, Attributes } from '../core';
+import type { AttributeKey, Attributes, Rating, SkillId, WeaponId } from '../core';
 import { ATTRIBUTE_COLORS, attrBars } from './attrs';
 import { readInt } from './batch';
+import { codexHash } from './codexLink';
+import { skillName, weaponName } from './format';
 import { hpFraction } from './hud';
 import { ChevronIcon } from './icons';
 import { PANES, dragPaneWidth } from './panes';
 import type { PaneId, PaneState } from './panes';
+import { ratingView } from './reports';
 
 /**
  * Whole-number field. Keeps its own text so it can be cleared and retyped; the parent only ever
@@ -64,21 +67,98 @@ export const ATTRIBUTE_LABEL: Record<AttributeKey, string> = {
  * maximum (dashed line at the top), so two builds side by side differ at a glance. Each bar keeps
  * its name and number, readable without colour; hovering shows what the attribute does.
  */
-export function AttrChart({ attributes, height = 68, compact = false }: { attributes: Attributes; height?: number; compact?: boolean }) {
+export function AttrChart({ attributes, height = 68, compact = false, codex = false }: { attributes: Attributes; height?: number; compact?: boolean; codex?: boolean }) {
   return (
-    <div className={`attr-chart${compact ? ' compact' : ''}`} role="img" aria-label={ATTRIBUTE_KEYS.map((k) => `${ATTRIBUTE_LABEL[k]} ${attributes[k]}`).join(', ')}>
-      {attrBars(attributes).map((b) => (
-        <div className="ac-col" key={b.key} title={`${ATTRIBUTE_LABEL[b.key]} ${b.value} of ${ATTRIBUTE_MAX}. ${ATTRIBUTE_DOCS[b.key]}`}>
-          <span className="ac-val num">{b.value}</span>
-          <div className="ac-track" style={{ height }}>
-            <div className="ac-fill" style={{ height: `${b.height * 100}%`, background: b.color }} />
+    <div className={`attr-chart${compact ? ' compact' : ''}`} role={codex ? undefined : 'img'} aria-label={ATTRIBUTE_KEYS.map((k) => `${ATTRIBUTE_LABEL[k]} ${attributes[k]}`).join(', ')}>
+      {attrBars(attributes).map((b) => {
+        const body = (
+          <>
+            <span className="ac-val num">{b.value}</span>
+            <div className="ac-track" style={{ height }}>
+              <div className="ac-fill" style={{ height: `${b.height * 100}%`, background: b.color }} />
+            </div>
+            <span className="ac-key" style={{ color: b.color }}>
+              {ATTRIBUTE_SHORT[b.key]}
+            </span>
+          </>
+        );
+        const title = `${ATTRIBUTE_LABEL[b.key]} ${b.value} of ${ATTRIBUTE_MAX}. ${ATTRIBUTE_DOCS[b.key]}`;
+        // Where the chart can be clicked (not in a card that follows the pointer), each bar opens its Codex entry.
+        return codex ? (
+          <a className="ac-col ac-link" key={b.key} href={codexHash(`attribute:${b.key}`)} title={`${title} Click for the Codex entry.`}>
+            {body}
+          </a>
+        ) : (
+          <div className="ac-col" key={b.key} title={title}>
+            {body}
           </div>
-          <span className="ac-key" style={{ color: b.color }}>
-            {ATTRIBUTE_SHORT[b.key]}
-          </span>
-        </div>
-      ))}
+        );
+      })}
     </div>
+  );
+}
+
+/** "Greatsword, Whirlwind" with each word opening its Codex entry (cards that stay put). */
+export function BuildLinks({ weapon, skill }: { weapon: WeaponId; skill: SkillId }) {
+  return (
+    <>
+      <a className="word-link" href={codexHash(`weapon:${weapon}`)} title="Open the weapon in the Codex">
+        {weaponName(weapon)}
+      </a>
+      ,{' '}
+      <a className="word-link" href={codexHash(`skill:${skill}`)} title="Open the skill in the Codex">
+        {skillName(skill)}
+      </a>
+    </>
+  );
+}
+
+/**
+ * A small "Codex" link to one entry (`kind:word`), for inspector rows, sheets and cards that stay
+ * put. Opens the Codex over the current screen; Esc comes back.
+ */
+export function CodexLink({ id, label = 'Codex', title }: { id: string; label?: string; title?: string }) {
+  return (
+    <a className="codex-link" href={codexHash(id)} title={title ?? 'Open this in the Codex'}>
+      {label}
+    </a>
+  );
+}
+
+/**
+ * A word with a proper hover card (not the easy-to-miss native title): shown on hover and on keyboard
+ * focus, so every symbol in the UI can explain itself.
+ */
+export function Tip({ card, children, className = '' }: { card: string; children: ReactNode; className?: string }) {
+  return (
+    <span className={`hovertip ${className}`} tabIndex={0}>
+      {children}
+      <span className="hovertip-card" role="tooltip">
+        {card}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * A rating as every table shows it (SPEC "Showing a rating"): a fixed slot for the "new" mark (with a
+ * hover card explaining provisional ratings), the number in tabular figures, then the muted ±. Right-
+ * align the cell; the digits line up from row to row.
+ */
+export function RatingCell({ rating, matches }: { rating: Rating; matches?: number }) {
+  const v = ratingView(rating, matches);
+  return (
+    <span className="rating" aria-label={v.label}>
+      <span className="rating-slot">
+        {v.provisional ? (
+          <Tip card={v.card} className="rating-new">
+            new
+          </Tip>
+        ) : null}
+      </span>
+      <span className="rating-value num">{v.value}</span>
+      <span className="rating-pm num">{v.plusMinus}</span>
+    </span>
   );
 }
 

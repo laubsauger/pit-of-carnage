@@ -204,6 +204,8 @@ export class CrowdDirector {
   /** Kill count each fighter was last chanted at. */
   private chanted = new Map<string, number>();
   private nearDeath = new Set<string>();
+  /** The end card is up: no bed swell, no reactions. */
+  hushed = false;
 
   constructor(profile: CrowdProfile = crowdProfile(0)) {
     this.profile = profile;
@@ -222,10 +224,12 @@ export class CrowdDirector {
     this.camp.clear();
     this.chanted.clear();
     this.nearDeath.clear();
+    this.hushed = false;
   }
 
-  /** How worked up the crowd is, 0 (a dead lull) .. 1 (the pit goes wild). */
+  /** How worked up the crowd is, 0 (a dead lull, or the end card) .. 1 (the pit goes wild). */
   get intensity(): number {
+    if (this.hushed) return 0;
     return 1 - (1 - this.energy) * (1 - this.tension);
   }
 
@@ -234,11 +238,31 @@ export class CrowdDirector {
     if (amount > 0) this.energy += Math.min(amount, 1) * (1 - this.energy);
   }
 
-  /** The countdown builds anticipation; FIGHT lets it loose; the final kill tops everything. */
+  /**
+   * The countdown builds anticipation; FIGHT lets it loose; the final kill and the winner's moment
+   * top everything (then the crowd cools); while the end card is up the crowd falls silent.
+   */
   onSignal(signal: MatchSignal): void {
-    if (signal.type === 'countdown') this.energy = Math.max(this.energy, 0.2 + 0.1 * (4 - Math.min(Math.max(signal.value, 1), 3)));
-    else if (signal.type === 'fight') this.energy = Math.max(this.energy, 0.75);
-    else this.energy = 1;
+    switch (signal.type) {
+      case 'countdown':
+        this.energy = Math.max(this.energy, 0.2 + 0.1 * (4 - Math.min(Math.max(signal.value, 1), 3)));
+        break;
+      case 'fight':
+        this.energy = Math.max(this.energy, 0.75);
+        break;
+      case 'final_kill':
+      case 'victory':
+        this.energy = 1;
+        break;
+      case 'end_card':
+        this.hushed = signal.shown;
+        if (signal.shown) {
+          this.energy = 0;
+          this.tension = 0;
+          this.tensionTarget = 0;
+        }
+        break;
+    }
   }
 
   /** One live event: warm the crowd and maybe react (appends reaction cues). */
@@ -272,7 +296,7 @@ export class CrowdDirector {
         const killer = byId(state, ev.killerId);
         if (killer && killer.alive && killer.kills >= CHANT_KILLS && (this.chanted.get(killer.id) ?? 0) < killer.kills) {
           // A streak is worth a chant even right after another reaction: only its own cooldown applies.
-          if (this.cooldown.chant <= 0) {
+          if (this.cooldown.chant <= 0 && !this.hushed) {
             this.chanted.set(killer.id, killer.kills);
             this.emit('chant', killer.pos.x, state, out, rand);
           }
@@ -335,6 +359,7 @@ export class CrowdDirector {
 
   /** Try a sparse reaction: respects the global gap and the kind's cooldown, then rolls `chance` x rowdiness. */
   private react(kind: ReactionKind, chance: number, x: number, state: WorldState, out: Cue[], rand: () => number): boolean {
+    if (this.hushed) return false;
     if (this.sinceReaction < this.profile.reactionGap || this.cooldown[kind] > 0) return false;
     if (rand() >= Math.min(1, chance * this.profile.rowdiness)) return false;
     this.emit(kind, x, state, out, rand);

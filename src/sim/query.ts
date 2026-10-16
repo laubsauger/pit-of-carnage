@@ -148,6 +148,10 @@ export function createQuery(ctx: SimCtx): WorldQuery {
       return answer;
     },
 
+    /**
+     * Arrows and axes stuck in a wall, prop or the floor count as floor items of their kind, at the
+     * spot they are taken back from (`pickupPos`); ammo in a living body does not (out of play).
+     */
     nearestFloorItem(p, kinds) {
       let best: Vec2 | null = null;
       let bestD = Infinity;
@@ -157,6 +161,15 @@ export function createQuery(ctx: SimCtx): WorldQuery {
         if (d < bestD) {
           bestD = d;
           best = it.pos;
+        }
+      }
+      for (const s of ctx.state.stuck) {
+        const q = s.pickupPos;
+        if (!q || !kinds.includes(s.kind)) continue;
+        const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = q;
         }
       }
       return best;

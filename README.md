@@ -28,6 +28,8 @@ WebGPU the arena shows a "WebGPU required" message; the Gym and the Room still w
 | `npm run typecheck` | TypeScript check of `src` and `scripts`. |
 | `npm run build` | Typecheck, then production build into `dist/`. |
 | `npm run balance` | Balance harness: thousands of seeded duels and FFAs, writes `docs/BALANCE.md`. `-- --quick` for a smoke run. |
+| `npm run tune -- "The Unpaid Intern"` | Improve one strategy (a file or a house stack name) through its JSON only: seeded FFAs and duels on every map, a change is kept only when it wins on fresh and held-out seeds. Writes `tuned/<name>.json` and a before/after table. |
+| `npx tsx scripts/balance-search.ts probe` | Balance workbench behind `docs/TUNING.md` (`probe`, `tune`, `skills`, `trace`, `acid`): rule numbers overridden at runtime, never written to `src/core/rules.ts`. |
 | `npm run lint:strategy -- file.json` | Validate strategy files (JSON, a `PIT2.` code or an LLM answer) through the game's own gate. Exit code 1 on errors. |
 
 ## Docs
@@ -37,4 +39,6 @@ WebGPU the arena shows a "WebGPU required" message; the Gym and the Room still w
 - [docs/DECISIONS.md](docs/DECISIONS.md): decisions and why.
 - [docs/STATUS.md](docs/STATUS.md): what is built, known issues, what comes next.
 - [docs/BALANCE.md](docs/BALANCE.md): latest balance harness results (generated).
+- [docs/TUNING.md](docs/TUNING.md): where the balance work stands and how to resume it.
+- [docs/SOUND_SOURCES.md](docs/SOUND_SOURCES.md): recorded CC0 sound candidates that could sit under the synth (research only, nothing wired).
 - Design brief: https://claude.ai/code/artifact/540265cf-9782-4fb6-9fd2-1a83e0a63814

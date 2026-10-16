@@ -5,22 +5,27 @@
  * when a room opens, so the WebRTC code is not part of the main bundle.
  *
  * Limits, shown to players in the Room screen: there is no session browser (the code is the only
- * way in), and peers behind strict NATs or firewalls cannot connect without a TURN relay, which
- * this prototype does not configure.
+ * way in), and peers behind strict NATs or firewalls connect only through a TURN relay, which the
+ * player enters in the Room screen (`./turn`); without one they cannot connect.
  */
 
 import { joinRoom, selfId } from 'trystero';
 import type { JsonValue } from 'trystero';
 import type { Transport } from './transport';
+import { roomJoinConfig } from './turn';
+import type { TurnConfig } from './turn';
 
-/** Separates our rooms from every other Trystero app on the same relays. Bump with incompatible changes. */
-export const APP_ID = 'pit-of-carnage-rooms-1';
+export { APP_ID } from './turn';
 
-/** Join room `code` (already normalised). The code doubles as the password that encrypts the WebRTC handshake. */
-export function trysteroTransport(code: string): Transport {
-  const room = joinRoom({ appId: APP_ID, password: `pit:${code}` }, `room-${code}`, {
+/** Join room `code` (already normalised), relaying through `turn` when one is set. */
+export function trysteroTransport(code: string, turn: TurnConfig | null = null): Transport {
+  const room = joinRoom(roomJoinConfig(code, turn), `room-${code}`, {
     onJoinError: (d) => {
-      t.onError?.(`Could not connect to a player (${d.error}). Strict networks can block direct connections; this prototype has no TURN relay.`);
+      t.onError?.(
+        turn
+          ? `Could not connect to a player (${d.error}), even through your TURN relay. Check its address and credentials.`
+          : `Could not connect to a player (${d.error}). Strict networks block direct connections; a TURN relay (Network settings in the Room lobby) gets through them.`,
+      );
     },
   });
   const action = room.makeAction<JsonValue>('pit');

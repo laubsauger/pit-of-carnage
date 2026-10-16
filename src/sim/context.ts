@@ -90,6 +90,15 @@ export type FighterRt = {
   stepCount: number;
   /** Ticks until the staff regains a charge. */
   ammoRegen: number;
+  /** Open wound (`FighterState.bleed`): tick it was opened or refreshed, tick of the next bleed damage, and what a bleed-out kill counts as. */
+  bleedFrom: number;
+  bleedNext: number;
+  bleedCause: KillCause;
+  bleedWeapon: WeaponId | null;
+  /** SECOND_WIND: ticks of healing left, HP per gulp, and the tick it started (damage after that ends it). */
+  windTicks: number;
+  windGulp: number;
+  windStart: number;
 };
 
 export type HazardRt = {
@@ -140,6 +149,8 @@ export type SimCtx = {
   combatRng: Rng;
   barkRng: Rng;
   copyRng: Rng;
+  /** Stick-or-drop rolls of spent arrows and axes (stuck.ts). */
+  stuckRng: Rng;
   hazardRts: HazardRt[];
   /** Counter for projectile, floor item and spawned hazard ids. */
   nextId: number;

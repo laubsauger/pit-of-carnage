@@ -15,10 +15,14 @@
  * Acid hurts visibly: a fighter standing in a pool goes sickly green and sizzles (smoke puffs rise
  * off it), and the tint lingers a moment after it gets out. A caster's staff crystal glows in its
  * spell colour, the same colour as its orbs. Countdown beats ring every fighter in its colour.
+ *
+ * The winner's moment (`setVictors`): the winners raise their weapons and pump them in time with a
+ * little hop, eyes wide, rings in their colour pulsing out from their feet. It runs on real time, so
+ * it keeps going under the end card while the game clock stands still.
  */
 
 import * as THREE from 'three/webgpu';
-import { HAZARD_RULES, LAYER_HEIGHT, MAX_FIGHTERS, WEAPONS, hashString } from '../core';
+import { LAYER_HEIGHT, MAX_FIGHTERS, WEAPONS, hashString, hazardReach, muzzleSide } from '../core';
 import type { AnimPhase, FighterState, HazardState, WeaponId, WorldState } from '../core';
 import { affine, applyX, applyY, setChild, setFrame, setSpan } from './affine';
 import type { Affine } from './affine';
@@ -31,7 +35,9 @@ import {
   pauldronGeometry, quiverGeometry, shieldGeometry, starsGeometry, stumpGeometry, tailsGeometry, torsoGeometry, weaponGeometry,
 } from './parts';
 import type { Headgear } from './parts';
-import { eyeScale, flashAmount, hitStopSeconds, moveAmount, newWeaponPose, squashAmount, squashPeak, stride, weaponPose } from './rig';
+import {
+  eyeScale, flashAmount, hitStopSeconds, moveAmount, newWeaponPose, squashAmount, squashPeak, stride, victoryHop, victoryPose, victoryWeight, weaponPose,
+} from './rig';
 import type { WeaponPose } from './rig';
 import { spellColor } from './fx/impacts';
 import type { Rgb } from './fx/palette';
@@ -91,6 +97,8 @@ const ACID_OUT = 1.1;
 const SIZZLE_PUFFS = 4;
 /** Real seconds a countdown ring takes to expand and fade. */
 const BEAT_SECONDS = 0.6;
+/** Victory rings per second (one per hop, see rig.ts VICTORY.pumpHz). */
+const VICTORY_RINGS_HZ = 0.8;
 
 /** Each weapon as a shadow bar in its own frame: u0, v0, u1, v1, radius. */
 const WEAPON_BAR: Readonly<Record<WeaponId, readonly [number, number, number, number, number]>> = {
@@ -152,6 +160,11 @@ export class FighterLayer {
   private beatPower = 0;
   /** Weight of the frozen pose for the fighter being rigged (1 = frozen, 0 = live). */
   private poseBlend = 0;
+  /** The winners striking their victory pose (empty = nobody), and real seconds into it. */
+  private victors: readonly string[] = [];
+  private victoryTime = 0;
+  /** Victory weight of the fighter being rigged (0 = not a winner). */
+  private cheer = 0;
 
   private readonly decals: QuadBatch;
   private readonly sizzle: QuadBatch;
@@ -191,6 +204,7 @@ export class FighterLayer {
   private readonly pose = newWeaponPose();
   private readonly idlePose = newWeaponPose();
   private readonly frozenPose = newWeaponPose();
+  private readonly cheerPose = newWeaponPose();
   private readonly shadows: ShadowLayer;
   private readonly held = newShadowBar();
   private readonly lastPhase: AnimPhase[] = [];
@@ -321,6 +335,7 @@ export class FighterLayer {
     this.flash.fill(0);
     this.acid.fill(0);
     this.beatAge = 99;
+    this.victors = [];
   }
 
   /** A countdown beat (3, 2, 1, FIGHT): every living fighter rings in its colour. `power` ~1 per beat. */
@@ -329,9 +344,27 @@ export class FighterLayer {
     this.beatPower = power;
   }
 
-  /** Advance the countdown rings by real seconds (the sim holds still during the countdown). */
+  /** Advance the countdown rings and the victory pose by real seconds (the sim holds still meanwhile). */
   tickBeat(realDt: number): void {
-    this.beatAge += Math.max(0, realDt);
+    const dt = Math.max(0, realDt);
+    this.beatAge += dt;
+    this.victoryTime += dt;
+  }
+
+  /**
+   * The winners strike their victory pose (an empty list ends it). `instant`: already in full pose
+   * (a seek onto the end card), else they ease into it.
+   */
+  setVictors(ids: readonly string[], instant: boolean): void {
+    const same = ids.length === this.victors.length && ids.every((id, k) => this.victors[k] === id);
+    if (same && ids.length > 0) return;
+    this.victors = ids.slice();
+    this.victoryTime = instant ? 10 : 0;
+  }
+
+  /** The winners striking their pose now (empty when there is no victory moment). */
+  get victorIds(): readonly string[] {
+    return this.victors;
   }
 
   private freeze(i: number, stop: number, impact: number): void {
@@ -497,7 +530,9 @@ export class FighterLayer {
     const move = moveAmount(speed);
     const legless = !f.limbs.legL || !f.limbs.legR;
     const hop = legless ? Math.abs(Math.sin(walk)) * move : 0;
-    const B = setFrame(this.B, x, y, facing, s * (1 + 0.08 * hop));
+    this.cheer = this.victors.includes(f.id) ? victoryWeight(this.victoryTime) : 0;
+    const cheerHop = this.cheer > 0 ? 1 + (victoryHop(this.victoryTime) - 1) * this.cheer : 1;
+    const B = setFrame(this.B, x, y, facing, s * (1 + 0.08 * hop) * cheerHop);
     if (this.squashTop[i]! > 0) squashFrame(B, this.hitDir[i]!, squashAmount(this.squashAge[i]!, this.squashTop[i]!));
     const T = this.T;
 
@@ -571,9 +606,11 @@ export class FighterLayer {
     } else {
       this.hair.push(HD, H.headgear, st);
     }
-    const es = eyeScale(f.eyePop);
+    const es = eyeScale(f.eyePop) * (1 + 0.25 * this.cheer);
     const E = setChild(T, HD, 0, 0, 0, es, es);
-    if (f.stunTicks > 0) {
+    if (this.cheer > 0) {
+      this.eyes.normal.push(E, H.eyes, st);
+    } else if (f.stunTicks > 0) {
       this.eyes.dizzy.push(E, H.eyes, st);
       this.stars.push(setChild(this.W, HD, 0, 0, time * 4.5, 1, 1), H.stars, st, 0.6);
     } else if (f.anim.phase !== 'idle' || st.berserk > 0) {
@@ -589,7 +626,12 @@ export class FighterLayer {
     else if (f.stance === 'guard' && WEAPONS[f.weapon].shield) this.guardArc.push(B, H.arcs, st);
 
     if (st.acid > 0.02) this.sizzlePuffs(x, y, f.radius, st.acid, time, seed);
-    if (this.beatAge < BEAT_SECONDS) this.beatRing(x, y, f.radius, st.team);
+    if (this.beatAge < BEAT_SECONDS) this.beatRing(x, y, f.radius, st.team, this.beatAge / BEAT_SECONDS, this.beatPower);
+    if (this.cheer > 0) {
+      // A ring in the winner's colour pulses out from its feet on every hop.
+      const period = 1 / VICTORY_RINGS_HZ;
+      this.beatRing(x, y, f.radius, st.team, (this.victoryTime % period) / period, 0.7 * this.cheer);
+    }
   }
 
   /** Smoke rising off a fighter in acid: puffs on their own clocks, drifting and thinning as they rise. */
@@ -612,12 +654,11 @@ export class FighterLayer {
     }
   }
 
-  /** Countdown beat: a ring in the fighter's colour bursting out from its feet. */
-  private beatRing(x: number, y: number, radius: number, team: THREE.Color): void {
-    const t = this.beatAge / BEAT_SECONDS;
+  /** A ring in the fighter's colour bursting out from its feet (`t` 0..1 through it): countdown beats, victory hops. */
+  private beatRing(x: number, y: number, radius: number, team: THREE.Color, t: number, power: number): void {
     const ease = 1 - (1 - t) * (1 - t);
-    const r = radius + 6 + ease * 34 * Math.max(1, this.beatPower);
-    const a = (1 - t) * (1 - t) * Math.min(1, this.beatPower);
+    const r = radius + 6 + ease * 34 * Math.max(1, power);
+    const a = (1 - t) * (1 - t) * Math.min(1, power);
     const w = 2 + 4 * (1 - t);
     const segs = 28;
     const cr = 0.35 + team.r * 0.65;
@@ -658,6 +699,13 @@ export class FighterLayer {
         phase = this.fzPhase[i]!;
         progress = this.fzProg[i]!;
       }
+    }
+    if (this.cheer > 0) {
+      // The winner's pose: weapon raised and pumped. Both hands of a dual wielder join in.
+      const cheer = victoryPose(f.weapon, this.victoryTime, this.cheerPose);
+      if (this.cheer >= 1) pose = cheer;
+      else blendPose(pose, cheer, this.cheer);
+      phase = 'windup';
     }
     this.shownPhase[i] = phase;
     this.shownProg[i] = progress;
@@ -707,10 +755,10 @@ export class FighterLayer {
           break;
         }
         const batch = isAxe ? this.axe : this.dagger;
-        const idle = weaponPose(f.weapon, 'idle', 0, time + seed, this.idlePose);
+        const idle = this.cheer > 0 ? pose : weaponPose(f.weapon, 'idle', 0, time + seed, this.idlePose);
         // The attacking hand: the alternating one, or whichever arm is left. Axes leave the hand the
-        // sim throws from (src/sim/combat.ts muzzlePoint: left on even ammo while the left arm is there).
-        let attackSide = isAxe ? (armL && f.ammo % 2 === 0 ? -1 : 1) : this.leftHand[i] ? -1 : 1;
+        // sim throws from (core `muzzleSide`, shared with the sim's `muzzlePoint`).
+        let attackSide = isAxe ? muzzleSide(f.weapon, f.ammo, armL) : this.leftHand[i] ? -1 : 1;
         if (attackSide > 0 && !armR) attackSide = -1;
         if (attackSide < 0 && !armL) attackSide = 1;
         for (let side = 1; side >= -1; side -= 2) {
@@ -841,14 +889,11 @@ export class FighterLayer {
   }
 }
 
-/** Acid reaches bodies whose centre is within the pool radius + this share of the body radius (the sim's `POOL_BODY_SHARE`). */
-const ACID_BODY_SHARE = 0.3;
-
-/** Whether a fighter of `radius` standing at (x, y) is in an acid pool (where the sim's acid hurts it). */
+/** Whether a fighter of `radius` standing at (x, y) is in an acid pool (where the sim's acid hurts it: core `hazardReach`). */
 export function inAcid(x: number, y: number, radius: number, hazards: readonly HazardState[]): boolean {
   for (const h of hazards) {
     if (h.kind !== 'acid') continue;
-    const reach = (h.radius || HAZARD_RULES.acid.radius) + radius * ACID_BODY_SHARE;
+    const reach = hazardReach(h, radius);
     if ((h.pos.x - x) ** 2 + (h.pos.y - y) ** 2 < reach * reach) return true;
   }
   return false;

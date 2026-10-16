@@ -19,6 +19,9 @@ import {
   clamp,
   createHeatmap,
   displayRating,
+  lineupFromConfig,
+  rulesFromConfig,
+  makeRating,
   mergeHeatmap,
   fighterRadius,
   hashString,
@@ -34,6 +37,8 @@ import type {
   BackgroundJob,
   BatchRequest,
   BatchResult,
+  CompareRequest,
+  CompareResult,
   DeathRecord,
   Decision,
   EvolveCandidate,
@@ -52,7 +57,9 @@ import type {
   KillRecord,
   KnownFighter,
   LeaderboardEntry,
+  Lineup,
   MapObjectKind,
+  MatchRules,
   MatchConfig,
   MatchEnding,
   MatchPhase,
@@ -70,8 +77,10 @@ import type {
   WeaponId,
 } from '../../core';
 import type { ArchiveCell } from '../../gym';
+import { reportToText } from '../../gym';
 import { MAPS } from '../../sim';
-import { encodeStrategyCode } from '../../strategy';
+import { DEFAULT_MATCH_RULES, emptyLineup, nextMapId, planMatch, shuffleLineup } from '../../app/lineup';
+import { HOUSE_STACKS, encodeStrategyCode } from '../../strategy';
 import { readStored, writeStored } from '../hooks';
 
 // ---------------------------------------------------------------------------------------------
@@ -115,7 +124,8 @@ const KILL_LINES: Record<WeaponId, string[]> = {
 const HAZARD_LINES = ['{v} tripped into the saw.', '{v} found the spikes.', '{v} stood in the fire a bit too long.'];
 const DISMEMBER_LINES = ["{k} took {v}'s arm off.", '{v} lost a leg to {k}.', "{k} kept a piece of {v}."];
 
-const fill = (line: string, k: string, v: string) => line.replaceAll('{k}', k).replaceAll('{v}', v);
+// Function replacers: a name with "$&" in it must print as written.
+const fill = (line: string, k: string, v: string) => line.replaceAll('{k}', () => k).replaceAll('{v}', () => v);
 
 function buildScript(config: MatchConfig): Script {
   const rng = new Rng(config.seed).fork('mock');
@@ -299,7 +309,7 @@ function abortError(): Error {
 function rating(avgPlace: number, fighters: number, matches: number): Rating {
   const mu = 25 + (fighters / 2 - avgPlace) * 2.4;
   const sigma = Math.max(1.4, 8.333 / Math.sqrt(1 + matches / 3));
-  return { mu, sigma, ordinal: mu - 3 * sigma };
+  return makeRating(mu, sigma);
 }
 
 /** Fake strength per strategy so the same names win and lose consistently across batches. */
@@ -605,7 +615,12 @@ function aggregate(reports: MatchReport[], seed: number, mapIds: string[], fight
  * `splash`: start on the splash (loading stages tick off one by one, then "Enter the pit"), like the
  * real app. Off by default so the harness opens straight onto the match.
  */
-export type MockOptions = { saved?: { strategy: Strategy; ageMs: number }[]; splash?: boolean };
+export type MockOptions = {
+  saved?: { strategy: Strategy; ageMs: number }[];
+  splash?: boolean;
+  /** House stacks that fill a lineup's open and unpinned slots (the real controller uses HOUSE_STACKS). */
+  house?: readonly Strategy[];
+};
 
 /** Round start: three beats, then FIGHT! for a moment. The final moment lasts about 3 s. */
 const BEAT_MS = 800;
@@ -620,6 +635,10 @@ const inSeconds = (doc: string) => doc.replace(/(\d+) ticks/g, (_, n: string) =>
 export function createMockController(opts: MockOptions = {}): GameController {
   const listeners = new Set<() => void>();
   let script: Script | null = null;
+  // The lineup and rules work like the real controller's (same pure functions from src/app/lineup).
+  let lineup: Lineup = emptyLineup();
+  let rules: MatchRules = { ...DEFAULT_MATCH_RULES };
+  const house = opts.house ?? HOUSE_STACKS;
   let tick = 0;
   let maxTick = 0;
   let paused = false;
@@ -1076,6 +1095,7 @@ export function createMockController(opts: MockOptions = {}): GameController {
       strategy,
       code: encodeStrategyCode(strategy),
       parentId: meta?.parentId ?? null,
+      parentVersion: saved.find((x) => x.id === meta?.parentId && x.name === s.name)?.version ?? null,
       origin: meta?.origin ?? null,
     };
     saved.push(entry);
@@ -1246,6 +1266,45 @@ export function createMockController(opts: MockOptions = {}): GameController {
         };
       });
     },
+    compare(req: CompareRequest, onProgress) {
+      // Mock: both sides are scripted fake batches on the same seeds, delivered after a short wait.
+      const total = 2 * req.matches;
+      const tracked = trackJob('batch', total, (d) => `Comparing: ${d} of ${total} matches`);
+      return new Promise<CompareResult>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          tracked.end();
+          job = null;
+          onProgress?.(total, total);
+          const side = (s: Strategy, boost: number) => {
+            const reports = fakeReports({ ...req, candidates: [s] }, boost);
+            const agg = aggregate(reports, req.seed, req.mapIds, req.fighters).strategies.find((x) => x.key === strategyKey(s))!;
+            return { reports, agg };
+          };
+          const a = side(req.a, 0.12);
+          const b = side(req.b, 0.04);
+          const placeOf = (r: MatchReport, key: string) => r.fighters.find((f) => r.roster.find((e) => e.fighterId === f.fighterId)?.strategyKey === key)?.place ?? r.fighters.length;
+          const matches = a.reports.map((r, i) => ({ seed: r.seed, mapId: r.mapId, fighters: r.fighters.length, placeA: placeOf(r, strategyKey(req.a)), placeB: placeOf(b.reports[i]!, strategyKey(req.b)) }));
+          const aAhead = matches.filter((m) => m.placeA < m.placeB).length;
+          const bAhead = matches.filter((m) => m.placeB < m.placeA).length;
+          resolve({
+            reportsA: a.reports, reportsB: b.reports, a: a.agg, b: b.agg, matches, aAhead, bAhead, level: matches.length - aAhead - bAhead,
+            rows: [
+              { label: 'Win rate', unit: 'share', a: a.agg.winRate, b: b.agg.winRate, better: a.agg.winRate === b.agg.winRate ? null : a.agg.winRate > b.agg.winRate ? 'a' : 'b' },
+              { label: 'Average place', unit: 'place', a: a.agg.avgPlace, b: b.agg.avgPlace, better: a.agg.avgPlace === b.agg.avgPlace ? null : a.agg.avgPlace < b.agg.avgPlace ? 'a' : 'b' },
+            ],
+            findings: [`${req.a.name} finished ahead on ${aAhead} of ${matches.length} shared seeds (mock).`],
+          });
+        }, 400);
+        job = {
+          stop: () => {
+            window.clearTimeout(timer);
+            tracked.end();
+            job = null;
+            reject(abortError());
+          },
+        };
+      });
+    },
     leaderboard: () => [...board.values()].sort((a, b) => b.rating.ordinal - a.rating.ordinal),
     cancel: () => job?.stop(),
   };
@@ -1272,7 +1331,9 @@ export function createMockController(opts: MockOptions = {}): GameController {
       } else if (finalUntil > now) finalUntil = 0;
       change();
     },
-    startMatch(config) {
+    startMatch(config, next) {
+      lineup = next ?? lineupFromConfig(config);
+      rules = { ...rulesFromConfig(config), rotateMaps: rules.rotateMaps };
       script = buildScript(config);
       tick = 0;
       maxTick = 0;
@@ -1282,6 +1343,29 @@ export function createMockController(opts: MockOptions = {}): GameController {
       followId = null;
       beginRound();
       change();
+    },
+    nextMatch() {
+      const next = rules.rotateMaps && script ? { ...rules, mapId: nextMapId(rules.mapId) } : rules;
+      const plan = planMatch(lineup, next, house, (Math.random() * 2 ** 32) >>> 0);
+      this.startMatch(plan.config, plan.lineup);
+      rules = next;
+    },
+    getLineup: () => lineup,
+    setLineup(next) {
+      lineup = next;
+      change();
+    },
+    shuffleField() {
+      lineup = shuffleLineup(lineup, rules, house, (Math.random() * 2 ** 32) >>> 0);
+      change();
+    },
+    startMatchup(m) {
+      const plan = planMatch(m.lineup, m.rules, house, m.seed);
+      this.startMatch(plan.config, plan.lineup);
+      rules = { ...m.rules };
+    },
+    watchStream() {
+      // The mock has no rooms.
     },
     restart() {
       if (!script) return;
@@ -1338,6 +1422,10 @@ export function createMockController(opts: MockOptions = {}): GameController {
     objectInfo,
     setViewInsets(v) {
       insets = { ...v };
+    },
+    lastReportText() {
+      const r = this.lastReport();
+      return r ? reportToText(r) : null;
     },
     lastReport() {
       const s = script;
@@ -1419,6 +1507,14 @@ export function createMockController(opts: MockOptions = {}): GameController {
       list: () => [...saved],
       save: (s, meta) => saveAt(s, Date.now(), meta),
       versions: (name) => saved.filter((x) => x.name === name).sort((a, b) => b.version - a.version),
+      history: (name) => ({
+        name,
+        entries: saved
+          .filter((x) => x.name === name)
+          .sort((a, b) => b.version - a.version)
+          .map((x) => ({ saved: x, parent: saved.find((p) => p.id === x.parentId) ?? null })),
+      }),
+      nextVersion: (name) => Math.max(0, ...saved.filter((x) => x.name === name).map((x) => x.version)) + 1,
       remove(id) {
         const i = saved.findIndex((x) => x.id === id);
         if (i >= 0) saved.splice(i, 1);

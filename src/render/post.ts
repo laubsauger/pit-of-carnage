@@ -6,6 +6,8 @@
  *   strength comes from `KillPunch` (punch.ts, real time), which keeps a fast kill stream from
  *   stacking into a red screen. The edge grade multiplies (it shifts existing colour toward red and
  *   never adds light), so even a full punch leaves dark areas dark.
+ * - Victory dimming: while the winner holds the pose the arena dims outside a soft spotlight
+ *   circle around the winner (`dim` 0..1, `spot` in screen uv and a radius in screen heights).
  * - Vignette and a faint film grain (hides banding in the dark gradients).
  * - MSAA on standard displays; on high-DPI displays MSAA is skipped for fill rate and FXAA
  *   smooths the final image instead.
@@ -23,6 +25,10 @@ export class Post {
   readonly pipeline: THREE.RenderPipeline;
   /** Kill punch strength 0..1 (decays in the renderer). */
   readonly punch = uniform(0);
+  /** Victory dimming 0..1 outside the spotlight. */
+  readonly dim = uniform(0);
+  /** Spotlight: x, y in screen uv (0, 0 top left), z radius in screen heights. */
+  readonly spot = uniform(new THREE.Vector3(0.5, 0.5, 0.2));
   private readonly aspect = uniform(1);
 
   constructor(renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera, msaa: boolean) {
@@ -33,6 +39,8 @@ export class Post {
     const glow = bloom(emissiveTex, 1.15, 0.55, 0.0);
     const punch = this.punch;
     const aspect = this.aspect;
+    const dim = this.dim;
+    const spot = this.spot;
 
     const graded = Fn(() => {
       const uv = screenUV;
@@ -49,6 +57,10 @@ export class Post {
       col.assign(mix(col, contrast, punch));
       const edge = smoothstep(0.3, 0.8, dist).mul(punch).mul(0.55);
       col.mulAssign(mix(vec3(1), vec3(1.18, 0.72, 0.68), edge));
+      // Victory: everything but the winner's spotlight sinks into the dark (multiplied, never tinted).
+      const sd = length(uv.sub(spot.xy).mul(vec2(aspect, 1)));
+      const lit = smoothstep(spot.z.mul(1.4), spot.z.mul(0.7), sd);
+      col.mulAssign(mix(float(1).sub(dim.mul(0.64)), float(1).add(dim.mul(0.08)), lit));
       // Vignette.
       const vig = smoothstep(0.3, 0.95, dist).oneMinus();
       col.mulAssign(mix(float(0.42), float(1), vig));

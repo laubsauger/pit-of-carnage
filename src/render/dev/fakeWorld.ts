@@ -4,18 +4,23 @@
  * the renderer and fx can be judged without the real simulation. Not deterministic, not gameplay:
  * cosmetic motion only (Math.random is fine here, this never runs in the sim).
  *
+ * Arrows and axes stick like the contract says (`StuckAmmo`): in walls, props and bodies (riding
+ * along in the body frame), now and then point-first in the floor; a body's ammo drops when it dies,
+ * a prop's when it breaks, and a fighter takes stuck ammo back by touching its pickup point.
+ *
  * It also keeps a rough knowledge list per fighter in the shape the sim gives (seen in the cone
  * with line of sight, heard as a fuzzy estimate, remembered for a while), so the fog, ghost markers
  * and hearing ripples can be judged too.
  */
 
 import {
-  FIGHTER_COLORS, HAZARD_RULES, MATCH_RULES, PERCEPTION, PICKUP_RULES, PROP_RULES, SKILL_IDS, WEAPONS, WEAPON_IDS, attackCooldown, circleHitsRect,
+  STUCK_AMMO, FIGHTER_COLORS, HAZARD_RULES, MATCH_RULES, PERCEPTION, PICKUP_RULES, PROP_RULES, SKILL_IDS, WEAPONS, WEAPON_IDS, attackCooldown, circleHitsRect,
   fighterRadius, hearingRadius, initialSuddenDeathState, maxHp, moveSpeed, projectileSpeed, projectileTtl, segmentHitsRect, turnPerTick,
   visionFov, visionRange, wrapAngle, zoneBoundsAfter,
 } from '../../core';
 import type {
-  Attributes, Decision, FighterState, GameEvent, KnownFighter, Limb, MapDef, ProjectileState, Rect, SkillId, WeaponId, WorldState,
+  AmmoKind, Attributes, Decision, FighterState, GameEvent, KnownFighter, Limb, MapDef, ProjectileState, Rect, SkillId, StuckAmmo, StuckIn,
+  WeaponId, WorldState,
 } from '../../core';
 
 const NAMES = [
@@ -98,6 +103,7 @@ export class FakeWorld {
       props: this.map.props.map((p) => ({ ...p, alive: true, hp: PROP_RULES[p.kind].hp })),
       hazards: this.map.hazards.map((h) => ({ ...h, phase: 0, active: false, pos: { ...h.pos }, ttl: null })),
       shrines: this.map.shrines.map((s) => ({ ...s, cooldown: 0 })),
+      stuck: [] as StuckAmmo[],
       pickups: this.map.pickups.map((p) => ({ ...p, cooldown: PICKUP_RULES[p.kind].firstSpawnTicks })),
       suddenDeath: initialSuddenDeathState(this.map), finished: false, ending: null, placements: [],
     };
@@ -133,10 +139,12 @@ export class FakeWorld {
       this.stepFighter(f, i, ev);
     });
     this.stepProjectiles(ev);
+    this.stepStuck(ev);
     this.acidBurn(ev);
 
     const alive = s.fighters.filter((f) => f.alive).length;
-    if (alive <= 1 && this.roundOverAt < 0) this.roundOverAt = tick + 180;
+    // Long enough for the winner's moment and a few seconds of end card (the harness sends them).
+    if (alive <= 1 && this.roundOverAt < 0) this.roundOverAt = tick + 600;
     if (this.roundOverAt >= 0 && tick >= this.roundOverAt) {
       const count = s.fighters.length;
       this.restart(count);
@@ -439,15 +447,110 @@ export class FakeWorld {
         }
       }
       const blocked = this.blockers.some((r) => circleHitsRect(p.pos, 3, r));
-      if (hitId || blocked || p.ttl <= 0) {
+      const prop = hitId || blocked ? undefined : s.props.find((o) => o.alive && Math.hypot(o.pos.x - p.pos.x, o.pos.y - p.pos.y) < o.radius + 2);
+      if (hitId || blocked || prop || p.ttl <= 0) {
         ev.push({ tick: this.state.tick, type: 'projectile_end', projectileId: p.id, pos: { ...p.pos }, hitId });
         if (p.weapon === 'ARCANE_STAFF') ev.push({ tick: this.state.tick, type: 'explosion', pos: { ...p.pos }, radius: 72 });
-        else if (!hitId) s.floor.push({ id: `i${this.nextId++}`, kind: p.weapon === 'LONGBOW' ? 'arrow' : 'axe', pos: { x: p.pos.x - p.vel.x, y: p.pos.y - p.vel.y }, ownerId: p.ownerId });
+        else this.stick(p, hitId, blocked, prop?.id ?? null, ev);
         continue;
       }
       keep.push(p);
     }
     s.projectiles = keep;
+  }
+
+  /** An arrow or axe ends its flight: it sticks in what it hit (or lies on the floor), like the sim. */
+  private stick(p: ProjectileState, hitId: string | null, wall: boolean, propId: string | null, ev: GameEvent[]): void {
+    const s = this.state;
+    const kind: AmmoKind = p.weapon === 'LONGBOW' ? 'arrow' : 'axe';
+    const angle = Math.atan2(p.vel.y, p.vel.x);
+    const c = Math.cos(angle);
+    const n = Math.sin(angle);
+    const tip = { x: p.pos.x, y: p.pos.y };
+    let into: StuckIn;
+    let pickupPos: { x: number; y: number } | null = null;
+    const victim = hitId ? s.fighters.find((f) => f.id === hitId) : undefined;
+    if (victim) {
+      if (s.stuck.filter((x) => x.in.kind === 'fighter' && x.in.fighterId === victim.id).length >= STUCK_AMMO.maxPerBody) {
+        this.toFloor(kind, p.ownerId, { x: victim.pos.x - c * 10, y: victim.pos.y - n * 10 });
+        return;
+      }
+      // Tip on the body's edge where the shot came in, kept in the body frame.
+      const rx = p.pos.x - p.vel.x - victim.pos.x;
+      const ry = p.pos.y - p.vel.y - victim.pos.y;
+      const d = Math.hypot(rx, ry) || 1;
+      const ex = (rx / d) * victim.radius * 0.8;
+      const ey = (ry / d) * victim.radius * 0.8;
+      const fc = Math.cos(victim.facing);
+      const fs = Math.sin(victim.facing);
+      tip.x = victim.pos.x + ex;
+      tip.y = victim.pos.y + ey;
+      into = { kind: 'fighter', fighterId: victim.id, u: ex * fc + ey * fs, v: -ex * fs + ey * fc, turn: wrapAngle(angle - victim.facing) };
+    } else if (wall || propId) {
+      // Back out of the wall or prop to its surface.
+      for (let k = 0; k < 12; k++) {
+        const inside = propId
+          ? s.props.some((o) => o.id === propId && Math.hypot(o.pos.x - tip.x, o.pos.y - tip.y) < o.radius)
+          : this.blockers.some((r) => circleHitsRect(tip, 0.5, r));
+        if (!inside) break;
+        tip.x -= c * 2;
+        tip.y -= n * 2;
+      }
+      into = propId ? { kind: 'prop', propId } : { kind: 'wall' };
+      pickupPos = { x: tip.x - c * STUCK_AMMO.pickupOffset, y: tip.y - n * STUCK_AMMO.pickupOffset };
+    } else if (Math.random() < 0.35) {
+      into = { kind: 'floor' };
+      pickupPos = { ...tip };
+    } else {
+      this.toFloor(kind, p.ownerId, { x: p.pos.x - p.vel.x, y: p.pos.y - p.vel.y });
+      return;
+    }
+    const st: StuckAmmo = { id: `s${this.nextId++}`, kind, ownerId: p.ownerId, pos: tip, angle, in: into, pickupPos, tick: s.tick };
+    s.stuck.push(st);
+    ev.push({ tick: s.tick, type: 'ammo_stick', stuckId: st.id, projectileId: p.id, kind, ownerId: p.ownerId, pos: { ...tip }, angle, in: { ...into } });
+  }
+
+  private toFloor(kind: AmmoKind, ownerId: string | null, pos: { x: number; y: number }): string {
+    const id = `i${this.nextId++}`;
+    this.state.floor.push({ id, kind, pos, ownerId });
+    return id;
+  }
+
+  /** Ammo in bodies follows them; a dead body or a broken prop drops its ammo; fighters pull ammo out. */
+  private stepStuck(ev: GameEvent[]): void {
+    const s = this.state;
+    const keep: StuckAmmo[] = [];
+    for (const a of s.stuck) {
+      const holder = a.in.kind === 'fighter' ? s.fighters.find((f) => f.id === (a.in as { fighterId: string }).fighterId) : undefined;
+      const prop = a.in.kind === 'prop' ? s.props.find((o) => o.id === (a.in as { propId: string }).propId) : undefined;
+      if (a.in.kind === 'fighter' && holder) {
+        const fc = Math.cos(holder.facing);
+        const fs = Math.sin(holder.facing);
+        a.pos.x = holder.pos.x + a.in.u * fc - a.in.v * fs;
+        a.pos.y = holder.pos.y + a.in.u * fs + a.in.v * fc;
+        a.angle = holder.facing + a.in.turn;
+      }
+      if ((holder && !holder.alive) || (prop && !prop.alive)) {
+        const r = Math.random() * STUCK_AMMO.bodyDropScatter;
+        const t = Math.random() * Math.PI * 2;
+        const at = { x: a.pos.x + Math.cos(t) * r, y: a.pos.y + Math.sin(t) * r };
+        const itemId = this.toFloor(a.kind, a.ownerId, at);
+        ev.push({ tick: s.tick, type: 'ammo_unstick', stuckId: a.id, kind: a.kind, pos: { ...at }, reason: 'drop', fighterId: null, floorItemId: itemId });
+        continue;
+      }
+      if (a.pickupPos) {
+        const taker = s.fighters.find((f) => f.alive && f.ammo < f.maxAmmo && (a.kind === 'arrow' ? f.weapon === 'LONGBOW' : f.weapon === 'THROWING_AXES')
+          && Math.hypot(f.pos.x - a.pickupPos!.x, f.pos.y - a.pickupPos!.y) < f.radius + STUCK_AMMO.pickupSlack);
+        if (taker) {
+          taker.ammo++;
+          ev.push({ tick: s.tick, type: 'ammo_unstick', stuckId: a.id, kind: a.kind, pos: { ...a.pos }, reason: 'pickup', fighterId: taker.id, floorItemId: null });
+          ev.push({ tick: s.tick, type: 'pickup', fighterId: taker.id, kind: a.kind, pos: { ...a.pos } });
+          continue;
+        }
+      }
+      keep.push(a);
+    }
+    s.stuck = keep;
   }
 
   private moveBody(f: FighterState): void {

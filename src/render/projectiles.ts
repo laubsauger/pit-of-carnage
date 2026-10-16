@@ -1,7 +1,8 @@
 /**
  * Projectiles in flight: arrows (fletched in the shooter's colour), spinning axes and glowing
- * staff orbs that light the floor as they fly. An orb is a white-hot core in its caster's spell
- * colour (halo, trail and floor light), the same colour fx uses for its trail sparks and burst. A short additive streak behind each one shows
+ * staff orbs that light the floor as they fly. An orb glows in its caster's spell colour around a
+ * white-hot heart (orb, halo, trail and floor light), the same colour fx uses for its trail sparks
+ * and burst. A short additive streak behind each one shows
  * direction and speed at a glance. Arrows and axes throw small soft shadows away from the torches
  * (orbs are lights themselves).
  *
@@ -98,6 +99,7 @@ export class ProjectileLayer {
         case 'ARCANE_STAFF': {
           const c = spellColor(this.spell, this.ownerHex ?? '');
           const pulse = 1 + 0.12 * Math.sin(time * 30 + x * 0.1);
+          st.team.setRGB(c.r, c.g, c.b);
           this.orbs.push(setFrame(T, x, y, time * 6, pulse), H, st, 1.2);
           const t1 = Math.min(speed * 6, flown);
           if (t1 > 0) this.trails.line(x, y, x - ux * t1, y - uy * t1, 10, H - 0.5, c.r, c.g, c.b, 0.6, 0);

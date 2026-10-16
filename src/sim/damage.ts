@@ -5,7 +5,7 @@
  * the same rules and emits the same events.
  */
 
-import { BARK_RULES, COMBAT, MATCH_RULES, PROP_RULES, WEAPONS } from '../core';
+import { BARK_RULES, BLEED_RULES, COMBAT, MATCH_RULES, PROP_RULES, WEAPONS } from '../core';
 import type { BarkKind, DamageSource, FloorItemKind, KillCause, KillFlag, Limb } from '../core';
 import type { DamageInfo, FighterRt, SimCtx } from './context';
 import { killStamp } from './copy';
@@ -159,8 +159,57 @@ export function applyDamage(ctx: SimCtx, vi: number, amount: number, info: Damag
   }
   if (amount >= COMBAT.dismemberMinDamage && v.hp < v.maxHp * COMBAT.dismemberBelowHp && ctx.combatRng.chance(COMBAT.dismemberChance)) {
     dismember(ctx, vrt, info.dir, art ? art.f.id : null);
+    openWound(ctx, vrt, BLEED_RULES.limbLossTicks, BLEED_RULES.limbLossDamage, info);
   }
   return dealt;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bleeding (BLEED_RULES; nothing here runs while it is disabled)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Open a wound on a living fighter: it bleeds `damage` every BLEED_RULES.intervalTicks for `ticks`
+ * ticks (at most maxTicks). A new wound refreshes the time left and keeps the larger damage (and
+ * the opener of that one). `info` is the blow that opened it: the bleed credits its attacker and a
+ * bleed-out kill keeps its cause and weapon.
+ */
+export function openWound(ctx: SimCtx, vrt: FighterRt, ticks: number, damage: number, info: DamageInfo): void {
+  const v = vrt.f;
+  if (!BLEED_RULES.enabled || ticks <= 0 || damage <= 0 || !v.alive) return;
+  const sourceId = info.attacker >= 0 && info.attacker !== vrt.idx ? ctx.rts[info.attacker]!.f.id : null;
+  const cur = v.bleed;
+  const left = Math.min(BLEED_RULES.maxTicks, Math.max(ticks, cur ? cur.ticks : 0));
+  vrt.bleedFrom = ctx.state.tick;
+  if (!cur) vrt.bleedNext = ctx.state.tick + BLEED_RULES.intervalTicks;
+  if (!cur || damage >= cur.damagePerTick) {
+    v.bleed = { ticks: left, damagePerTick: damage, sourceId };
+    vrt.bleedCause = info.cause;
+    vrt.bleedWeapon = info.weapon;
+  } else {
+    cur.ticks = left;
+  }
+}
+
+/** Open wounds bleed: damage every intervalTicks while ticks last (a `hit` with source `bleed`). */
+export function updateBleeding(ctx: SimCtx): void {
+  if (!BLEED_RULES.enabled) return;
+  const tick = ctx.state.tick;
+  for (const rt of ctx.rts) {
+    const f = rt.f;
+    const b = f.bleed;
+    // The tick a wound opens is not one of its bleeding ticks: a 150-tick wound bleeds 150 more.
+    if (!b || !f.alive || tick === rt.bleedFrom) continue;
+    if (tick >= rt.bleedNext) {
+      rt.bleedNext = tick + BLEED_RULES.intervalTicks;
+      const src = b.sourceId === null ? -1 : (ctx.byId.get(b.sourceId) ?? -1);
+      const info = blow(src, 'bleed', rt.bleedCause, f.facing + Math.PI);
+      info.weapon = rt.bleedWeapon;
+      applyDamage(ctx, rt.idx, b.damagePerTick, info);
+      if (!f.alive) continue;
+    }
+    if (--b.ticks <= 0) f.bleed = null;
+  }
 }
 
 const LIMBS: readonly Limb[] = ['armL', 'armR', 'legL', 'legR'];
@@ -328,10 +377,10 @@ export function addGore(ctx: SimCtx, x: number, y: number): void {
 }
 
 /**
- * Put an item on the floor at (x, y), or at the fallback point when (x, y) is inside a wall.
- * Cosmetic items (helmets, weapons) beyond MAX_COSMETIC_ITEMS replace the oldest one.
+ * Put an item on the floor at (x, y), or at the fallback point when (x, y) is inside a wall, and
+ * return its id. Cosmetic items (helmets, weapons) beyond MAX_COSMETIC_ITEMS replace the oldest one.
  */
-export function dropItem(ctx: SimCtx, kind: FloorItemKind, x: number, y: number, fx: number, fy: number, ownerId: string | null): void {
+export function dropItem(ctx: SimCtx, kind: FloorItemKind, x: number, y: number, fx: number, fy: number, ownerId: string | null): string {
   if (circleBlocked(ctx.geo, x, y, ITEM_RADIUS)) {
     x = fx;
     y = fy;
@@ -349,7 +398,9 @@ export function dropItem(ctx: SimCtx, kind: FloorItemKind, x: number, y: number,
     }
     if (cosmetic >= MAX_COSMETIC_ITEMS && oldest >= 0) floor.splice(oldest, 1);
   }
-  floor.push({ id: `i${ctx.nextId++}`, kind, pos: { x, y }, ownerId });
+  const id = `i${ctx.nextId++}`;
+  floor.push({ id, kind, pos: { x, y }, ownerId });
+  return id;
 }
 
 /** Damage prop `pi`. A broken keg or amphora is queued; `resolveBreaks` makes it go off. */

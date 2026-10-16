@@ -1,6 +1,6 @@
 // Owned by: ui
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { TICK_HZ, displayRating } from '../../core';
+import { TICK_HZ } from '../../core';
 import type { AggregateReport, KillCause, MatchEnding, MatchReport, StrategyAggregate, SuddenDeathReason } from '../../core';
 import { compareRows, pickMatches, reportToText } from '../../gym';
 import type { MatchPick, MatchPicks } from '../../gym';
@@ -16,13 +16,13 @@ import {
   headToHead,
   histogramHeights,
   howOut,
-  isProvisional,
   leadInTick,
   statLines,
   winRows,
 } from '../reports';
 import { configFromReport } from '../setup';
 import { copyAndToast, toast } from '../toast';
+import { RatingCell, Tip } from '../widgets';
 import type { BatchOutcome } from './GymScreen';
 import { mapNames } from './options';
 
@@ -62,7 +62,14 @@ export function ReportView({ outcome, onWatch, focus }: Props) {
       toast('One of the strategies in this match is gone, so it cannot be replayed.');
       return;
     }
-    onWatch({ config, tick, focusId, origin: { label: `Test report, match ${index + 1} of ${reports.length}`, tab: 'test', matchIndex: index } });
+    onWatch({
+      config,
+      tick,
+      focusId,
+      origin: { label: `Test report, match ${index + 1} of ${reports.length}`, tab: 'test', matchIndex: index },
+      // The strategies under test stay in the lineup for "Next match"; the batch field is just field.
+      pin: { keys: [...candidateKeys], source: 'gym' },
+    });
   };
 
   // Back from the arena: open that match's row, scroll to it and flash it once.
@@ -110,8 +117,8 @@ export function ReportView({ outcome, onWatch, focus }: Props) {
           <tr>
             <th className="rank">#</th>
             <th>Strategy</th>
-            <th className="r" title="1000 + 40 x (mu - 3 sigma). Rises as the rating settles.">
-              Rating
+            <th className="r">
+              <Tip card="1000 + 40 x (mu - 3 sigma), from openskill over every rated match. It rises as the rating settles; the ± is one sigma in the same points.">Rating</Tip>
             </th>
             <th className="r">Wins</th>
             <th className="r">Avg place</th>
@@ -125,9 +132,8 @@ export function ReportView({ outcome, onWatch, focus }: Props) {
             <tr key={s.key} className={candidateKeys.has(s.key) ? 'mine' : undefined}>
               <td className="rank">{i + 1}</td>
               <td>{strategyLabel(s.name, s.version)}</td>
-              <td className="num">
-                {displayRating(s.rating)}
-                {isProvisional(s.rating) ? <span className="faint" title="Still settling: few rated matches."> ?</span> : null}
+              <td className="r">
+                <RatingCell rating={s.rating} matches={s.matches} />
               </td>
               <td className="num">{formatPercent(s.winRate)}</td>
               <td className="num">{s.avgPlace.toFixed(1)}</td>
@@ -278,7 +284,12 @@ function AggregateCard(props: {
           {agg.name} <span className="dim">v{agg.version}</span>
         </div>
         <span className="spacer" />
-        <Stat label={isProvisional(agg.rating) ? 'rating, settling' : 'rating'} value={String(displayRating(agg.rating))} />
+        <div className="stat">
+          <b>
+            <RatingCell rating={agg.rating} matches={agg.matches} />
+          </b>
+          <span>rating</span>
+        </div>
         <Stat label="won" value={formatPercent(agg.winRate)} />
         <Stat label="avg place" value={agg.avgPlace.toFixed(1)} />
         <Stat label="kills per match" value={agg.avgKills.toFixed(1)} />

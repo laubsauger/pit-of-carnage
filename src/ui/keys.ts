@@ -1,7 +1,7 @@
 // Owned by: ui
 // Watch-screen keyboard map as a pure function, so the bindings are testable without a DOM.
 import { THINK_EVERY_TICKS, TICK_HZ } from '../core';
-import { viewKeyForShortcut } from './view';
+import { VIEW_GROUPS, viewKeyForShortcut } from './view';
 import type { ViewKey } from './view';
 
 /** Playback presets bound to keys 1-5 and shown in the clock. */
@@ -89,6 +89,41 @@ export const WATCH_KEYS: readonly { keys: string; label: string; sample: string 
   { keys: 'C', label: 'Reset camera', sample: 'c' },
   { keys: 'Esc', label: 'Close, deselect, unfollow', sample: 'Escape' },
 ];
+
+/**
+ * Keys that leave cinematic view: they ask for a panel the cinematic view folds away (the next
+ * fighter's inspector, the full overview). The spec: any HUD key brings the HUD back.
+ */
+export function exitsCinematic(action: KeyAction): boolean {
+  return action.type === 'cycle' || action.type === 'overview';
+}
+
+export type KeyHelpGroup = { title: string; rows: readonly { keys: string; label: string }[] };
+
+/**
+ * Every shortcut for the keyboard card, grouped the way a viewer looks for them. Built from the same
+ * tables the key map reads (WATCH_KEYS, VIEW_GROUPS), so the card cannot list a key that does nothing.
+ */
+export function keyHelp(): KeyHelpGroup[] {
+  const watch = new Map(WATCH_KEYS.map((k) => [k.keys, k.label]));
+  const pick = (...keys: string[]) => keys.map((k) => ({ keys: k, label: watch.get(k) ?? k }));
+  return [
+    { title: 'Playback', rows: pick('Space', '← →', '1-5', 'End') },
+    { title: 'Fighters and camera', rows: pick('Tab', 'F', 'I', 'C', 'Esc') },
+    ...VIEW_GROUPS.map((g) => ({ title: g.title, rows: g.items.flatMap((i) => (i.shortcut ? [{ keys: i.shortcut, label: i.label }] : [])) })),
+    { title: 'Anywhere', rows: [{ keys: '?', label: 'Open the Codex' }] },
+  ];
+}
+
+/**
+ * Whether a dialog that owns the keyboard is showing (the Codex, Quick matchup, the Gym's import
+ * dialog). A dialog inside a hidden screen does not count: the Gym's import dialog stays mounted
+ * while the Gym tab is hidden, and must not swallow the Watch keys.
+ */
+export function modalOpen(root: { querySelectorAll(selector: string): Iterable<{ closest(selector: string): unknown }> }): boolean {
+  for (const el of root.querySelectorAll('[aria-modal="true"]')) if (!el.closest('[hidden]')) return true;
+  return false;
+}
 
 /** Whether a DOM event target is somewhere the user is typing. */
 export function isEditableTarget(target: EventTarget | null): boolean {

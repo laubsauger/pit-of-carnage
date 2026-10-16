@@ -1054,6 +1054,30 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     burst(v, { freq: 1600, q: 0.6, attack: 0.0005, decay: 0.025, gain: 0.5 });
     whoosh(v, 0.02, 0.5, 400, 1600, 0.8, 0.2);
   },
+  skill_hook(v, _cue, rand) {
+    // The chain flung out (a whoosh with links rattling along it), the hook biting, the yank back.
+    whoosh(v, 0, 0.26, 700, 3000, 1.4, 0.4);
+    for (let i = 0; i < 7; i++) click(v, 0.02 + i * 0.03 + rand() * 0.01, 0.2 * (1 - i / 9), 3800 + rand() * 1500);
+    clang(v, 0.24, R(610, 700, rand), 0.25, 0.14, { ratio: 2.1, index: 3, partials: [1, 2.4, 4.1] });
+    thump(v, 0.25, 220, 110, 0.07, 0.35);
+    whoosh(v, 0.3, 0.24, 2600, 900, 1.1, 0.3, 'pink');
+  },
+  skill_second_wind(v) {
+    // A long breath in, a beat, and a relieved breath out, with a soft warm swell under it.
+    const g = v.gain(0, v.out);
+    const bp = v.filter('bandpass', 500, 1.4, g);
+    v.glide(bp.frequency, 0, 500, 1500, 0.55);
+    v.noise('pink', 0, 0.6, bp);
+    v.ahr(g.gain, 0, 0.45, 0.35, 0.05, 0.12);
+    const o = v.gain(0, v.out);
+    const lp = v.filter('bandpass', 1100, 1.2, o);
+    v.glide(lp.frequency, 0.65, 1100, 380, 0.5);
+    v.noise('pink', 0.65, 0.55, lp);
+    v.ahr(o.gain, 0.65, 0.04, 0.3, 0.12, 0.35);
+    const pad = v.gain(0, v.out);
+    for (const hz of [196, 293.66]) v.osc('sine', hz, 0.6, 0.65, pad);
+    v.ahr(pad.gain, 0.6, 0.15, 0.05, 0.15, 0.3);
+  },
   skill_bloodrage(v) {
     growl(v, 0, 0.9, 82, 112, 0.5);
     heartbeat(v, 0.05, 2, 0.6);
@@ -1087,6 +1111,30 @@ export const RECIPES: Readonly<Record<SoundId, Recipe>> = {
     ring(v, 0, 2300, [1, 1.52, 2.7], [0.06, 0.05, 0.03], 0.14);
     click(v, 0, 0.15, 3000);
     burst(v, { at: 0.04, freq: 1800, q: 2, attack: 0.0005, decay: 0.02, gain: 0.12 });
+  },
+  ammo_yank(v) {
+    // Wood letting go of a shaft: a short squeak of fibres sliding, then the pop as it comes free.
+    burst(v, { noise: 'pink', freq: 1900, to: 850, q: 5, attack: 0.01, decay: 0.07, gain: 0.5 });
+    const g = v.gain(0, v.out);
+    const bp = v.filter('bandpass', 1300, 9, g);
+    const o = v.osc('sawtooth', 420, 0, 0.09, bp);
+    v.glide(o.frequency, 0, 420, 610, 0.07);
+    v.ad(g.gain, 0, 0.012, 0.18, 0.06);
+    click(v, 0.075, 0.3, 2600);
+    thump(v, 0.075, 260, 170, 0.05, 0.22);
+  },
+  ammo_clatter(v, cue, rand) {
+    // Shafts (or an axe) hitting stone: a few dry wooden ticks bouncing to rest; an axe adds a dull clank.
+    const hits = 3 + Math.round(rand() * 2);
+    let at = 0;
+    for (let i = 0; i < hits; i++) {
+      const g = 0.5 * Math.pow(0.62, i);
+      click(v, at, g * 0.8, 2200 + rand() * 1400);
+      ring(v, at, R(780, 1150, rand), [1, 2.3, 3.9], [0.035, 0.022, 0.014], g * 0.35);
+      at += 0.035 + rand() * 0.07 * (1 - i / hits);
+    }
+    if (cue.intensity > 0.5) clang(v, 0, R(330, 400, rand), 0.25, 0.1, { ratio: 1.41, index: 2 });
+    tail(v, 0, 0.12, 400, 0.12);
   },
   spawn_haste(v) {
     // Bright rising chime: the power-up is back.

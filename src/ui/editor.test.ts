@@ -128,7 +128,9 @@ describe('newStrategyText', () => {
     const s = JSON.parse(newStrategyText([house])) as Strategy;
     expect(s.name).toBe(NEW_STRATEGY_NAME);
     expect(s.name).not.toBe(house.name);
-    expect(s.version).toBe(1);
+    // Unnumbered until saved: the library gives the number, and a "v1" would read as a saved version
+    // (the editor would claim it is "based on" an unrelated saved My Gladiator v1).
+    expect(s.version).toBeUndefined();
     expect(s.author).toBeUndefined();
     expect(s.build.weapon).toBe('LONGBOW');
   });

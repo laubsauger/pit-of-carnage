@@ -4,9 +4,9 @@
  */
 
 import { strategyKey } from '../core';
-import type { BatchRequest, BatchResult, EvolveRequest, EvolveResult, Strategy } from '../core';
+import type { BatchRequest, BatchResult, CompareRequest, CompareResult, EvolveRequest, EvolveResult, Strategy } from '../core';
 import { runBatch } from './batch';
-import { runCompare, type CompareRequest, type CompareResult } from './compare';
+import { runCompare } from './compare';
 import { evolve, type EvolveDeps, type GenerationReport } from './evolve';
 import { RatingBook, type RatingBookJson } from './ratings';
 

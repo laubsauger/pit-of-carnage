@@ -28,7 +28,7 @@ import {
   damageMultiplier,
   strategyKey,
 } from '../core';
-import type { Attributes, Behaviour, MatchConfig, MatchEnding, MatchReport, Strategy, SuddenDeathReason, WeaponFamily, WeaponId } from '../core';
+import type { Attributes, Behaviour, GameEvent, MatchConfig, MatchEnding, MatchReport, Strategy, SuddenDeathReason, WeaponFamily, WeaponId, WorldState } from '../core';
 import { buildBatch, gymConfig } from './batch';
 import { clock, plural, round } from './format';
 
@@ -190,6 +190,105 @@ export type StrategyRow = { key: string; name: string; weapon: WeaponId; matches
 
 export type BalanceCheck = { target: string; measured: string; pass: boolean; /** Guidelines are shown but do not fail the run. */ guideline?: boolean };
 
+/**
+ * How one ranged fighter used its ammo over one match (measured by `ammoMeter`): the bow's quiver
+ * economy, now that arrows stick in walls and bodies.
+ */
+export type AmmoUse = {
+  weapon: WeaponId;
+  ticksAlive: number;
+  /** Ticks alive with no ammo or charges left. */
+  ticksDry: number;
+  died: boolean;
+  diedDry: boolean;
+  /** Died while its brain was on the `restock` behaviour (out fetching ammo). */
+  diedRestocking: boolean;
+  won: boolean;
+  shots: number;
+  /** Arrows or axes taken back (off the floor, out of walls and props). */
+  pickups: number;
+  /** Its shots that stuck in a body (out of play until that body dies). */
+  stuckInBodies: number;
+};
+
+/** AmmoUse summed per ranged weapon. */
+export type AmmoEconomy = {
+  weapon: WeaponId;
+  fighters: number;
+  /** Share of time alive spent with no ammo. */
+  dryShare: number;
+  deaths: number;
+  diedDry: number;
+  diedRestocking: number;
+  shotsPer: number;
+  pickupsPer: number;
+  stuckPer: number;
+};
+
+/**
+ * Watches a match tick by tick and records `AmmoUse` for every fighter with a ranged weapon. Feed it
+ * every step's events right after the step; read `uses()` when the match is over.
+ */
+export function ammoMeter(state: Readonly<WorldState>) {
+  const fighters = state.fighters;
+  const uses: AmmoUse[] = fighters.map((f) => ({
+    weapon: f.weapon, ticksAlive: 0, ticksDry: 0, died: false, diedDry: false, diedRestocking: false, won: false, shots: 0, pickups: 0, stuckInBodies: 0,
+  }));
+  const index = new Map(fighters.map((f, i) => [f.id, i]));
+  /** Was each fighter dry at the end of the last tick (ammo spills on death, so a death is judged by this). */
+  const lastDry = new Uint8Array(fighters.length);
+  return {
+    step(events: readonly GameEvent[]): void {
+      for (const e of events) {
+        if (e.type === 'projectile') uses[index.get(e.ownerId)!]!.shots++;
+        else if (e.type === 'pickup' && (e.kind === 'arrow' || e.kind === 'axe')) uses[index.get(e.fighterId)!]!.pickups++;
+        else if (e.type === 'ammo_stick' && e.in.kind === 'fighter' && e.ownerId) uses[index.get(e.ownerId)!]!.stuckInBodies++;
+        else if (e.type === 'kill') {
+          const i = index.get(e.victimId)!;
+          const u = uses[i]!;
+          u.died = true;
+          u.diedDry = lastDry[i] === 1;
+          u.diedRestocking = e.victimBehaviour === 'restock';
+        }
+      }
+      fighters.forEach((f, i) => {
+        if (!f.alive) return;
+        const dry = f.maxAmmo > 0 && f.ammo <= 0;
+        uses[i]!.ticksAlive++;
+        if (dry) uses[i]!.ticksDry++;
+        lastDry[i] = dry ? 1 : 0;
+      });
+    },
+    uses(): AmmoUse[] {
+      const winner = state.placements[0];
+      return uses.map((u, i) => ({ ...u, won: fighters[i]!.id === winner })).filter((u) => WEAPONS[u.weapon].family === 'ranged');
+    },
+  };
+}
+
+/** Sum AmmoUse per ranged weapon (WEAPON_IDS order). */
+export function ammoEconomy(uses: readonly AmmoUse[]): AmmoEconomy[] {
+  const out: AmmoEconomy[] = [];
+  for (const weapon of WEAPON_IDS) {
+    const xs = uses.filter((u) => u.weapon === weapon);
+    if (xs.length === 0) continue;
+    const sum = (k: keyof AmmoUse) => xs.reduce((s, u) => s + Number(u[k]), 0);
+    const alive = sum('ticksAlive');
+    out.push({
+      weapon,
+      fighters: xs.length,
+      dryShare: alive > 0 ? round(sum('ticksDry') / alive, 3) : 0,
+      deaths: sum('died'),
+      diedDry: sum('diedDry'),
+      diedRestocking: sum('diedRestocking'),
+      shotsPer: round(sum('shots') / xs.length, 1),
+      pickupsPer: round(sum('pickups') / xs.length, 1),
+      stuckPer: round(sum('stuckInBodies') / xs.length, 1),
+    });
+  }
+  return out;
+}
+
 export type BalanceReport = {
   options: Omit<BalanceOptions, 'field'> & { fighters: number; fieldSize: number };
   pairings: DuelPairing[];
@@ -200,6 +299,8 @@ export type BalanceReport = {
   strategies: StrategyRow[];
   /** Nominal damage per second of each weapon with the comparable build. */
   dps: { weapon: WeaponId; cycleTicks: number; dps: number }[];
+  /** How the ranged weapons used their ammo in the duels (empty when not measured). */
+  economy: AmmoEconomy[];
   checks: BalanceCheck[];
   /** Every target (not guideline) holds. */
   pass: boolean;
@@ -307,7 +408,7 @@ function pctOf(x: number): string {
   return `${Math.round(x * 100)}%`;
 }
 
-export function analyseBalance(options: BalanceOptions, duelReports: readonly MatchReport[], ffaReports: readonly MatchReport[]): BalanceReport {
+export function analyseBalance(options: BalanceOptions, duelReports: readonly MatchReport[], ffaReports: readonly MatchReport[], duelAmmo: readonly AmmoUse[] = []): BalanceReport {
   const { field, ...rest } = options;
   const fighters = options.fighters ?? DEFAULT_FIGHTERS;
   const pairings = duelPairings(duelReports);
@@ -365,6 +466,7 @@ export function analyseBalance(options: BalanceOptions, duelReports: readonly Ma
     weapons: weaponShares(ffaReports),
     strategies: strategyRows(ffaReports),
     dps,
+    economy: ammoEconomy(duelAmmo),
     checks,
     pass: checks.every((c) => c.guideline || c.pass),
   };
@@ -476,6 +578,29 @@ export function balanceMarkdown(report: BalanceReport): string {
     '',
     `All duels: average ${clock(report.duelEndings.avgTicks)}; ${endingsText(report.duelEndings)}; sudden death ${suddenDeathText(report.duelEndings)}.`,
     '',
+  );
+  if (report.economy.length > 0) {
+    lines.push(
+      '### Ammo economy in the duels',
+      '',
+      'Arrows and axes stick where they hit (walls, props, bodies) and are taken back by hand; ammo in a living body is out ' +
+        'of play until it dies. Per ranged fighter: share of its time alive with nothing to shoot, deaths with an empty quiver or ' +
+        'out of charges, deaths while out fetching ammo (`restock`), and shots, pickups and shots left stuck in the opponent per duel.',
+      '',
+      ...table(
+        ['Weapon', 'Duels', 'Dry', 'Deaths', 'Died dry', 'Died restocking', 'Shots', 'Pickups', 'Stuck in bodies'],
+        report.economy.map((e) => [
+          e.weapon, String(e.fighters), pctOf(e.dryShare), String(e.deaths),
+          e.deaths > 0 ? `${e.diedDry} (${pctOf(e.diedDry / e.deaths)})` : '0',
+          e.deaths > 0 ? `${e.diedRestocking} (${pctOf(e.diedRestocking / e.deaths)})` : '0',
+          String(e.shotsPer), String(e.pickupsPer), String(e.stuckPer),
+        ]),
+        ['l', 'r', 'r', 'r', 'r', 'r', 'r', 'r', 'r'],
+      ),
+      '',
+    );
+  }
+  lines.push(
     '## Free-for-alls',
     '',
     'Fair share = the share of seats a family held in each match, summed over the matches. Ratio = wins / fair share; ' +
@@ -521,15 +646,17 @@ export function balanceMarkdown(report: BalanceReport): string {
     '## Current numbers (src/core/rules.ts)',
     '',
     `Nominal DPS: base damage x power (${STACK_ATTRIBUTES.power}) over the full attack cycle with haste ${STACK_ATTRIBUTES.haste}; ` +
-      'one target, no crits, backstabs, splash, point-blank penalty or armor. Ranged ammo limits are not included.',
+      'one target, no crits, backstabs, splash, point-blank penalty or armor. Ranged ammo limits are not included. ' +
+      'Ammo: count, and one back every N ticks where it refills. Hand: damage of the hand weapon a ranged fighter hits with up close and when out of ammo (fists otherwise).',
     '',
     ...table(
-      ['Weapon', 'Family', 'Range', 'Damage', 'Windup', 'Cycle (ticks)', 'Nominal DPS', 'Move x', 'Lunge', 'Ammo'],
+      ['Weapon', 'Family', 'Range', 'Damage', 'Windup', 'Cycle (ticks)', 'Nominal DPS', 'Move x', 'Lunge', 'Ammo', 'Hand'],
       report.dps.map((d) => {
         const w = WEAPONS[d.weapon];
-        return [d.weapon, w.family, String(w.range), String(w.damage), String(w.windup), String(d.cycleTicks), String(d.dps), String(w.moveMul), String(w.lunge), w.ammo > 0 ? String(w.ammo) : '-'];
+        const ammo = w.ammo > 0 ? (w.ammoRegenTicks > 0 ? `${w.ammo} (+1 / ${w.ammoRegenTicks})` : String(w.ammo)) : '-';
+        return [d.weapon, w.family, String(w.range), String(w.damage), String(w.windup), String(d.cycleTicks), String(d.dps), String(w.moveMul), String(w.lunge), ammo, w.handDamage > 0 ? String(w.handDamage) : '-'];
       }),
-      ['l', 'l', 'r', 'r', 'r', 'r', 'r', 'r', 'r', 'r'],
+      ['l', 'l', 'r', 'r', 'r', 'r', 'r', 'r', 'r', 'r', 'r'],
     ),
     '',
     ...table(

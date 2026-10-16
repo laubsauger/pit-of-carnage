@@ -83,9 +83,15 @@ describe('derived stats follow the published formulas (the rulebook quotes them 
     expect(resolveDamage(30, 1, { ...balanced, armor: 0 })).toBe(30);
   });
 
+  // Since the pass-3 balance no weapon's cooldown reaches the floor even at 40 haste (the twin
+  // daggers went from 18 to 27 ticks), so every weapon is checked against it at maximum haste.
   it('makes haste shorten attack cooldowns but never below the floor', () => {
     expect(attackCooldown({ ...balanced, haste: 30 }, 'GREATSWORD')).toBeLessThan(attackCooldown({ ...balanced, haste: 4 }, 'GREATSWORD'));
-    expect(attackCooldown({ ...balanced, haste: 40 }, 'TWIN_DAGGERS')).toBe(COMBAT.minAttackCooldown);
+    for (const w of WEAPON_IDS) {
+      const c = attackCooldown({ ...balanced, haste: 40 }, w);
+      expect(c).toBeGreaterThanOrEqual(COMBAT.minAttackCooldown);
+      expect(c).toBe(Math.max(COMBAT.minAttackCooldown, Math.round(WEAPONS[w].cooldown * (1 - 40 * COMBAT.hasteAttackPerPoint))));
+    }
   });
 
   it('treats creeping and slow targets as quiet, walking ones as noisy', () => {

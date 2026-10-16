@@ -38,17 +38,45 @@ export function strategyKey(s: Pick<Strategy, 'name' | 'version'>): string {
 /**
  * openskill rating. `mu` is the skill estimate, `sigma` the uncertainty, `ordinal = mu - 3 x sigma`
  * a conservative score used for sorting. New strategies start at mu 25, sigma 25/3 (ordinal 0).
- * Ratings must be updated from every rated match's placements and persisted between batches;
- * never assigned by hand.
+ * `provisional` = still settling (`sigma > RATING_PROVISIONAL_SIGMA`): the UI marks it "new"
+ * instead of hinting with a bare "?". Build one with `makeRating`. Ratings must be updated from
+ * every rated match's placements and persisted between batches; never assigned by hand.
  */
-export type Rating = { mu: number; sigma: number; ordinal: number };
+export type Rating = { mu: number; sigma: number; ordinal: number; provisional: boolean };
+
+/** Display points per unit of mu or sigma (`displayRating`). */
+export const RATING_DISPLAY_SCALE = 40;
+
+/**
+ * Above this sigma a rating is provisional. New strategies start at 25/3 (about 8.3); after a few
+ * dozen rated matches sigma typically drops well below 5, so the mark sits on numbers that will
+ * still move a lot.
+ */
+export const RATING_PROVISIONAL_SIGMA = 5;
+
+/** The one way to build a `Rating` from openskill's mu and sigma (ordinal and provisional follow). */
+export function makeRating(mu: number, sigma: number): Rating {
+  return { mu, sigma, ordinal: mu - 3 * sigma, provisional: sigma > RATING_PROVISIONAL_SIGMA };
+}
 
 /**
  * Number shown to players: `round(1000 + ordinal x 40)`. A new strategy shows 1000.
  * Note the ordinal rises as sigma shrinks, so a few matches move the number even at average play.
  */
 export function displayRating(r: Rating): number {
-  return Math.round(1000 + r.ordinal * 40);
+  return Math.round(1000 + r.ordinal * RATING_DISPLAY_SCALE);
+}
+
+/**
+ * A rating as the UI shows it: "1240 ±85", the ± part muted, and a "new" marker in its own slot
+ * when provisional ("Provisional: rated from 3 matches. Settles after about 10."). `value` is
+ * `displayRating`; `plusMinus` is one sigma in display points (`round(sigma x 40)`), so it shrinks
+ * as evidence piles up.
+ */
+export type RatingDisplay = { value: number; plusMinus: number; provisional: boolean };
+
+export function ratingDisplay(r: Rating): RatingDisplay {
+  return { value: displayRating(r), plusMinus: Math.round(r.sigma * RATING_DISPLAY_SCALE), provisional: r.provisional };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -377,6 +405,60 @@ export type AggregateReport = {
   /** Sorted by rating ordinal, best first. */
   strategies: StrategyAggregate[];
   /** Batch-level findings, e.g. "Lurking Daggers v3 beats the house stacks 7 of 10 on the Pit." */
+  findings: string[];
+};
+
+// ---------------------------------------------------------------------------------------------
+// Compare
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Compare two strategies, or two versions of one, side by side over the same seeds (`GymApi.compare`).
+ * A paired experiment: both play the same matches (same seeds, maps, field lineups and seat), each
+ * in the other's place, so a gap comes from the strategies and not from who drew the easier fights.
+ * Neither ever meets the other. Not rated: a comparison is a measurement and never moves the
+ * leaderboard.
+ */
+export type CompareRequest = {
+  a: Strategy;
+  b: Strategy;
+  /** Opponents for both (any entry with A's or B's key is left out, so the two never meet). */
+  field: Strategy[];
+  mapIds: string[];
+  matches: number;
+  fighters: number;
+  seed: number;
+};
+
+/** One shared seed: both finishes (1 = won). */
+export type CompareMatch = { seed: number; mapId: string; fighters: number; placeA: number; placeB: number };
+
+/**
+ * One line of the side-by-side table. `a` and `b` are in `unit` (a share is 0..1, `seconds` are
+ * seconds); null when there is no value (never engaged). `better` names the side that did better
+ * when "better" has a direction (more wins, less damage taken), null when level or a matter of
+ * style (idle time, distance, time near walls).
+ */
+export type CompareRow = { label: string; unit: 'share' | 'number' | 'seconds' | 'px' | 'place'; a: number | null; b: number | null; better: 'a' | 'b' | null };
+
+/**
+ * Both sets of reports (index i of each is the same seed, so the UI can Watch either side of any
+ * pairing), both aggregates (per-fighter stats averaged, heatmaps per map), the per-seed finishes,
+ * the side-by-side rows and findings.
+ */
+export type CompareResult = {
+  /** A's matches; `reportsB[i]` is the same seed, map and lineup with B in A's seat. */
+  reportsA: MatchReport[];
+  reportsB: MatchReport[];
+  a: StrategyAggregate;
+  b: StrategyAggregate;
+  matches: CompareMatch[];
+  /** Shared seeds where A finished ahead of B, behind it, or level. */
+  aAhead: number;
+  bAhead: number;
+  level: number;
+  rows: CompareRow[];
+  /** Plain sentences from the numbers, e.g. "Lurking Daggers v3 finished ahead of v2 on 7 of 10 shared seeds (2 behind, 1 level)." */
   findings: string[];
 };
 

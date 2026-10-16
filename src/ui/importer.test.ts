@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Strategy } from '../core';
 import { HOUSE_STACKS, encodeStrategyCode } from '../strategy';
 import { prettyJson } from './editor';
-import { checkImport, importVerdict, isJsonFile, rejectedFile, sourceOf } from './importer';
+import { checkImport, importVerdict, isJsonFile, llmReplyHint, rejectedFile, sourceOf } from './importer';
 
 const house: Strategy = HOUSE_STACKS[0];
 
@@ -57,5 +57,22 @@ describe('files', () => {
     expect(isJsonFile({ name: 'Kiter.JSON', type: '' })).toBe(true);
     expect(isJsonFile({ name: 'notes.txt', type: 'text/plain' })).toBe(false);
     expect(importVerdict(rejectedFile('cat.png').report).ok).toBe(false);
+  });
+});
+
+describe('pasting an LLM reply', () => {
+  // The prompt makes the model interview the player first, so the first thing many players paste
+  // back is a list of questions. Say so, instead of a bare "invalid JSON" error.
+  it('recognises questions without a strategy, and a reply that was cut off', () => {
+    expect(llmReplyHint('1. What should it be called?\n2. Which weapon?')).toMatch(/questions/);
+    expect(llmReplyHint('Here you go:\n```json\n{ "schema": "pit-strategy/2", "name": "A"')).toMatch(/cut off/);
+  });
+
+  it('stays quiet for a whole answer, so the gate’s report speaks', () => {
+    const reply = `The plan: hide.\n\`\`\`json\n${prettyJson(house)}\n\`\`\`\nTry it on the Pit.`;
+    expect(llmReplyHint(reply)).toBeNull();
+    expect(checkImport('LLM reply', reply, false).report.strategy?.name).toBe(house.name);
+    expect(llmReplyHint(encodeStrategyCode(house))).toBeNull();
+    expect(llmReplyHint('   ')).toBeNull();
   });
 });

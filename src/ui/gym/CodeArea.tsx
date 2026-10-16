@@ -18,7 +18,7 @@ import {
   lineNumbers,
 } from '@codemirror/view';
 import type { IssueSpan } from '../editor';
-import { completionDot, completionSource, flashExtension, hangingIndent, revealAndFlash, scanField, strategyHighlighting, toDiagnostics, wordHover } from '../editor/cm';
+import { completionDot, completionSource, flashExtension, hangingIndent, numberScrub, revealAndFlash, scanField, strategyHighlighting, toDiagnostics, wordHover } from '../editor/cm';
 import { strategyTheme } from '../editor/theme';
 import type { CardBuild } from '../editor/WordCard';
 import '../editor/editor.css';
@@ -55,7 +55,8 @@ const External = Annotation.define<boolean>();
 /**
  * The strategy JSON in CodeMirror 6: highlighting with recognised words as badges, hover cards for
  * every property and word, completion from the registry, the gate's errors and warnings in place
- * (gutter icons, underlines, tooltips with the fix), and the flash the problem list jumps to.
+ * (gutter icons, underlines, tooltips with the fix), the flash the problem list jumps to, and numbers
+ * you drag sideways to change, as in the visual builder.
  * React owns the text; the view follows it with minimal edits so undo, the caret and scroll survive
  * changes from the visual builder.
  */
@@ -93,6 +94,7 @@ export function CodeArea({ apiRef, text, onChange, checked, spans, onCaret, onSa
           json(),
           scanField,
           strategyHighlighting,
+          numberScrub,
           wordHover(cards),
           autocompletion({ override: [completionSource(cards)], icons: false, addToOptions: [completionDot], activateOnTypingDelay: 80 }),
           flashExtension,

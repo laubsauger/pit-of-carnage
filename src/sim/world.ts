@@ -3,7 +3,7 @@
  * floor and the sudden-death wall.
  */
 
-import { HAZARD_RULES, MATCH_RULES, PICKUP_RULES, PROP_RULES, SPEED_SCALE, clamp, clamp01, resolveDamage, zoneBoundsAfter } from '../core';
+import { BLEED_RULES, HAZARD_RULES, MATCH_RULES, PICKUP_RULES, PROP_RULES, SPEED_SCALE, clamp, clamp01, resolveDamage, zoneBoundsAfter } from '../core';
 import type { FighterState, HazardKind, HazardState, Vec2 } from '../core';
 import type { FighterRt, HazardRt, SimCtx } from './context';
 import { applyDamage, blow, damageProp } from './damage';
@@ -13,10 +13,6 @@ import { hazardRadius } from './query';
 
 /** Spikes stay up (visible, `active`) this many ticks after they thrust. */
 const SPIKE_UP_TICKS = 14;
-/** Spikes hit bodies whose centre is within radius + this share of the body radius. */
-const SPIKE_BODY_SHARE = 0.5;
-/** Acid and fire hurt bodies whose centre is within radius + this share of the body radius. */
-const POOL_BODY_SHARE = 0.3;
 /** Keg blast damage at the edge of the radius, relative to the centre. */
 const BLAST_EDGE = 0.6;
 /** Breaks resolved at most per tick (a keg chain is long before this). */
@@ -91,7 +87,8 @@ export function updateHazards(ctx: SimCtx): void {
         h.phase = hr.travelled / hr.pathLength;
       }
       h.active = true;
-      const share = h.kind === 'saw' ? 1 : POOL_BODY_SHARE;
+      // How far the hazard reaches into a body: `HazardRule.bodyShare` (the renderer's acid look uses the same).
+      const share = rule.bodyShare;
       for (const rt of ctx.rts) {
         const f = rt.f;
         if (!f.alive || tick < hr.nextHit[rt.idx]!) continue;
@@ -119,7 +116,7 @@ function spikeThrust(ctx: SimCtx, h: HazardState, radius: number): void {
     if (!f.alive) continue;
     const dx = f.pos.x - h.pos.x;
     const dy = f.pos.y - h.pos.y;
-    const reach = radius + f.radius * SPIKE_BODY_SHARE;
+    const reach = radius + f.radius * HAZARD_RULES.spike.bodyShare;
     if (dx * dx + dy * dy >= reach * reach) continue;
     any = true;
     hazardHit(ctx, h, rt.idx, Math.atan2(dy, dx));
@@ -232,6 +229,7 @@ export function updatePickups(ctx: SimCtx): void {
     const f = ctx.rts[i]!.f;
     const amount = Math.min(f.maxHp - f.hp, Math.round(f.maxHp * shrine.amount));
     f.hp += amount;
+    if (BLEED_RULES.shrineCures && f.bleed) f.bleed = null;
     s.cooldown = shrine.cooldownTicks;
     ctx.events.push({ type: 'heal', tick, fighterId: f.id, amount, pos: { x: s.pos.x, y: s.pos.y }, shrineId: s.id });
   }

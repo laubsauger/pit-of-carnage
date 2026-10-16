@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { strategyKey } from '../core';
 import type { EvolveRequest, MatchConfig, Strategy, ValidationResult } from '../core';
 import type { MatchRunner } from './batch';
-import { beats, evolve, type EvolveDeps, type GenerationReport } from './evolve';
+import { beats, evolutionMatch, evolve, type EvolveDeps, type GenerationReport } from './evolve';
 import { collectTerms } from './mutate';
 import { TEST_LIBRARY, fakeRunner, makeStrategy, strictValidate } from './testkit';
 
@@ -124,6 +124,43 @@ describe('evolve', () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(calls).toEqual([13, 23, 33]);
     expect(a.generations.map((g) => g.generation)).toEqual([1, 2, 3]);
+  });
+
+  // Watch on an archive entry must show the fight that earned its place, not a fresh match against
+  // the field: the replay is only worth something if it is the very match the report counted.
+  it('records each generation\'s matches so Watch replays the exact match an entry played', () => {
+    const inner = fakeRunner(byAgility, 1);
+    const played = new Map<string, number>();
+    const runner = (config: MatchConfig) => {
+      const report = inner(config);
+      played.set(JSON.stringify(config), report.roster.length);
+      return report;
+    };
+    const req = request({ generations: 6, population: 6, matchesPerCandidate: 4 });
+    const result = evolve(req, deps(runner));
+    const gens = result.generations as GenerationReport[];
+    const cells = gens.at(-1)!.archive;
+    const promoted = gens.filter((g) => g.promoted).map((g) => ({ strategy: g.promoted!.strategy, generation: g.generation }));
+    const entries = [...cells.map((c) => ({ strategy: c.strategy, generation: c.bornGeneration })), ...promoted];
+    expect(entries.length).toBeGreaterThan(1);
+    for (const { strategy, generation } of entries) {
+      const m = evolutionMatch(gens, req.field, strategy, generation);
+      expect(m, `${strategyKey(strategy)} has a recorded match`).not.toBeNull();
+      // The rebuilt config is byte for byte one the run played, with the entry in the followed seat.
+      expect(played.has(JSON.stringify(m!.config))).toBe(true);
+      const seat = m!.config.entrants.findIndex((e) => e.id === m!.entrantId);
+      expect(strategyKey(m!.config.entrants[seat]!.strategy)).toBe(strategyKey(strategy));
+      expect(m!.fighterId).toBe(`f${seat}`);
+      // Born in generation g means it played generation g (the starting strategy first plays in 1).
+      expect(m!.generation).toBe(Math.max(1, generation));
+      // Replaying it reproduces the finish the generation recorded.
+      const again = inner(m!.config);
+      expect(again.fighters.find((f) => f.fighterId === m!.fighterId)!.place).toBe(m!.place);
+    }
+    // Field strategies are not copied into every generation (the request has them).
+    const fieldKeys = new Set(house.map(strategyKey));
+    for (const g of gens) for (const s of g.matches.strategies) expect(fieldKeys.has(strategyKey(s))).toBe(false);
+    expect(evolutionMatch(gens, req.field, { name: 'Nobody', version: 1 }, 1)).toBeNull();
   });
 
   it('refuses an invalid parent and a 1v1 setup', () => {

@@ -164,4 +164,28 @@ describe('RoundFlow: the round is framed, never just started mid-air', () => {
     flow.jumped(false);
     expect(flow.takeSignals()).toEqual([]);
   });
+
+  // The winner's pose, spotlight and roar must play once for a match decided live, never again for
+  // a replay to the same end, and never when a seek lands on the end (the end card poses it instead).
+  it('sends the victory once, after the final kill, and never for a replay or a seek onto the end', () => {
+    const victory = { type: 'victory' as const, winnerIds: ['f0'], ending: 'elimination' as const };
+    const flow = new RoundFlow();
+    flow.begin();
+    flow.enter();
+    flow.skip();
+    flow.takeSignals();
+    flow.signal({ type: 'final_kill', killerId: 'f0', victimId: 'f1', pos: { x: 1, y: 2 } });
+    flow.decided(victory);
+    expect(flow.takeSignals().map((s) => s.type)).toEqual(['final_kill', 'victory']);
+    flow.jumped(false);
+    flow.decided(victory);
+    expect(flow.takeSignals()).toEqual([]);
+
+    const seeked = new RoundFlow();
+    seeked.begin();
+    seeked.enter();
+    seeked.jumped(true);
+    seeked.decided(victory);
+    expect(seeked.takeSignals()).toEqual([]);
+  });
 });

@@ -1,6 +1,6 @@
 // Owned by: ui
 // Pure helpers for showing battle reports, ratings and evolution runs.
-import { REPORT_STATS, TICK_HZ } from '../core';
+import { RATING_PROVISIONAL_SIGMA, REPORT_STATS, TICK_HZ, ratingDisplay } from '../core';
 import type { FighterStats, Heatmap, KillCause, KillRecord, MatchReport, Rating, StrategyAggregate, WinRecord } from '../core';
 import { heatmapPhrase } from '../gym';
 import { formatPercent } from './format';
@@ -56,14 +56,38 @@ export function howOut(victimId: string, kills: readonly KillRecord[], nameOf: (
 }
 
 /**
- * Above this sigma a rating is still settling. New strategies start at 25/3 (about 8.3); after a
- * few dozen rated matches sigma typically drops well below 5, so the label marks numbers that
- * will still move a lot.
+ * Above this sigma a rating is still settling (the core's `RATING_PROVISIONAL_SIGMA`). New
+ * strategies start at 25/3 (about 8.3); after a few dozen rated matches sigma typically drops well
+ * below 5, so the mark sits on numbers that will still move a lot.
  */
-export const PROVISIONAL_SIGMA = 5;
+export const PROVISIONAL_SIGMA = RATING_PROVISIONAL_SIGMA;
 
+/** Ratings stored before `Rating.provisional` existed lack the flag; their sigma still says it. */
 export function isProvisional(r: Rating): boolean {
-  return r.sigma > PROVISIONAL_SIGMA;
+  return typeof r.provisional === 'boolean' ? r.provisional : r.sigma > PROVISIONAL_SIGMA;
+}
+
+/** Rated matches after which a new rating has usually settled (the "new" card's promise). */
+export const RATING_SETTLES_AFTER = 10;
+
+/**
+ * A rating as every table shows it: "1240 ±85", the ± part muted, and a "new" mark in its own slot
+ * with a card that explains it. `matches` (rated matches so far) makes the card concrete.
+ */
+export type RatingView = { value: string; plusMinus: string; provisional: boolean; card: string; label: string };
+
+export function ratingView(r: Rating, matches?: number): RatingView {
+  const d = ratingDisplay(r);
+  const provisional = isProvisional(r);
+  const rated = matches === undefined ? 'rated from only a few matches' : `rated from ${matches} ${matches === 1 ? 'match' : 'matches'}`;
+  const card = provisional
+    ? matches !== undefined && matches >= RATING_SETTLES_AFTER
+      ? `Provisional: ${rated} and still moving a lot. The ± shows how far it may be off.`
+      : `Provisional: ${rated}. Settles after about ${RATING_SETTLES_AFTER}.`
+    : `Settled. The ± is one standard deviation: the true strength is likely within it.`;
+  const value = String(d.value);
+  const plusMinus = `±${d.plusMinus}`;
+  return { value, plusMinus, provisional, card, label: `${provisional ? 'New, ' : ''}rating ${value} plus or minus ${d.plusMinus}` };
 }
 
 export type WinRow = { key: string; matches: number; wins: number; rate: number };

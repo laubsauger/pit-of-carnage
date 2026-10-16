@@ -12,13 +12,15 @@
  */
 
 import type * as THREE from 'three/webgpu';
+import { RIG_NOMINAL_RADIUS } from '../core';
 import type { WeaponId } from '../core';
 import { buildCutout, SLOT } from './cutout';
 import type { ShapeSpec } from './cutout';
 import { arcBand, circle, ellipse, mirrorV, rect, roundRect, star, taperedCurve, transformPoly } from './poly';
 import type { Poly } from './poly';
 
-export const NOMINAL_RADIUS = 18;
+/** The rig's body radius: one value with the sim's muzzle table (core `RIG_NOMINAL_RADIUS`, `MUZZLES`). */
+export const NOMINAL_RADIUS = RIG_NOMINAL_RADIUS;
 
 export const C = {
   leather: 0x4a3324,
@@ -379,23 +381,61 @@ export function flyingAxeGeometry(): THREE.BufferGeometry {
 /** Orb core (the glow sprite does the halo). */
 export function orbGeometry(): THREE.BufferGeometry {
   return buildCutout([
-    // White-hot core; the caster's spell colour comes from the halo, trail and light around it.
-    { poly: circle(0, 0, 7, 18), color: 0xf2ecff, slot: SLOT.glow, outline: 1.2 },
-    { poly: circle(1.5, -1.5, 2.6, 10), color: 0xffffff, slot: SLOT.glow, outline: 0 },
+    // The orb in the caster's spell colour (the instance colour) around a white-hot heart, so even
+    // the orb itself says who cast it, not only its halo, trail and light.
+    { poly: circle(0, 0, 7, 18), color: 0xffffff, slot: SLOT.glowTeam, outline: 1.2 },
+    { poly: circle(0.6, -0.6, 4, 14), color: 0xfff8ff, slot: SLOT.glow, outline: 0 },
+    { poly: circle(1.5, -1.5, 1.8, 10), color: 0xffffff, slot: SLOT.glow, outline: 0 },
+  ]);
+}
+
+/**
+ * An arrow stuck in something with its head buried: the shaft enters at the origin pointing +u (the
+ * flight direction), shaft and fletching (in the owner's colour) trailing back along -u. Seen from
+ * above, the head is inside whatever holds it, so it is not drawn.
+ */
+export function stuckArrowGeometry(): THREE.BufferGeometry {
+  return buildCutout([
+    { poly: [-24, -3.6, -17, -1, -17, 1, -24, 3.6, -21.5, 0], color: team(1), slot: SLOT.team, outline: 0.9 },
+    { poly: rect(-22, -1.05, 0, 1.05), color: C.woodLight, outline: 1 },
+  ]);
+}
+
+/** A whole arrow (head included) with its tip at the origin: a stuck arrow falling to the floor. */
+export function looseArrowGeometry(): THREE.BufferGeometry {
+  return buildCutout([
+    { poly: [-27, -3.6, -20, -1, -20, 1, -27, 3.6, -24.5, 0], color: team(1), slot: SLOT.team, outline: 0.9 },
+    { poly: rect(-25, -1.05, -3, 1.05), color: C.woodLight, outline: 1 },
+    { poly: [-6.5, -3, 0.5, 0, -6.5, 3], color: C.steel },
+  ]);
+}
+
+/**
+ * A thrown axe stuck blade first: the bit buried at the origin (pointing +u), the haft sticking out
+ * back along -u, a band in the owner's colour on the grip so it reads as someone's spent axe.
+ */
+export function stuckAxeGeometry(): THREE.BufferGeometry {
+  return buildCutout([
+    { poly: rect(-22, -1.9, -3, 1.9), color: C.wood },
+    { poly: rect(-19, -2.1, -15.5, 2.1), color: team(0.9), slot: SLOT.team, outline: 0.6 },
+    { poly: [-7, -1.6, -3.5, -9, 1.2, -8, 1.2, 8, -3.5, 9, -7, 1.6], color: C.steel },
+    { poly: [-6.5, -1.4, -4.5, -5, -2.4, -1.4], color: C.metalDark, outline: 0 },
   ]);
 }
 
 export function floorItemGeometry(kind: 'arrow' | 'axe' | 'weapon' | 'helmet'): THREE.BufferGeometry {
   switch (kind) {
     case 'arrow':
+      // Fletching in the owner's colour (like the arrow in flight): whose arrow it is reads at a glance.
       return buildCutout([
-        { poly: [-14, -3, -8, -0.8, -8, 0.8, -14, 3, -11.5, 0], color: 0x8a8070, outline: 0.8 },
+        { poly: [-14, -3, -8, -0.8, -8, 0.8, -14, 3, -11.5, 0], color: team(0.9), slot: SLOT.team, outline: 0.8 },
         { poly: rect(-12, -0.9, 8, 0.9), color: C.woodLight, outline: 0.9 },
         { poly: [7.5, -2.8, 14, 0, 7.5, 2.8], color: C.steel },
       ]);
     case 'axe':
       return buildCutout([
         { poly: rect(-10, -1.8, 9, 1.8), color: C.wood },
+        { poly: rect(-8, -2, -4.8, 2), color: team(0.9), slot: SLOT.team, outline: 0.6 },
         { poly: [4, 1.2, 10, 1.2, 13.5, 5, 13, 10.6, 8, 11.6, 5.5, 6.6], color: C.steel },
       ]);
     case 'weapon':

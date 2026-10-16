@@ -121,6 +121,49 @@ export function weaponPose(weapon: WeaponId, phase: AnimPhase, p: number, idleTi
   return out;
 }
 
+/**
+ * The winner's victory moment: the weapon raised (its windup pose: over the shoulder, overhead, the
+ * orb held high) and pumped in time with a little hop, glowing. `t` is real seconds into the pose.
+ */
+export const VICTORY = {
+  /** Pumps (and hops) per second. */
+  pumpHz: 1.6,
+  /** Share of the way from the raised pose back toward idle at the bottom of each pump. */
+  pump: 0.35,
+  /** Body scale added at the top of each hop. */
+  hop: 0.07,
+  /** Extra reach (px) at the top of each pump: the arm thrust up. */
+  reach: 6,
+  glow: 0.6,
+  /** Seconds to ease into the pose. */
+  easeIn: 0.45,
+} as const;
+
+export function victoryPose(weapon: WeaponId, t: number, out: WeaponPose): WeaponPose {
+  const k = SWING_KEYS[weapon];
+  const up = 0.5 + 0.5 * Math.sin(Math.max(0, t) * Math.PI * 2 * VICTORY.pumpHz);
+  out.swing = k.back + (k.idle - k.back) * VICTORY.pump * (1 - up);
+  out.reach = k.backReach * 0.5 + VICTORY.reach * up;
+  out.draw = 0;
+  out.glow = VICTORY.glow * (0.6 + 0.4 * up);
+  out.smear = 0;
+  out.smearFrom = k.back;
+  out.released = false;
+  return out;
+}
+
+/** Body scale of the winner's hop at `t` real seconds (in step with the pumps). */
+export function victoryHop(t: number): number {
+  return 1 + VICTORY.hop * Math.max(0, Math.sin(Math.max(0, t) * Math.PI * 2 * VICTORY.pumpHz));
+}
+
+/** How far into the pose (0..1, eased) the winner is `t` real seconds after the victory. */
+export function victoryWeight(t: number): number {
+  if (!(t > 0)) return 0;
+  const k = Math.min(1, t / VICTORY.easeIn);
+  return 1 - (1 - k) * (1 - k);
+}
+
 /** Boot stride offset along the facing (px at nominal size) for a walk phase and movement 0..1. */
 export function stride(walkPhase: number, move: number): number {
   return Math.sin(walkPhase) * 6.5 * clamp01(move);

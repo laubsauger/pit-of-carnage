@@ -24,7 +24,7 @@ export function fighter(id: string, x: number, y = MAP_H / 2, opts: Partial<Figh
 export function world(fighters: FighterState[], tick = 600): WorldState {
   return {
     tick, mapId: 'pit', fighters, projectiles: [], floor: [], props: [], hazards: [],
-    shrines: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: MAP_W, height: MAP_H }),
+    shrines: [], stuck: [], pickups: [], suddenDeath: initialSuddenDeathState({ width: MAP_W, height: MAP_H }),
     finished: false, ending: null, placements: [],
   };
 }

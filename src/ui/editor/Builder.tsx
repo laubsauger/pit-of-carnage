@@ -4,7 +4,7 @@
 // formatting survives. Every property has its card on hover, every number can be dragged, and the
 // gate's issues show on the field they are about.
 import { useContext, useMemo, useRef, useState } from 'react';
-import type { MutableRefObject, ReactNode } from 'react';
+import type { HTMLAttributes, MutableRefObject, ReactNode } from 'react';
 import {
   ATTRIBUTE_BUDGET,
   ATTRIBUTE_KEYS,
@@ -29,7 +29,7 @@ import type { TermKind } from '../../brain';
 import { BARK_KINDS, LIMITS, STARTER_DOCS, STARTER_LIBRARY, STARTER_NAMES, mergeBehaviours } from '../../strategy';
 import { formatStat } from '../format';
 import { WeaponIcon } from '../icons';
-import { renameKey, renameMemory } from './edit';
+import { moveMember, renameKey, renameMemory } from './edit';
 import { joinSum, splitSum } from './exprtext';
 import type { SumTerm } from './exprtext';
 import { Ctx, ExprField, Hover, HoverId, IssueLine, Label, PlaceField, ScrubNumber, Seg, issuesAt, issuesUnder } from './fields';
@@ -37,6 +37,7 @@ import type { BuilderCtx } from './fields';
 import { pathKey } from './jsontext';
 import type { PathSeg } from './jsontext';
 import { attributeLabel, entryById, fieldEntry } from './lexicon';
+import { useReorder } from './reorder';
 import type { CardBuild } from './WordCard';
 import './builder.css';
 
@@ -132,12 +133,12 @@ export function Builder({ apiRef, value, editable, issues, build, onEdit, text, 
 // Frames
 // ---------------------------------------------------------------------------------------------
 
-function Card({ title, path, entryPath, aside, children, className }: { title: ReactNode; path?: string; entryPath?: PathSeg[]; aside?: ReactNode; children: ReactNode; className?: string }) {
+function Card({ title, path, entryPath, aside, children, className, rootProps }: { title: ReactNode; path?: string; entryPath?: PathSeg[]; aside?: ReactNode; children: ReactNode; className?: string; rootProps?: HTMLAttributes<HTMLElement> }) {
   const { issues } = useContext(Ctx);
   const under = path !== undefined ? issuesUnder(issues, path) : [];
   const errors = under.filter((i) => i.severity === 'error').length;
   return (
-    <section className={`sb-card${className ? ` ${className}` : ''}`} data-path={path}>
+    <section {...rootProps} className={`sb-card${className ? ` ${className}` : ''}`} data-path={path}>
       <header className="sb-card-head">
         <h3>{entryPath ? <Label path={entryPath}>{title}</Label> : title}</h3>
         {under.length ? <span className={`sb-count ${errors ? 'error' : 'warning'}`}>{errors ? `${errors} ${errors === 1 ? 'error' : 'errors'}` : `${under.length} ${under.length === 1 ? 'warning' : 'warnings'}`}</span> : null}
@@ -495,8 +496,19 @@ function BehavioursSection({ s, onEdit, text, onText }: { s: Loose; onEdit: Edit
         </select>
       </div>
       <IssueLine issues={issuesAt(issues, 'behaviours')} />
-      {names.map((n) => (
-        <BehaviourCard key={n} name={n} b={obj<unknown>(own[n]) as LooseBehaviour} names={names} onEdit={onEdit} onRename={(to) => onText(renameKey(text, ['behaviours', n], to))} onRemove={() => onEdit(['behaviours', n], undefined)} />
+      {names.map((n, i) => (
+        <BehaviourCard
+          key={n}
+          name={n}
+          index={i}
+          b={obj<unknown>(own[n]) as LooseBehaviour}
+          names={names}
+          onEdit={onEdit}
+          onRename={(to) => onText(renameKey(text, ['behaviours', n], to))}
+          onRemove={() => onEdit(['behaviours', n], undefined)}
+          onMove={(from, to) => onText(moveMember(text, ['behaviours'], from, to))}
+          onMoveTerm={(from, to) => onText(moveMember(text, ['behaviours', n, 'move'], from, to))}
+        />
       ))}
       <ImportsCard imports={imports} own={names} onEdit={onEdit} full={full} />
     </div>
@@ -536,8 +548,13 @@ const STANCE_OPTIONS = [
   { id: 'guard', label: 'guard' },
 ] as const;
 
-function BehaviourCard({ name, b, names, onEdit, onRename, onRemove }: { name: string; b: LooseBehaviour; names: readonly string[]; onEdit: Edit; onRename: (to: string) => void; onRemove: () => void }) {
+type Move = (from: number, to: number) => void;
+
+function BehaviourCard(props: { name: string; index: number; b: LooseBehaviour; names: readonly string[]; onEdit: Edit; onRename: (to: string) => void; onRemove: () => void; onMove: Move; onMoveTerm: Move }) {
+  const { name, index, b, names, onEdit, onRename, onRemove, onMove, onMoveTerm } = props;
   const { editable, issues, memory } = useContext(Ctx);
+  // Order matters here: on a tied score the earlier behaviour wins.
+  const reorder = useReorder('behaviours', index, names.length, name, editable, onMove);
   const base: PathSeg[] = ['behaviours', name];
   const p = (...rest: PathSeg[]) => [...base, ...rest];
   const move = Array.isArray(b.move) ? (b.move as LooseTerm[]) : [];
@@ -552,8 +569,10 @@ function BehaviourCard({ name, b, names, onEdit, onRename, onRemove }: { name: s
     <Card
       className="sb-behaviour"
       path={pathKey(base)}
+      rootProps={{ ...reorder.target, 'data-reorder': '' } as HTMLAttributes<HTMLElement>}
       title={
         <span className="sb-bname">
+          {reorder.grip}
           <NameInput value={name} taken={names.filter((n) => n !== name)} onRename={onRename} label="Behaviour name" />
           {shadows ? (
             <HoverId id={`starter:${name}`} className="sb-tag">
@@ -590,7 +609,7 @@ function BehaviourCard({ name, b, names, onEdit, onRename, onRemove }: { name: s
         <div className="sb-field-body">
           {move.length === 0 ? <div className="faint sb-empty">Stands still.</div> : null}
           {move.map((t, i) => (
-            <TermRow key={i} t={obj<unknown>(t)} path={p('move', i)} onEdit={onEdit} onRemove={() => onEdit(p('move'), move.filter((_, j) => j !== i))} />
+            <TermRow key={i} t={obj<unknown>(t)} path={p('move', i)} group={`move:${name}`} index={i} count={move.length} onEdit={onEdit} onRemove={() => onEdit(p('move'), move.filter((_, j) => j !== i))} onMove={onMoveTerm} />
           ))}
           <IssueLine issues={issuesAt(issues, pathKey(p('move')))} />
           <button
@@ -675,9 +694,11 @@ function BehaviourCard({ name, b, names, onEdit, onRename, onRemove }: { name: s
   );
 }
 
-function TermRow({ t, path, onEdit, onRemove }: { t: LooseTerm; path: PathSeg[]; onEdit: Edit; onRemove: () => void }) {
+function TermRow(props: { t: LooseTerm; path: PathSeg[]; group: string; index: number; count: number; onEdit: Edit; onRemove: () => void; onMove: Move }) {
+  const { t, path, group, index, count, onEdit, onRemove, onMove } = props;
   const { editable, issues } = useContext(Ctx);
   const kind = termKindOf(t);
+  const reorder = useReorder(group, index, count, `move term ${index + 1}`, editable, onMove);
   const weight = numOr(t.weight, 1);
   const v = kind ? t[kind] : undefined;
   const own = issuesUnder(issues, pathKey(path));
@@ -718,7 +739,8 @@ function TermRow({ t, path, onEdit, onRemove }: { t: LooseTerm; path: PathSeg[];
   }
 
   return (
-    <div className={`sb-move${sev ? ` has-${sev}` : ''}`} data-path={pathKey(path)}>
+    <div className={`sb-move${sev ? ` has-${sev}` : ''}`} data-path={pathKey(path)} data-reorder="" {...reorder.target}>
+      {reorder.grip}
       <Hover entry={kind ? entryById(`term:${kind}`) : null} className="sb-pick">
         <select className="sb-select sb-term-kind" data-kind="term" value={kind ?? ''} disabled={!editable} aria-label="Move term" onChange={(e) => onEdit(path, convertTerm(t, e.target.value as TermKind))}>
           {kind ? null : <option value="">?</option>}

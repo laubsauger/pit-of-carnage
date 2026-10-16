@@ -10,6 +10,8 @@ import {
   ATTRIBUTE_MAX,
   ATTRIBUTE_MIN,
   BARK_RULES,
+  BLEED_RULES,
+  BLEED_RULES_DOCS,
   COMBAT,
   COMBAT_DOCS,
   HAZARD_RULES,
@@ -27,6 +29,8 @@ import {
   SPEED_SCALE,
   STANCES,
   STAT_DOCS,
+  STUCK_AMMO,
+  STUCK_AMMO_DOCS,
   TICK_HZ,
   WEAPONS,
   WEAPON_IDS,
@@ -425,13 +429,19 @@ function buildEntries(): Entry[] {
   ];
   for (const [k, v, doc] of limits) push(make('limit', k, k.replace(/_/g, ' '), { type: 'limit', doc, facts: [{ label: 'Value', value: v }] }));
   for (const k of Object.keys(GUARDS) as (keyof typeof GUARDS)[]) push(make('limit', k, k, { type: 'limit', doc: GUARDS_DOCS[k], facts: [{ label: 'Value', value: num(GUARDS[k]) }] }));
-  const rules = (table: Record<string, number>, docs: Record<string, string>, group: string) => {
-    for (const k of Object.keys(table)) push(make('rule', `${group}.${k}`, k, { type: `${group} rule`, doc: docs[k] ?? '', facts: [{ label: 'Value', value: num(table[k]!) }] }));
+  const rules = (table: Readonly<Record<string, number | boolean>>, docs: Readonly<Record<string, string>>, group: string, type = `${group} rule`) => {
+    for (const k of Object.keys(table)) {
+      const v = table[k]!;
+      push(make('rule', `${group}.${k}`, k, { type, doc: docs[k] ?? '', facts: [{ label: 'Value', value: typeof v === 'boolean' ? (v ? 'yes' : 'no') : num(v) }] }));
+    }
   };
   rules(COMBAT, COMBAT_DOCS, 'combat');
   rules(PERCEPTION, PERCEPTION_DOCS, 'perception');
   rules(MATCH_RULES, MATCH_RULES_DOCS, 'match');
   rules(STEERING, STEERING_DOCS, 'steering');
+  rules(STUCK_AMMO, STUCK_AMMO_DOCS, 'stuck_ammo', 'stuck ammo rule');
+  // A candidate rule stays out of the Codex, like the rulebook, until it is switched on.
+  if (BLEED_RULES.enabled) rules(BLEED_RULES, BLEED_RULES_DOCS, 'bleed', 'bleed rule');
 
   out.push(...fieldEntries());
   return out;

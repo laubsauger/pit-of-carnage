@@ -9,6 +9,8 @@
 import { TICK_HZ, displayRating } from '../core';
 import type {
   AggregateReport,
+  CompareResult,
+  CompareRow,
   DamageSource,
   DeathRecord,
   FighterReport,
@@ -22,7 +24,6 @@ import type {
   StrategyAggregate,
   SuddenDeathShare,
 } from '../core';
-import type { CompareResult, CompareRow } from './compare';
 import { POWER_UPS, guardTripPhrase } from './findings';
 import { clock, ordinalPlace, pct, plural, round, versionedName } from './format';
 import { heatmapLegend, heatmapPhrase, trimHeatmap } from './heatmap';
